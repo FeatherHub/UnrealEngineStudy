@@ -1,0 +1,112 @@
+********
+*ULevel* 
+********
+
+UWorld의 구역
+  해당 구역이 올바르게 작동하기 위한 모든 데이터를 소유
+  ALevelScriptActor, BSP Geometry, 파일(.umap)이 저장된 경로 정보 URL
+
+
+액터 소유권 경계
+  모든 액터는 정확히 하나의 ULevel에 소속 
+  액터의 Outer가 ULevel
+  액터가 월드에서 이동하여 옆 동네(다른 레벨)로 넘어가더라도
+  Level Transition을 하지 않는 한 처음 태어난 레벨에 소속
+
+
+ALevelScriptActor
+  각 ULevel은 ALevelScriptActor 인스턴스를 하나 갖는다
+  스크립팅 로직(트리거 시퀀스, 시네마틱 시작 등)
+
+레벨 단위 동작
+에셋 파이프라인, 버전 관리(Perforce/Git), 쿠킹(cooking)
+
+UWorld
+  PersistentLevel 
+  StreamingLevels[]
+  Levels[] 
+  모든 ULevel은 UWorld를 Outer로 가지며
+
+PersistentLevel 중심이 되는 레벨
+  UWorld는 PersistentLevel 하나를 필수로 갖는다
+  월드가 이 레벨로부터 시작
+  PersistentLevel의 Actors[0]은 AWorldSettings
+  중력 스케일, 기본 GameMode 클래스, Kill Z 등 월드 전체에 영향을 미치는 설정
+
+ULevelStreaming
+  어떤 레벨을 언제, 어떻게 로드할 것인가라는 정책(policy)
+  실제 로드된 ULevel 인스턴스를 LoadedLevel 멤버로 보유
+
+UWorld::Levels
+  인덱스 0  PersistentLevel
+  현재 메모리에 올라와 있는 모든 ULevel의 리스트
+
+관련 Event
+  OnApplyLevelTransform
+  OnCleanupLevel
+  OnLoadedActorAddedToLevelEvent
+
+---
+
+Divide & Conquer I
+  게임 월드를 한 번에 / 모두 메모리에 올릴 수 없다
+  월드를 여러 개의 ULevel로 나눔
+  플레이어 근처의 레벨만 로드하고 먼 곳은 언로드하기 위해 존재
+
+Divide & Conquer II
+  배경 아티스트는 '배경 레벨'에서 작업
+  레벨 디자이너는 '아이템 배치 레벨'에서 작업
+  이를 하나의 UWorld에서 합침
+
+각 레벨은 자신만의 레벨 블루프린트와 세팅을 가집니다.
+레벨 A를 로드한다고 해서 레벨 B의 로직이 간섭받지 않습니다.
+
+“묶음 처리”의 중심점 역할
+  ActorsForGC: “GC에 노출할 액터 배열”
+  액터 리스트 정렬(넷 관련): SortActorList net relevancy
+
+---
+
+*********
+*UEngine*
+*********
+
+엔진의 구체적 동작을 서브클래스로 분기할 수 있다.
+이것 없이는 #if WITH_EDITOR 전처리기와 런타임 분기가 코드 전체에 산재한다.
+UEngine 다형성이 이 복잡성을 하나의 상속 지점으로 응축한다.
+
+
+
+특정 월드에 종속되지 않는 **엔진 수준 서브시스템**의 소유자
+‘월드 바깥’ 자원을 소유
+월드보다 긴 수명을 가진 서브시스템들
+"엔진 수준"과 "월드 수준"의 수명 차이
+
+
+
+FEngineLoop
+  플랫폼 레벨의 메인 루프를 돌리면서 
+  매 프레임 GEngine->Tick()을 호출
+
+각각이 서로 다른 추상화 레벨의 "루프 주체"
+  FEngineLoop → "이 프로세스를 실행하라"    (OS 수준)
+  UEngine     → "이 엔진을 구동하라"        (UObject 수준)
+  UWorld      → "이 시뮬레이션을 진행하라"  (게임플레이 수준)
+
+UEngine 의 루프
+  각 UWorld::Tick → 액터/컴포넌트 틱
+  GC 스케줄링
+  엔진 수준 메트릭 수집 
+
+
+ETC
+  God Object 경향
+    서브시스템 패턴(UEngineSubsystem)은 이 문제를 완화하려는 후속 시도
+
+  ‘한 지점’
+    클래스 교체 가능한 정책 지점
+
+---
+
+UE는 월드가 항상 1개라고 가정하지 않아요
+그래서 월드들을 다루기 위한 컨텍스트가 필요

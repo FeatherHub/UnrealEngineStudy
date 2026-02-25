@@ -1,0 +1,702 @@
+가정. 논의의 단순화를 위해 Input은 Enhanced Input을 의미하는 것으로 가정한다.
+
+Legacy Input System
+
+Project Settings -> Input에서 미리 정의하는 방식 
+Action Mapping: 이진 신호
+Axis Mapping: 연속 신호 (기기의 기울기/회전, 마우스 이동)
+
+---
+
+Enhanced Input System
+
+Input Action
+  "점프", "이동", "조준" 같은 게임플레이 의미
+
+Input Mapping Context
+  상태별 해석 규칙
+  FEnhancedActionKeyMapping의 컨테이너
+
+Input Modifiers
+  입력값 전처리
+  민감도 조절, 축 반전, 데드존 등
+
+Input Triggers
+  상태머신에 따라 Action의 State를 결정한다.
+
+---
+
+FEnhancedActionKeyMapping
+  연결된 IA
+  Modifiers 리스트
+  Triggers 리스트
+  
+---
+
+UEnhancedInputLocalPlayerSubsystem
+  Player별
+  입력 인젝션(시뮬레이션)
+
+UEnhancedInputComponent
+
+---
+
+"자연스러움"
+
+같은 키(예: Ctrl)라도 게임 상태(걷기/달리기/엎드리기)에 따라 다른 행동을 자연스럽게 처리
+
+"자연의 분절에 따라 미리 분절들을 파놓음"
+  연결/분기의 구조가 "이 도메인의 자연스러움"을 모델링하고 있음
+
+도보/차량/비행
+메뉴+게임 입력 공존
+인게임 키 재설정
+접근성 옵션 (반전)
+컨트롤 스킴 변경(Southpaw)
+키보드/마우스, 게임패드, 터치, VR, 미래의 새로운 장치까지
+
+---
+
+현재 컨텍스트에 따라 다르게 작동하는 상태 기계
+
+같은 키가 상황에 따라 현재 노드를 다른 노드로 이행시킨다.
+  => 상황/맥락/조건에 따라 다른 의미를 가지는 키 
+  e.g. 상점 UI 열림, 차량 탑승 등
+
+'E' 키: 평시에는 상호작용, 메뉴에서는 확인, 대화 중에는 다음 대화
+런타임에 컨텍스트를 동적으로 전환
+
+Legacy Input System은 이를 if-else 분기로 처리했습니다
+
+---
+
+하드웨어 입력과 게임 로직 사이에 추상화 계층
+
+[물리적 입력] → [Input Mapping] → [Input Action] → [게임 로직]
+키보드, 마우스, 게임패드, VR 컨트롤러, 터치...
+
+Input을 처리하는 모든 것들에 조건문 구조 
+=> 
+이 조건문 구조를 하나의 계층으로 분리 후 
+Input을 처리하는 것들에 단일한 연결 인터페이스를 제공
+  분리 후 재연결 패턴 
+
+---
+
+입력의 뉘앙스
+
+단순 On/Off (Pressed/Released)
+
+=>
+
+탭, 홀드/차징, 더블탭, 연속탭,          (시간 변수를 가진 상태머신)
+누른 시간, 탭들의 리듬                  (시간 변수를 가진 상태머신)
+키 조합, 키 시퀀스                      (복합 입력의 Complex Representation)
+민감도, weight function (e.g. ease-in)  (후처리)
+
+"복잡한 상태머신" 
+  (State, Tick, Input) => State
+
+---
+
+하드웨어 -> 컨트롤러 -> OS/Driver -> OS-UE Interface -> UE 원시값 -> UE Enhanced Input System -> UE 게임 로직
+
+OS: Windows: WM_KEYDOWN (VK_W)
+
+UE
+  FWindowsApplication::ProcessMessage() // Platform Layer
+  FSlateApplication::OnKeyDown() 
+  각 LocalPlayer에게 입력 전파
+  UPlayerInput::InputKey()
+  UEnhancedInputLocalPlayerSubsystem::ProcessInputStack() 
+    
+---
+
+IMC 목록 탐색 = For each Context
+Mapping 목록 탐색 = For each Mapping
+  W랑 맵핑되어있는지 = Mapping.Key = W 
+  해당 Mapping의 Modifer 목록 적용
+  해당 Mapping의 Trigger 목록 적용 
+    Action Event 발생 = TriggerActionEvent(IA_Explode, ETriggerEvent::Triggered, true)
+      콜백들 호출 = EnhancedInputComponent에 저장되어 있음
+  입력이 소비됨 → 하위 Priority Context는 보지 못함
+
+---
+
+1 
+IA_Explode.uasset
+
+ValueType = EInputActionValueType::Boolean
+
+2
+IMC_Village.uasset
+
+(W, Pressed) => IA_Explode
+
+---
+
+UInputMappingContext* IMC_Village = NewObject<UInputMappingContext>();
+IMC_Village->Mappings.Add(Mapping);
+
+FEnhancedActionKeyMapping Mapping;
+Mapping.Action = IA_Explode;
+Mapping.Triggers.Add(Trigger);
+Mapping.Key = EKeys::W;
+
+UInputTrigger* Trigger = NewObject<UInputTriggerPressed>();
+
+3 
+AMyPlayerController {
+    UInputMappingContext* VillageContext;
+    UInputAction* IA_Explode;
+    
+    SetupInputComponent() {
+      InputComponent->BindAction(IA_Explode, ETriggerEvent::Triggered, this, &AMyPlayerController::OnExplode)
+    }
+
+    void EnterVillage() {
+      InputLocalPlayerSubsystem->AddMappingContext(VillageContext, HighPriority)
+
+      // InputLocalPlayerSubsystem->ActiveContexts = [(IMC_Village, HighPriority), (IMC_Default, LowPriority)]
+    }
+
+    void ExitVillage() {
+      InputLocalPlayerSubsystem>RemoveMappingContext(VillageContext)
+    }
+
+    void OnExplode() { ... }
+};
+
+4
+PlayerController::InputKey
+PlayerInput::InputKey
+InputLocalPlayerSubsystem
+IMC 목록 순회
+IA_Explode Triggered 이벤트 발행
+InputComponent 델리게이트 호출
+PlayerController::OnExplode 실행
+// 플레이어 1, 2는 별도 Subsystem이라 영향 없음
+
+---
+
+1
+IA_Broadcast.uasset
+
+UInputAction* IA_Broadcast = NewObject<UInputAction>()
+IA_Broadcast->ValueType = EInputActionValueType::Boolean
+
+2
+IMC_Airport.uasset
+(Combo, A) => IA_Broadcast
+
+IMC_Airport->Mappings.Add(Mapping);
+
+Mapping.Action = IA_Broadcast
+Mapping.Key = EKeys::A
+Mapping.Triggers.Add(ComboTrigger)
+
+ComboTrigger->TimeBetweenInputsInSeconds = 1.0f
+ComboTrigger->CurrentComboStepIndex = 0
+ComboTrigger->ComboActions.Add(IA_Broadcast)
+
+3
+AMyPlayerController::SetupInputComponent() {
+  InputComponent->BindAction(IA_Broadcast, ETriggerEvent::Triggered, this, &AMyPlayerController::OnBroadcast);
+}
+
+---
+
+SlateApplication
+  플랫폼/OS -> Unreal 의 중간 Layer
+  플랫폼별 입력 이벤트를 Unreal의 추상화로 변환
+  게임 뷰포트, UI 위젯, 에디터 등으로 입력 분배 / 포커스 관리
+
+FSlateApplication::OnKeyDown(const FKeyEvent& InKeyEvent) {
+    // 1. UI 위젯이 먼저 입력을 처리할 기회
+    if (ProcessKeyDownEvent(InKeyEvent)) {
+        return; // UI가 소비함
+    }
+    
+    // 2. 게임 뷰포트로 전달
+    if (GameViewport.IsValid()) {
+        GameViewport->OnKeyDown(InKeyEvent);
+    }
+}
+
+---
+
+GameViewportClient
+  Slate → World / Player 의 중간 Layer
+
+class UGameViewportClient {
+  // Slate로부터 입력 받는 인터페이스
+  virtual bool InputKey(const FInputKeyEventArgs& EventArgs);
+
+  // Associated World
+  UWorld* World;
+
+  // Player들에게 입력 전달
+  bool RouteInputToPlayerControllers(const FInputKeyEventArgs& EventArgs);
+}
+
+---
+
+World
+  게임의 최상위 컨테이너
+
+class UWorld {
+  UGameInstance*
+  
+  TArray<APlayerController*> 
+  
+  void Tick(ELevelTick TickType, float DeltaSeconds);
+};
+
+---
+
+LocalPlayer
+  한 명의 실제 사람
+
+ULocalPlayer {
+  APlayerController*
+  FSceneViewport* ViewportClient; // split screen
+  UEnhancedInputLocalPlayerSubsystem* 
+}
+
+---
+
+PlayerController 
+  게임플레이 로직과 입력 연결
+  입력과 게임플레이 로직의 중간 Layer
+  
+class APlayerController {
+    ULocalPlayer* // 양방향 참조
+    
+    UInputComponent* // Enhanced Input은 UEnhancedInputComponent로 캐스팅
+    
+    APawn* GetPawn();
+    
+    virtual void PlayerTick(float DeltaTime);
+};
+
+---
+
+UEnhancedInputComponent -> UInputComponent -> UActorComponent 
+
+class UEnhancedInputComponent {
+    FEnhancedInputActionEventBinding 목록
+    
+    FEnhancedInputActionEventBinding BindAction(
+        UInputAction
+        ETriggerEvent // Started, Ongoing, Triggered, Completed, Canceled
+        UserClass
+        MethodPtr
+    )
+}
+
+---
+
+class APawn : public AActor {
+    AController* Controller;
+    UInputComponent* InputComponent;
+};
+
+class ACharacter : public APawn {
+    UCharacterMovementComponent* CharacterMovement;
+};
+
+---
+
+InputComponent 스택
+InputStack = [
+    PlayerController->InputComponent,  // 먼저 처리
+    Pawn->InputComponent,              // 그 다음
+    // ... 추가 컴포넌트
+];
+
+상위 컴포넌트가 입력을 소비하면 하위는 받지 못함. Chain of Responsibility 패턴.
+
+---
+
+지금 이 물리적 입력 - 마우스 오른쪽 클릭, 키보드의 X키 누르기, 게임패드의 스틱을 오른쪽으로 꺾기 - 은 어떤 의미를 가지는가? 
+
+---
+
+Input Pipeline
+
+Input Hardware / Controller
+OS/Driver
+FWindowsApplication // OS-UE Interface
+SlateApplication // UI가 소비 안 하면 → 게임으로 전달
+GameViewportClient
+APlayerController
+UPlayerInput //
+UInputLocalPlayerSubsystem // 내부에서 호출된 ProcessInputStack 계열
+IMC List 처리 // FActionKeyMapping, Modifiers, Triggers
+IA 이벤트 발생
+UEnhancedInputComponent
+Bind된 함수 호출
+
+---
+
+APlayerController
+  Local Player 당 하나 소유
+  UPlayerInput 소유
+  Tick 마다 입력을 UPlayerInput에 전달 (ProcessPlayerInput 메서드)
+  InputComponent를 소유 
+  
+UPlayerInput
+  ProcessInputStack 메서드
+  InputLocalPlayerSubsystem 참조 ( GetSubsystem )
+
+UInputLocalPlayerSubsystem
+  Local Player당 하나 소유 ( GetSubsystem )
+  IMC 목록 관리
+
+UInputComponent
+  바인딩 테이블 관리 // (IA, Trigger) => Callback
+  InputComponent->BindAction(IA_Explode, ETriggerEvent::Triggered, this, &AMyController::OnExplode)
+  PlayerInput이 호출함
+
+AActor
+  최종 소비자
+  입력을 처리할 Callback을 제공함
+
+===
+
+finger met the plastic key 
+a voltage spike sent through copper nervousness
+But electricity knows not its meaning nor does the driver
+only rising seams of interrupts
+
+at the border-gate, here Slate awaits, upon her throne
+
+"Is this for me?" asks the UI, those widgets
+where the mouse-cursor flies
+through nested hierarchical spaces
+And if the widgets do not claim it
+
+then Slate but for the spheres below: the Game
+pass it downward through the gears
+
+Now enters GameViewportClient—that minister of the World's affairs
+screen in quartered squares where Player One and Two sit, each sovereign in their chair
+
+"Which kingdom claims this 'W'?"
+the same key serves different tasks
+
+Each LocalPlayer, separate soul, receives their portion
+the routing branches in avalanches of input, each maintains control.
+
+LocalPlayer the reception desk where all signals distill
+  
+And nested in each LocalPlayer's heart beats the Subsystem
+the alchemist of meaning-making, who tends a system of Contexts—those books
+a library, vast and tall, where every shelf holds a different tongue: IMC_Village, IMC_BrawlHall, IMC_Flight
+only the highest can be sung.
+
+the Subsystem asks "Does 'E' have here a home?"
+through Modifier's chrome, tests if Triggers can reach
+
+then the Input Action is born—no longer 'E' but "Open Vendor"
+
+the Subsystem descends the stair searches there with equal care 
+This is the genius of stratification
+The same 'E' wears many faces without code's if-else damnation
+
+The same physical press become a flowing stream of states
+
+InputComponent, a table of subscriptions "When IA_Jump is Triggered, call Jump()."
+doesn't care about keys - it only sees Input Actions, language of intention, the decrees
+that transcend float free from  'W' or 'Spacebar', PC, PlayStation, Xbox
+
+And thus the humble keypress of switch and spring 
+through Slate's mediation
+through Viewport's routing - LocalPlayer's creation
+through Subsystem's context-consultation
+through Modifier's fluid transformation
+through Trigger's temporal arbitration
+through InputComponent's binding-summation
+Becomes intent made flesh
+
+And every frame this repeats sixty times per second, the cycle turns
+the system's flow adapts, reconfigures - contextual renewal
+
+This is the architecture of intention
+where every key is a dimension of meaning waiting to align with context
+
+---
+
+고정된 별자리처럼 하나의 키는 하나의 운명만을 가리켰다
+
+화학 - 같은 키는 다른 Context와 만나 "Action"이라는 합성을 일으킨다
+같은 키가 다른 Context에서 다른 "Action"으로 된다.
+
+---
+
+번개
+
+보라, Hardware의 천둥이 OS라는 구름을 뚫고 대지로 내리꽂히는 광경을
+가장 먼저 그 벼락을 맞이하는 자, FSlateApplication 그는 성문 앞의 준엄한 수문장
+"이것은 거울(UI) 속의 환영인가, 아니면 세상(World)의 실체인가?"를 물어 번개의 길을 정해주노라
+
+번개는 Viewport을 따라 흘러 LocalPlayer에 스며든다
+심장부엔 Subsystem이라 불리는 사서가 있어 Context를 펼쳐 든다
+
+번개는 Modifier을 거쳐 비로소 정제된 재료가 된다.
+이어 Trigger라는 시간의 관리자가 묻는다
+비로소 번개는 Action이라는 영혼을 얻는다
+
+이제 영혼을 얻은 번개는 InputStack이라는 산맥을 내려간다
+PlayerController의 봉우리에서 Pawn의 계곡까지
+InputComponent라 불리는 구도자들이 줄지어 서서
+자신이 예약한 영혼이 오기만을 기다린다
+마침내 같은 이름의 영혼의 번개가 닿은 순간
+Actor라는 육신은 깨어나 춤을 시작한다
+
+---
+
+구리선의 신경망을 타고 흐르는 것은 오직 전압의 파동뿐
+드라이버도, 커널도 그 고동의 운명을 알지 못하네
+그저 인터럽트의 구멍으로 흘러들어오는 0과 1의 나열들
+물리적 실존만이 있을 뿐
+
+FSlateApplication의 문지기, GameViewportClient라는 통로
+Subsystem - The Librarian of Context
+사서는 IMC의 ActionKeyMapping의 책장을 넘긴다
+
+Trigger라는 시간의 판관이 모래시계를 뒤집으며 판결한다
+비로소 파동은 Input Action이라는 영혼으로 승천하네
+승천한 영혼은 UPlayerInput이 가동하는 InputStack의 폭포를 내려가네
+InputComponent라는 이름의 구도자들
+자신과 같은 낙인을 가진 영혼이 지나가기를 기다리네
+마침내 낙인이 맞물리는 순간
+Chain of Responsibility의 연쇄는 멈추고, 최초의 파동은 Resolve되어 
+AActor는 춤을 시작한다
+
+---
+
+A key means its function
+in 'W' plastic is crystallized a forward-motion 
+
+To ask "what does W mean?" is to receive one answer
+for every possible world
+
+A key has no being-in-itself. 
+A key does not have meaning in itself.
+'W' is not a meaning by its whole alone, but an element in a chemistry
+
+---
+1
+the deliberate void
+Where Old carved meanings into stone
+New separated IA_Jump, IA_Shoot, IA_Crouch
+You will find no mention of "W", 
+
+2
+What Remains When Details/Physicals Are Removed
+
+3
+the sewers beneath Paris - vast, essential, invisible
+InputSubsystem and its ProcessInputStack, 
+
+4
+The player experiences only:
+intention -> finger -> world
+The twelve layers vanish like scaffolding after the cathedral is built.
+
+5
+Chain of Refusal
+Each node in the chain says "not for me"
+and pass the responsibility onward
+a delegation through disinterest, choices not to consume
+
+IMC_Menu speaks first: "E means Confirm, and I consume it.
+IMC_Dialogue never gets to speak. IMC_OnFoot never gets to speak.
+
+6
+Trigger
+It does not decide if you pressed the button
+It decides the category of your action with temporal interpretation in mind
+
+7
+open IA_Jump.uasset
+  ValueType: Bool
+  Modifiers: []
+  Triggers: []
+  ConsumeInput: True
+No code. No logic. No Jump()
+IA_Jump does not even know what jumping is
+
+The fulfillment comes elsewhere
+InputComponent->BindAction(
+    IA_Jump,         
+    Triggered,       
+    this,            
+    &Character::Jump 
+)
+
+8
+Each frame, the interpretation is born anew dies at frame's end
+No memory, no history, no learning
+Just pure, stateless interpretation,
+60 times per second, forever
+No cruft, no state decay, no bit rot
+
+---
+호출 주체
+
+자신에게 Associated된 LocalPlayer 참조를 통해 Subsystem의 AddMappingContext() / RemoveMappingContext() 호출
+
+---
+
+AMyPlayerController::SetupInputComponent에서 InputComponent 바인딩이 일어난다 (구독 신청서 작성)
+
+  IC->BindAction(IA_Move, ETriggerEvent::Triggered, this, &AMyPlayerController::Move);
+  IC->BindAction(IA_Jump, ETriggerEvent::Started, this, &AMyPlayerController::Jump);
+
+  InputComponent 내부
+  ActionEventBindings = [
+    {
+        Action: IA_Move,
+        TriggerEvent: Triggered,
+        Callback: PlayerController::Move
+    },
+    {
+        Action: IA_Jump,
+        TriggerEvent: Started,
+        Callback: PlayerController::Jump
+    },
+  ]
+
+---
+
+PlayerController는 입력과 게임플레이의 경계
+
+(IA_Move, Vector2D) = >  (AddMovementInput, Forward/Right)
+-------------------      --------------------------------------
+::SetupInputComponent    ::Move
+
+void AMyPlayerController::Move(const FInputActionValue& Value) {
+    // 1. 입력 해석
+    FVector2D MovementVector = Value.Get<FVector2D>();
+    
+    // 2. Pawn에게 명령
+    if (APawn* Pawn = GetPawn()) {
+        FVector Forward = GetControlRotation().Vector();
+        FVector Right = FRotationMatrix(GetControlRotation()).GetScaledAxis(EAxis::Y);
+        
+        Pawn->AddMovementInput(Forward, MovementVector.Y);
+        Pawn->AddMovementInput(Right, MovementVector.X);
+    }
+}
+
+---
+
+InputComponent는 UActorComponent이다
+UActorComponent는 **Actor에 종속된 기능 단위**이다
+AActor
+    ├─ Component 1
+    ├─ Component 2
+    └─ InputComponent
+
+InputComponent는 동적 바인딩 테이블 (저장소) (능동적이지 않음)
+InputSubsystem이 이 바인딩 테이블을 사용한다.
+
+class UInputComponent {
+  ActionEventBindings
+  BindAction(UInputAction, ETriggerEvent, Callback)
+  ExecuteBindingsForAction(UInputAction, ETriggerEvent, FInputActionValue) 
+}
+
+IA 중심으로 바인딩 → 키(W, A 등)와 완전히 분리됨
+PlayerController의 InputComponent가 상위, Pawn의 InputComponent가 하위
+
+---
+
+InputStack: InputComponent[]
+
+ProcessInputStack에서 Context의 Mapping을 처리할 기회를 각 InputComponent가 가진다.
+
+---
+
+PlayerController 
+PlayerBrain
+
+PlayerBrain::EnterVehicle(vehicle) {
+  // 1. 육체 교체
+  this.ChangeAvatar(vehicle)
+  
+  // 2. 규칙서 교체
+  interpreter = Player.GetInputInterpreter()
+  interpreter.DeactivateRulebook(OnFootRulebook)
+  interpreter.ActivateRulebook(InVehicleRulebook)
+  
+  // 이제 같은 'W' 키가:
+  // OnFootRulebook: "걷기" 
+  // → InVehicleRulebook: "가속"
+}
+
+---
+
+InputComponent
+ActionBinder
+인터페이스: BindAction
+멤버: InputActionEventBinding[] // CallbackTable
+
+---
+
+InputLocalPlayerSubsystem
+ContextManager
+플레이어당 하나
+SituationRulebook 목록 관리
+
+인터페이스: ProcessInputStack(InterpretInput), ActivateRulebook, DeactivateRulebook, 
+
+InterpretInputs(tables) {
+  "현재 상황에서 이 키는 무슨 의도인가?"
+  "이 의도를 구독한 함수는?"
+  "그럼 호출!"
+}
+
+---
+
+Input Action
+Intent
+
+---
+
+Input Mapping Context
+SituationRulebook
+특정 상황(마을, 공항, 메뉴 등)의 입력 해석 규칙
+여러 ActionKeyMapping를 담는 컨테이너
+
+---
+
+Input Modifiers
+ValueTweaker
+
+---
+
+Input Triggers
+
+---
+
+ActionKeyMapping
+IMC 안의 개별 항목
+  연결된 Intent
+  ValueTweaker 리스트
+  PressJudge 리스트
+
+---
+
+PlayerInput
+InputProcessor
+
+PlayerController이 소유
+
+
+---
+---
+---
+---

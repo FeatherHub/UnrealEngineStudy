@@ -1,0 +1,535 @@
+
+“죽은 리스너에게 신호 안 가게” 하는 핵심 안전장치
+수명 안전(lifetime safety) = 실시간 게임에서 필수인 신뢰성 계층
+  구독자가 죽었는데 발행자가 나중에 Broadcast하면?
+  “바인딩 대상의 수명(lifetime)을 어떻게 안전하게 다루냐”
+  단순한 “메모리 누수 방지”가 아니라, 변화 전파 과정에서 죽은 리스너를 자동으로 격리하는 survival 메커니즘
+  60~120 FPS에서 단 한 프레임의 크래시도 용납하지 않는다.
+
+Delegate.AddUObject
+Delegate.AddWeakLambda
+  this가 파괴되면 자동으로 unbind됨
+  이벤트 호출을 자동으로 방지
+  Weak 포인터 기반
+
+Delegate.AddRaw
+  수동 unbind 필요 경고
+  극한 성능을 위한 선택지
+
+---
+
+function
+=>
+valuization of function
+=>
+callback
+=>
+event system
+  단순한 callback을 넘어서 "무언가 일어났다"는 semantic을 표현
+  시스템은 중앙 통제에서 분산 조율로 이동
+  발신자는 “무슨 일이 일어났는지”만 외치고, 리스너는 각자 자신의 맥락에서 해석
+
+---
+
+선언 단계
+  DECLARE_*_DELEGATE로 SYMBOL + TYPE(RET_TYPE + PARM_LIST)를 정의
+바인딩 단계
+  객체와 함수를 연결 (Bind, Add, AddDynamic 등)
+호출 단계
+  단일 실행(Execute) 또는 방송(Broadcast)
+
+---
+
+Coupling
+
+Intuition, Concept
+  얽힘의 이미지
+  강한 결합, 약한 결합
+
+척도 Measurement
+  A가 B의 부분들(Specificities)에 대해 알고 있다
+  B에서 A로 ‘정보가 얼마나 많이 들어오는가’
+  "정보의 누출량", "정보 누출의 분류"
+
+Decoupling
+  발신자는 수신자가 누구인지 전혀 몰라도 됨
+  수신자도 발신자를 몰라도 됨
+
+Reusability
+  다른 단위와 조합 가능해야함 composability
+    각각의 단위는 직교적/Orthogonal 해야함 (다른 것과 엮여 있어서는 안 됨)
+    composability 붕괴하는 상황 - 어떤 것을 compose 했는데 전체가 이상해짐 (부분의 합이 안 됨)
+
+---
+
+1 Coupling
+독립적 실체 (Ousia) 냐 부수적 속성 (Property, Accident)이냐
+하나의 모듈이 다른 모듈의 Specificities에 의존한다는 것은 
+그 모듈이 더 이상 스스로 존재하는 것이 아니라 다른 모듈의 부수적 속성이 되어 버린다는 것이다.
+
+양자역학의 얽힘(entanglement)처럼, 관찰(변경)하는 순간 상대방의 상태까지 즉시 결정된다.
+그런데 변경의 경우, syntax 수준이 그 영향을 못 따라가면 그 의존하고 있던 모듈은 정체성을 유지할 수 없게 된다. (수동적 동기화)
+
+2 Measurement
+상호 존재 침투 정도(mutual ontological penetration)
+  한 개인가? 두 개인가? 
+  코드 상으로는 두 개인데, 정보존재론적으로는 한 개... (정보상/의미상 존재와 코드 상 존재)
+  코드 상 존재 2개가 정보존재론적으로 서로 얼마나 얽혀있는가?
+    많이 얽혀 있음 -> 코드 상 두 개이지만 정보존재론적으로는 한 개임
+      거짓된 독립성
+    별로 안 얽혀 있음 -> 코드 상 두 개이고 정보존재론적으로도 두 개임 : 일치
+      충실한 독립성
+
+3 Decoupling
+창 없는 모나드(windowless monads)
+각 모듈은 자기 완결적인 작은 우주이며, 외부 세계를 전혀 ‘보지’ 않지만, 
+미리 조율된 조화(pre-established harmony)— 즉 인터페이스 — 를 통해 완벽하게 공명한다.
+
+4 Composability / Reusability
+부분이 전체를 왜곡 없이 구성할 수 있는 우주의 법칙
+코드의 결합법칙(associative), 항등원(identity), 역원(Inverse), ...
+
+---
+
+1
+하나의 것이 다른 것의 Specificities(내부 세부사항)를 알아야만 존재할 수 있다면,
+그것은 독립적인 실체가 아니다. 그것은 그림자(Accident, Contingency)다.
+
+2
+얽힌 두 입자는 더 이상 두 개가 아니라, 하나의 파동함수로 강등된다.
+B의 구현 변경에 따라 A가 깨지는 순간,
+A와 B는 코드상으로는 두 파일이지만, 존재론적으로는 이미 하나가 되어 버렸다.
+
+3
+windowless monad + pre-established harmony
+“서로 모른다”가 아니라
+서로를 알 필요가 전혀 없는 상태
+
+은하 A는 은하 B의 내부 별자리를 알지 못한다.
+그저 중력(인터페이스)이라는 pre-established harmony만 있을 뿐이다.
+법칙은 결코 내부를 들여다보지 않는다.
+  그저 그 인터페이스가 있는지만 본다.
+
+4
+그 모듈의 본질
+미래의 자유
+앞으로 어떻게 변할지 아직 결정되지 않은 가능성의 집합
+likely-to-change design decision
+
+내 예측 안에 갇힌 고정된 속성이 되어 버린다.
+
+5
+진정한 독립이란 형태적 존재의 개수와 실재적 존재의 개수가 정확히 일치하는 상태
+  거짓된 독립성
+
+---
+
+복잡성, Decoupling, Composability (Reusability)
+
+“A를 보면 B가 거의 결정된다” → 두 모듈은 열역학적으로 하나의 거대한 마이크로스테이트로 수렴한다.
+B가 바뀌면 A가 자동으로 따라 바뀌게 됨 => 코드상에서 “수동적 동기화” 필요
+  변경 한 번이 시스템 전체 엔트로피를 재배분
+
+“형태적 엔트로피(파일 개수)는 2인데, 실재적 엔트로피(독립 상태 공간 크기)는 1”
+유지보수 지옥의 열역학적 원인
+거짓된 독립성은 엔트로피 계산을 속이는 사기 행위다.
+
+최소한의 “채널 용량”만 사용해 정보를 전달
+  인터페이스(중력, 이벤트, 메시지) = 저엔트로피 신호
+  발신자와 수신자가 서로를 모른다는 것은 상호 정보 I(A;B) ≈ 0이라는 뜻
+
+각 축이 독립적이므로, 전체 상태 공간의 부피(가능한 조합 수)가 최대곱으로 증가
+한 모듈이 다른 모듈의 엔트로피를 오염시키면, 전체 시스템의 가능한 미래 상태 수가 감소
+
+---
+
+살아있는 시스템은 “자기 자신을 생산하는” closed network다
+내부 구성요소(components)가 서로를 계속 재생산하면서 운영적 폐쇄(operational closure)를 유지한다
+시스템은 자신의 구조에 따라 외부 세계의 “입력/출력” - 그 교란을 자율적으로 해석하고 변화한다.
+
+---
+
+여러 층(layer)의 “신호 전달 방식”들이 겹쳐진 스택(아키텍처, 계층, 프레임워크, 서브시스템)
+
+Dynamic Delegate (Reflection 연동)
+  호출 시 리플렉션을 통해 UFunction을 찾아 실행하는 경로가 열려요
+  블루프린트에서 오버라이드되거나 BP 이벤트로 구현된 함수 이 경로를 통해 실행
+    UObject Reflection + UFunction + ProcessEvent
+    
+전역 Delegate 허브
+  플러그인/게임/에디터가 끼어들 수 있게 “훅 포인트”
+  “엔진”을 넘어 “생태계”로
+  FCoreDelegates / FWorldDelegates
+  
+---
+
+[Event Source] (World Tick, Actor, Component, Net, Timer...)
+[Dispatcher / Transport]
+[Listeners]
+
+---
+
+이중화 - 정적(빠름) vs 동적(유연함)
+요구에 맞는 최적화된 타입을 제공
+
+일반 Delegate
+  게임 루프/틱/핫패스에 적합
+
+Dynamic 경로:
+  void UObject::ProcessEvent(UFunction* Function, void* Parms)
+  내부에서 스택 프레임(FFrame) 만들고 파라미터 복사한 뒤
+  Function->Invoke(this, NewStack, ReturnValueAddress)
+
+---
+
+Zoo 
+
+가상 함수 override 중심 이벤트
+  확장 지점이 제한적
+
+이름 기반 이벤트(동적 호출)
+  “이름으로 함수를 찾아 호출”
+
+C++ Delegate
+  타입 안전성을 추가
+
+Dynamic Delegate
+  “느리더라도 연결 가능해야 하는 이벤트”를 따로 체계화
+
+---
+
+Layer 0 :
+  Raw 메모리 레이아웃 
+  포인터 저장과 역참조 (void*)
+  [8 bytes: Object] [8 bytes: Function] [...]
+
+Layer 1 :
+  type-safe storage + dispatch
+  **Uniform interface**: 호출 방식 추상화
+    Type erasure: 다양한 callable을 하나의 타입으로 통합
+  **Type safety**: 컴파일 타임 타입 체크
+  
+Layer 2 :
+  Invocation Lists and Multicast (Broadcast)
+  CompactInvocationList() - Weak reference 추적
+
+Layer 3 :
+  AddUObject
+
+Layer 4 :
+  Dynamic Delegate
+  DECLARE_*_DELEGATE_*
+  Reflection and Serialization 
+
+Layer 5 :
+  Blueprint Event System Integration
+  
+---
+
+델리게이트
+  "어떤 일이 생기면, 여기 적힌 번호로 연락해!"
+  함수 포인터의 변주
+  '누가' 할지는 모르지만 '어떻게' 할지는 정해져 있음 (?)
+
+이벤트
+  광장의 종소리. 
+  종지기는 종을 칠 뿐, 그 소리를 듣고 집으로 갈지 시장으로 갈지는 듣는 사람(Listener)의 몫입니다.
+    종은 종지기만 칠 수 있다.
+
+프로토콜
+  당신이 누군지는 중요치 않다, 내 말을 알아듣는지가 중요하다
+  "너 '데미지'라는 단어 알아들어?"라고 던져보고, 알아들으면 반응하고 아니면 무시합니다.
+  유리병 속의 편지
+  바다에 던져진 편지는 그것을 읽을 수 있는 지식이 있는 사람에게만 유효한 정보가 됩니다
+
+브로드캐스트
+  전파 송신탑과 안테나
+  안테나를 세운 사람들은 다 듣는 겁니다.
+
+---
+
+시스템 내부에서 일어나는 모든 “변화”를 의미 있는 신호로 승격시켜 
+서로 다른 영역(C++, BP, 에디터, 네트워크, 플러그인) 사이를 조율하는 네트워크이다
+
+Semantic Elevation
+  raw function은 결과를 돌려줄 뿐이지만
+  이벤트는 "이 변화가 일어났다"는 맥락과 의도를 얹는다.
+
+다층 전파 스택(Multi-Layered Propagation Stack)
+  OSI 7계층처럼 아래층은 속도와 안전을, 위층은 유연성과 의미를 담당한다.
+  Layer 0~1 (원시 신호층): Raw 포인터 + 타입 안전. 가장 빠른 “전기 신호” 수준.
+  Layer 2 (멀티캐스트층): 한 번의 변화가 여러 곳으로 동시에 퍼지는 “파동”.
+  Layer 3~4 (안전·동적층): Weak 기반 자동 정리. 실시간 게임에서 필수인 신뢰성 계층. 객체가 사라지면 자동으로 신호가 끊어지는 “자동 회로 차단기”.
+  Layer 5 (Reflection층): Dynamic Delegate + Reflection + BlueprintAssignable. 
+
+C++만으로 충분했던 시대 -> 에디터 플러그인, 멀티플레이어, Niagara, GAS까지 모두 연결해야 하는 시대 -> 디자이너와 프로그래머가 함께 만드는 시대
+
+이 다층 신호 전파 시스템 때문에 UE는 하나의 작은 변화가 수천 개의 예상치 못한 아름다운 결과를 만들어내는 살아있는 세계를 만들 수 있다.
+문이 열리는 순간 → 사운드 + 파티클 + AI + UI + 네트워크 + BP 이벤트 + 에디터 프리뷰까지 모두 자동으로 공명한다.
+발신자는 그 결과를 미리 알 필요가 없다.
+그저 “문이 열렸다”는 의미 있는 신호만 던지면 된다.
+
+A가 B.DoSomething(10)을 직접 호출
+A는 “너는 정확히 이 계산을 하고 이 값을 돌려줘”라고 지시
+“이제 너는 UI에 이것을 표시해", “너는 AI를 도망가게 만들어”
+<=>
+A가 OnHealthChanged.Broadcast(10)
+A는 단지 “내 체력이 10으로 바뀌었다”는 사실 + 최소 맥락만 던진다.
+
+---
+1
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnHealthChanged, int32);  // 일반 멀티캐스트
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnHealthChangedDynamic, int32, NewHealth); // BP용
+  단순 포인터가 아니라 “체력 변화 신호”라는 “의미”가 부여
+
+2
+OnHealthChanged.AddUObject(this, &AMyActor::HandleHealthChanged);           
+OnHealthChanged.AddWeakLambda(this, [this](int32 NewHealth) { ... });    
+  내부에서 TWeakObjectPtr를 사용
+
+3
+MySingleDelegate.ExecuteIfBound(10);  
+OnHealthChanged.Broadcast(10);
+  발신자는 “어떤 specific한 모듈이 듣고 있는지” 전혀 모른다.
+
+4
+UPROPERTY(BlueprintAssignable, Category="Events")
+FOnHealthChangedDynamic OnHealthChangedDynamic;
+OnHealthChangedDynamic.Broadcast(10);
+  BP 디자이너는 C++ 코드 안 봐도 “체력 바뀜” 신호를 자기 방식으로 해석할 수 있다.
+  내부적으로는 UObject::ProcessEvent(UFunction*, void*) 호출
+
+5
+“한 번의 Broadcast가 여러 의미 해석으로 퍼지는” 기술적 몸통
+  Layer 2
+  TArray<FDelegateBase> 형태의 Invocation List
+  Type Erasure로 서로 다른 함수 시그니처도 하나의 리스트에 담음
+
+6
+UE 전체가 하나의 거대한 이벤트 버스처럼 동작하게 만든다.
+플러그인, Niagara, GAS, Input System 모두 이 허브를 통해 “엔진이 이런 상태가 됐다”는 신호를 주고받는다.
+
+어디서나 바인딩 가능
+FCoreDelegates::OnPostEngineInit.AddUObject(this, &AMyClass::DoSomething);
+FWorldDelegates::OnWorldInitialized.Add...
+
+---
+
+Delegate
+  Delegate 자체는 “신호”가 아니다. 그냥 연락 도구다.
+  기술적 정체성: “함수를 안전하게 담아두는 타입 안전 컨테이너”
+  “누구에게 연락할지”를 정해 놓는 기계장치
+  단일(Execute) / 멀티(Broadcast) / 동적(Dynamic)으로 세분화(Specialization)
+
+Event
+  특정 일이 일어났다는 신호 그 자체
+  Event는 Delegate를 사용하지만, 의미 승격이 일어난 상태
+
+Broadcast
+  Delegate나 Event의 메서드
+  알림을 동시에 퍼뜨리는 동작
+  Event는 “편지 내용”, Delegate는 “주소록”
+
+Message System
+  채널(태그) + 구조화된 메시지 구조체를 주고받음
+  라우팅이 핵심 (특정 채널로만 보내기, 필터링)
+  Event = “불이 났다”
+  Message = “불이 났고, 위치는 여기고, 크기는 이렇게 크다”
+
+Bus System
+  발신자는 버스에 “게시(publish)”만 하고, 수신자는 버스에서 “구독(subscribe)”만 한다.
+  Bus = 전파탑 (공공 인프라)
+  Delegate/Event = 직접 연결된 전선
+
+---
+
+세계는 변화하는 주체(Subject)와 그 변화를 관심 있게 지켜보는 관찰자(Observer)로 나뉜다.
+주체는 관찰자가 누구인지 몰라도 되고, 관찰자는 주체의 내부를 몰라도 된다.
+한 번의 변화가 여러 곳에 동시에 영향을 미쳐도 시스템이 안정적이다.
+  Broadcast (또는 Notify) → 모든 등록된 관찰자에게 “이 일이 일어났다”는 신호 전송
+  각 관찰자가 자신의 맥락에서 반응
+
+Actor Model
+  발신자와 수신자는 완전히 분리되어 있으며, 채널 태그로만 만난다.
+  메시지는 payload(데이터)를 필수로 가지며, 단순 “일어났다”가 아니라 “이렇게 일어났다”를 전달한다.
+  비동기·지연 처리도 자연스럽게 허용된다.
+
+Bus System
+  세계는 중앙 허브 하나가 모든 통신을 중계한다.
+  시스템이 커질수록 중앙 허브가 스케일링의 핵심이다.
+  발신자가 Bus에 Publish(또는 Post)
+  Bus가 내부 토픽/채널 매칭
+  모든 구독자에게 비동기/동기 전달 (필터·우선순위 적용 가능)
+
+---
+
+A가 B의 내부 명세(Specificities)를 알아야만 작동한다면 이 둘은 정보학적으로 하나의 파동함수로 강등된 상태
+B를 관측(수정)하는 순간 A의 상태가 결정(붕괴)
+
+A와 B는 국소적 상호작용
+A->CallB()->DoSomething();
+// 정보는 '접촉'을 통해 전달됨
+// "A가 B를 직접 건드린다"
+입자는 서로의 위치를 알아야 합니다 (position-dependent).
+
+장 패러다임 (Event System)
+
+// 장 세계관: A는 "장"에 교란을 만듦
+OnHealthChanged.Broadcast(NewHealth);
+
+// 장의 요동(excitation)이 공간 전체로 전파
+// B, C, D는 각자의 위치에서 장의 변화를 감지
+
+// A는 B, C, D의 위치를 몰라도 됨
+// B, C, D는 A의 존재를 몰라도 됨
+
+전자기장 비유:
+├─ 전하(charge) → Event Source (Actor, Component)
+├─ 장(field) → Delegate/Event infrastructure
+├─ 장의 여기(excitation) → Broadcast()
+└─ 다른 전하의 반응 → Listeners
+
+
+
+---
+
+J.L. Austin의 화행론(Speech Act Theory)처럼:
+// 1. Locutionary Act (발화 행위) - "나는 이것을 말한다"
+OnHealthChanged.Broadcast(10);  // 음성학적 발화
+
+// 2. Illocutionary Act (발화수반행위) - "이 말의 의도는..."
+DECLARE_EVENT(ACharacter, FOnDeath)  // "죽음이 일어났음"을 선언
+FOnDeath OnDeath;
+
+// 3. Perlocutionary Act (발화효과행위) - "듣는 자가 어떻게 반응하는가"
+OnDeath.AddUObject(UIManager, &UUIManager::ShowGameOver);
+OnDeath.AddUObject(AIController, &AAIController::CelebrateVictory);
+OnDeath.AddUObject(SoundSystem, &USoundSystem::PlayDeathSound);
+
+Delegate = 발화 가능성의 문법 (grammar of possible utterances)
+Event = 실제 발화된 명제 (uttered proposition)
+Listener = 화용론적 해석자 (pragmatic interpreter)
+
+// 발신자의 세계
+OnQuestComplete.Broadcast(QuestID);  
+// "나는 단지 'Quest X가 완료됨'이라는 사실을 말했을 뿐이다"
+
+// 청자들의 세계
+UI: "아, 그럼 나는 축하 메시지를 보여줘야겠구나"
+AI: "아, 그럼 나는 새로운 퀘스트를 줘야겠구나"
+Sound: "아, 그럼 나는 팡파르를 틀어야겠구나"
+
+// 음성 층위: 그냥 메모리 주소
+void* ptr = 0x12345678;
+
+// 형태소 층위: "이것은 함수다"
+TDelegate<void(int32)> OnEvent;
+
+// 통사 층위: "이것들을 묶어서"
+TMulticastDelegate<void(int32)> OnEvent;
+
+// 의미 층위: "이것은 '체력 변화'를 뜻한다"
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnHealthChanged, int32, NewHealth);
+
+// 화용 층위: "체력이 바뀌었으니, 너희는 각자 알아서 반응해"
+UPROPERTY(BlueprintAssignable)
+FOnHealthChanged OnHealthChanged;
+
+---
+
+// 본래적 존재 (Authentic Being)
+class IndependentModule {
+    // 이 모듈은 자기 자신의 가능성을 가짐
+    // 미래가 열려 있음 (thrown projection)
+    // 자기-투사(Selbstentwurf): 자신의 미래를 스스로 기획함
+    // 공동-존재(Mitsein): 다른 모듈과 공존하지만 그들에게 종속되지 않음
+    void OnEvent(int32 Data) {
+        // 나는 이 신호를 "내 방식대로" 해석한다
+        // 타인의 구체성(Das Man)에 종속되지 않음
+    }
+};
+
+// 비본래적 존재 (Inauthentic Being) - tight coupling
+class DependentModule {
+    OtherModule* other;  // 타인에 의해 규정됨
+    
+    void DoSomething() {
+        // 내가 무엇인지는 other가 결정함
+        // 나는 other의 "도구성(Zuhandenheit)"일 뿐
+        if (other->specificMethod() == 특정값) {
+            // other의 내부 구현에 내 존재가 달림
+        }
+    }
+};
+
+// 세계-내-존재
+OnQuestComplete.AddUObject(this, &UMyModule::HandleQuest);
+
+// 내가 "HandleQuest"를 어떻게 구현할지는
+// 발신자가 아니라 "나"의 존재론적 구조가 결정함
+void UMyModule::HandleQuest(int32 QuestID) {
+    // 이것은 "나의 프로젝트(my project)"
+    // 타인이 규정하지 않음
+}
+
+Event System = 모듈의 본래적 존재 회복
+
+---
+
+Sender → [복잡한 인터페이스] → Receiver
+         ↑
+      Implementation Details
+      (클래스 구조, 메서드 이름, 파라미터 타입...)
+
+Sender → [이벤트] → Receiver
+         ↑
+      최소 시그널
+      (타입 + 파라미터만)
+
+이벤트 = 정보 압축(Information Compression)
+
+---
+
+위상학적 불변량 (Topological Invariants):
+1. 연결성 (Connectivity): 누가 누구와 연결되어 있는가
+2. 분리성 (Separation): 독립적으로 변형 가능한가
+3. 연속성 (Continuity): 변화가 매끄럽게 전파되는가
+
+Event System의 위상학적 성질:
+├─ 호모토피 불변(Homotopy invariant): 
+│   구현이 바뀌어도 (continuous deformation)
+│   "연결 구조"는 보존됨
+│
+├─ 국소적 작용(Local action):
+│   각 모듈은 자기 주변만 봄 (tangent space)
+│   전역 구조를 몰라도 됨
+│
+└─ 층 다발(Fiber bundle):
+│   Base space = Event types
+│   Fiber = 각 이벤트에 바인딩된 함수들
+│   연결(Connection) = Add/Remove 연산
+
+---
+
+**각 층은 다른 종류의 불변성을 보장합니다.**
+```
+Layer 0: 물리적 불변성 (메모리 레이아웃)
+Layer 1: 타입 불변성 (컴파일 타임 체크)
+Layer 2: 구조적 불변성 (1:N 관계 유지)
+Layer 3: 시간적 불변성 (생명주기 안전)
+Layer 4: 의미적 불변성 (직렬화 가능)
+Layer 5: 인터페이스 불변성 (BP 호환)
+Layer 6: 캡슐화 불변성 (접근 제어)
+Layer 7: 전역적 불변성 (시스템 조율)
+```
+
+**이것은 물리학의 대칭성과 보존 법칙과 같습니다:**
+```
+Noether's Theorem:
+대칭성 ↔ 보존 법칙
+
+UE Event System:
+각 층의 추상화 ↔ 각각의 불변량 보존
+```
+
+---

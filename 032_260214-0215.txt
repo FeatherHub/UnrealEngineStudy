@@ -1,0 +1,308 @@
+
+
+---
+
+The Loader component of the Operating System 
+  the entire theater (the RAM)
+  the script (the executable file on your disk)
+  can the performance (the process) begin?
+
+the loader first reads the file's Header
+  Is it compatible with the current CPU architecture?
+  Does the user have the necessary permissions to run it?
+
+the loader sets up a Virtual Address Space.
+  Code Segment, Data Segment, Stack/Heap
+
+modern loaders often use Demand Paging
+  only load parts of the code as they are actually needed
+  
+---
+
+ASLR Address Space Layout Randomization  
+  Relocation
+  adjusts all the internal memory addresses within the code so that they point to the correct new locations in RAM.
+
+"links" them by filling in the jump addresses for functions the game needs to call.
+
+
+---
+---
+---
+---
+---
+
+---
+
+CPU Control Transfer
+  OS는 PC 레지스터의 값을 게임 프로그램의 시작 지점인 엔트리 포인트(Entry Point) 주소로
+  이때부터 CPU는 OS의 코드가 아닌 게임의 코드를 한 줄씩 읽기 시작
+
+C 런타임 (CRT) 초기화
+  실제 엔트리 포인트는 보통 _start 같은 시스템 함수
+  CRT 라이브러리가 전역 변수 초기화, 메모리 힙(Heap) 설정 등을 마친 뒤에야 main 함수를 호출
+
+CRT startup 코드 _start / mainCRTStartup
+  - 스택 설정
+  - 전역 변수 초기화 (static constructors)
+  - argc, argv 파싱
+  - heap 초기화
+
+main() 
+main() return
+
+CRT cleanup (static destructors, atexit 핸들러)
+
+OS에 종료 코드 반환
+
+---
+
+OS는 실행 파일을 로드할 때
+이 프로그램의 첫 번째 함수 entry point
+
+main 콘솔 서브시스템
+  Linux, macOS, 콘솔 기기(PS5, Xbox) 표준
+  Windows에서도 쓸 수 있지만, 콘솔 창(터미널)이 함께 열림
+
+WINAPI WinMain
+  콘솔 창 없이 GUI 앱으로 실행
+  링커에게 /SUBSYSTEM:WINDOWS 플래그 (/SUBSYSTEM:CONSOLE)
+  
+UE는 플랫폼마다 진입점을 따로 정의
+  int32 WINAPI WinMain(...)
+  {
+      return LaunchWindowsStartup(...);  // 결국 FEngineLoop::PreInit() 호출
+  }
+
+  int32 main(int32 argc, char* argv[])
+  {
+      return GuardedMain(...);           // 결국 FEngineLoop::PreInit() 호출
+  }
+
+---
+
+전역 객체가 있으면 main() 전에 생성자가 실행
+컴파일러가 이걸 특수 섹션에 등록
+ELF 섹션:
+.init_array  ← 생성자 함수 포인터 배열
+.fini_array  ← 소멸자 함수 포인터 배열
+
+UE는 전역 정적 객체를 모듈 등록에 활용
+`FEngineLoop::PreInit()`이 실행될 때 이미 모듈 목록이 채워져 있는 이유가 바로 이것 때문
+
+---
+execve Execute Vector with Environment / Unix 
+  성공하면 반환하지 않음
+  호출한 프로세스의 코드 자체가 교체되기 때문
+  실패할 때만 `-1`을 반환
+
+### 교체되는 것 
+가상 주소 공간 전체
+├── .text   (코드)
+├── .data   (초기화된 전역변수)
+├── .bss    (미초기화 전역변수)
+├── heap
+└── stack   (새로 초기화)
+
+### 유지되는 것 
+PID                  ← 프로세스 번호 동일
+파일 디스크립터      ← 열린 파일들 (O_CLOEXEC 없으면)
+시그널 핸들러 일부
+프로세스 그룹 / 세션
+
+**"새 프로그램 실행 = 새 프로세스"가 아니라 "현재 프로세스가 새 프로그램으로 변신"**
+
+---
+
+**mmap()**
+**"이 가상 주소는 이 파일의 이 부분이야"** 라고 매핑만
+실제 물리 메모리 로드는 나중에 page fault 때 demand paging
+
+---
+
+fork() + execve() Unix의 프로세스 생성 패턴
+
+pid_t pid = fork();    
+if (pid == 0) // 자식 프로세스 
+{
+    execve("/usr/bin/ls", argv, envp);  // 새 프로그램으로 교체
+    exit(1); // 여기 오면 execve 실패
+} 
+else // 부모 프로세스
+{
+    wait(&status);     // 자식 종료 대기
+}
+
+쉘 `bash`에서 `ls`를 치면
+bash
+ └─ fork() → bash 복사본 생성
+      └─ execve("/bin/ls") → 복사본이 ls로 교체
+bash (원본)
+ └─ wait() → ls 종료 대기
+
+---
+
+FEngineLoop::Init()
+UEngine::Init()
+UGameInstance::Init()
+
+각 Shutdown과 짝을 이룸
+  
+---
+
+specific CPU instructions
+stored in a structured "container."
+  a format (PE for Windows, ELF for Linux)
+
+
+location
+  memory or register
+
+int x = 3; // Move the value 3 into a some location
+int y = 3; // Move the value 3 into a some another location
+return x + y // put the result in the 'return' register (AX)
+
+mov [rbp-4], 3 ; C7 45 FC 03 00 00 00
+mov [rbp-8], 3 ; C7 45 F8 03 00 00 00
+
+manipulate that stack space,
+
+---
+
+1 hex = 4 bin
+1 byte = 8 bin
+1 byte = 2 hex
+
+15 byte = 30 hex
+15 byte = 120 bin
+30 hex = 120 bin
+
+00FF FFFF FFFF FFFF FFFF FFFF FFFF FFFF
+
+0000 0    0001 1
+0010 2    0011 3
+0100 4    0101 5
+0110 6    0111 7
+1000 8    1001 9
+1010 A    1011 B
+1100 C    1101 D
+1110 E    1111 F
+
+CPU reads the first byte
+determines the length
+"chops" that piece off
+moves the Instruction Pointer to the start of the next chunk
+
+---
+
+Instruction Decoder
+  Opcode Parsing 
+    header
+
+  The "Map" in the Hardware
+    if the decoder sees 0x55, it knows instantly 
+    This is a PUSH instruction, it is exactly 1 byte long. The next instruction starts at the very next byte.
+
+---
+
+Intel/AMD CISC x86-64 architecture
+  variable-length instructions
+  Imagine a 3-byte instruction: [AA BB CC].
+  If the CPU starts at AA, it works fine.
+  If a bug or a hacker forces the CPU to start at BB, the CPU will look at BB and try to find an opcode that matches it.
+
+---
+
+ARM RISC architecture
+mobile processors Apple Silicon M1/M2/M3, Snapdragon
+  Every single instruction is 4 bytes (FF FF  FF FF)
+  it can grab 100 instructions at once and know exactly where each one starts without even looking into
+
+---
+
+DLL Export/Import 
+모듈 시스템에서 클래스를 다른 모듈에서 사용할 수 있도록 
+  Blueprint에서 이 클래스를 사용해야 할 때
+
+if BUILDING
+  ACTIONROGUELIKE_API = __declspec(dllexport)
+else
+  ACTIONROGUELIKE_API = __declspec(dllimport)
+
+다른 모듈에서
+  GetWorld()->SpawnActor<ARogueExplosiveBarrel>();
+  // ↑ 이게 가능하려면 ACTIONROGUELIKE_API가 필요
+
+---
+
+Windows (MSVC)
+  __declspec(dllexport)  
+  __declspec(dllimport)
+  Import library (.lib) 필요
+
+Linux/macOS (GCC/Clang)
+  __attribute__((visibility("default")))  
+  공유 라이브러리(.so/.dylib)는 기본적으로 모든 심볼 노출
+
+---
+---
+---
+---
+---
+---
+---
+
+
+1단계: 핵심 아키텍처 이해 (기초)
+먼저 게임의 기본 구조와 데이터 타입을 파악하세요:
+
+SharedGameplayTags.h/cpp - 프로젝트 전체에서 사용되는 GameplayTag 정의
+RogueGameTypes.h - 공통 데이터 구조체와 열거형
+Core/RogueGameMode.h/cpp - 게임의 진입점과 규칙 관리
+
+2단계: 속성 & 액션 시스템 (핵심 메커니즘)
+게임플레이의 중심이 되는 시스템을 이해하세요:
+
+ActionSystem/RogueAttributeSet.h/cpp - 체력 등 캐릭터 속성 시스템
+ActionSystem/RogueAction.h/cpp - 기본 액션 클래스 (추상 클래스)
+ActionSystem/RogueActionSystemComponent.h/cpp - 액션 관리 컴포넌트 (가장 중요!)
+ActionSystem/RogueAction_ProjectileAttack.h/cpp - 구체적인 액션 구현 예제
+
+3단계: 플레이어 시스템 (사용자 경험)
+플레이어가 어떻게 게임과 상호작용하는지 파악하세요:
+
+Player/RoguePlayerCharacter.h/cpp - 플레이어 캐릭터 (입력 처리, 액션 실행)
+Player/RoguePlayerController.h/cpp - 플레이어 컨트롤러
+Player/RogueInteractionComponent.h/cpp - 상호작용 시스템
+Core/RogueInteractionInterface.h/cpp - 상호작용 인터페이스
+
+4단계: 투사체 시스템 (게임플레이 요소)
+공격과 특수 효과를 이해하세요:
+
+Projectiles/RogueProjectile.h/cpp - 기본 투사체
+Projectiles/RogueProjectileMagic.h/cpp - 마법 투사체
+Projectiles/RogueProjectileBlackhole.h/cpp - 블랙홀 (특수 효과)
+Projectiles/RogueProjectileTeleport.h/cpp - 텔레포트
+
+5단계: AI 시스템 (적 행동)
+적들이 어떻게 움직이고 판단하는지 분석하세요:
+
+AI/RogueAICharacter.h/cpp - AI 캐릭터
+AI/RogueAIController.h/cpp - AI 컨트롤러
+AI/RogueBTService_CheckRangeTo.h/cpp - Behavior Tree 서비스
+AI/RogueBTDecorator_IsLowHealth.h/cpp - Behavior Tree 데코레이터
+AI/RogueBTTask_RangedAttack.h/cpp - 공격 태스크
+AI/RogueBTTask_HealSelf.h/cpp - 치유 태스크
+AI/RogueEnvQueryContext_TargetActor.h/cpp - 환경 쿼리
+
+6단계: 월드 오브젝트 (환경 요소)
+마지막으로 월드의 상호작용 가능한 오브젝트를 살펴보세요:
+
+World/RoguePickupActor.h/cpp - 픽업 기본 클래스
+World/RogueHealthPickup.h/cpp - 체력 회복 아이템
+World/RogueItemChest.h/cpp - 아이템 상자
+World/RogueExplosiveBarrel.h/cpp - 폭발 배럴
+
+7단계: 유틸리티 (보조 기능)
+
+Core/RogueGameplayStatics.h/cpp - 헬퍼 함수들
