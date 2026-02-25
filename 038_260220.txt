@@ -1,0 +1,433 @@
+************
+Tag System
+************
+
+다차원 대상 식별 시스템
+대상의 Tag {경제학적 Tag, 화학적 Tag, 문학적 Tag, 시각적 Tag}
+  사과 {경제학적 Tag, 화학적 Tag, 문학적 Tag, 시각적 Tag}, 
+  연필 {경제학적 Tag, 화학적 Tag, 문학적 Tag, 시각적 Tag},
+  ...
+
+물리 엔진: "이것은 1kg의 구체(Sphere)인가?
+경제 시스템: "이것은 Price.Low인 가치물인가?"
+내러티브 시스템: "이것은 IInteractable한 수집품인가?"
+
+---
+
+FLAT 대상 식별 시스템
+  enum, bool flag vector,
+
+계층형 대상 식별 시스템 (계층적 명명 체계)
+  "A.B.C"
+  State.Debuff.Stun, Team.Blue.Sniper
+
+스마트 물류 태깅 시스템
+  물류 센터의 모든 박스(Actor)에는 여러 개의 **스티커(Tag Container)**
+  단순히 "식품"이라고만 적혀 있지 않고, 식품.냉동.육류 같은 계층 정보
+
+  분류 로봇(로직)은 박스의 내부 내용물을 일일이 확인(Casting)하지 않습니다. 
+  오직 **스티커(Tag)**만 읽습니다.
+
+Hierarchical Query
+  광범위한 체크와 세부적인 체크를 동시에 수행
+  포괄적 규칙: "식품.*" 스티커가 붙은 모든 박스는 냉장 창고로
+  상세 규칙: "식품.냉동.육류" 스티커가 붙은 박스는 영하 20도 칸으로
+
+---
+
+다차원 상태 모델링 도구
+
+---
+
+의존성 절단 도구
+Target.HasTag("Character.Enemy")
+자유로운 문자열 정보사용 (가능한 가장 자유로운 방법)
+
+의존성의 형태 
+
+Cast<AEnemy>(Target)
+
+HasTag("Character.Enemy")
+  include 의존성 없음 - 순환 참조를 원천 배제
+
+---
+
+Class(타입 기반 분류)에 독립적인 분류 축 (Orthogonal - 완전히 분리됨)
+
+Class Type 기반 분류
+  “Type 계층” 기반 분류 차원
+  고정
+
+Tag 기반 분류 
+  "데이터/개념" 기반 분류 차원
+  동적으로 추가/삭제
+  대상의 Class를 몰라도 된다.
+  Target.HasTag(FGameplayTag::RequestGameplayTag("Character.Enemy"))
+
+---
+
+중앙 레지스트리 기반 
+UGameplayTagsManager
+
+Hash화 가능해짐
+정수 기반 비교 가능해짐
+
+중앙 “분류 도감”이 모든 학명을 관리
+
+---
+
+FName 기반
+  interning (string → integer)
+  human-readable & machine-efficient
+
+---
+
+논리 명제 집합 
+
+Actor는 하나의 객체고
+Tag는 그 객체에 대해 참인 명제들의 집합이에요.
+IsEnemy & IsBoss &HasFireShield & IsInvisible
+
+Tag Container
+  Set of predicates that are TRUE for this object
+
+---
+
+Overview
+AMyActor: public AActor, public Contract_A, public Contract_B {
+  Tags: {Enemy, Burning, Flying, Magical}
+  Components: [
+    HealthComponent,      
+    MovementComponent,    
+    WeaponComponent       
+  ]
+}
+
+---
+
+Class Hierarchy
+
+시간성: Static 
+  한 번 결정되면 고정됨
+  시간에 따라 변하지 않음
+
+당신은 무엇으로 되어있습니까? 나는 이런 불변 구조로 되어 있습니다.
+
+정체성은 Tree Hierarchy 속에 있다.
+
+미리 모든 존재의 자리가 define되어 있는 Aspect. 
+
+그 정적/불변 구조를 정의/부여하는 것은?
+ 인프라, 세계, 
+
+객체의 구조적 정체성
+  Stack 메모리 레이아웃
+
+토대
+
+---
+
+Tag System
+
+객체는 속성들의 다발 (Bundle) 이다
+속성들의 조합이 객체다
+
+시간성: 속성들이 시간에 따라 이합집산함
+
+정체성은 현재 속성들의 집합
+  객체를 “무엇인지”가 아니라 “무엇에 해당하는 명제들이 지금 참인가”로 봅니다
+
+당신은 (지금) 어떤 속성들을 가지고 있습니까? 
+  참인 술어 집합이 바뀜
+  이에따라 현재 속성 조합에 따라 통과할 수 있는/block되는 경로(Flow)들이 바뀜
+
+여러 속성들이 교차가 현상적 "본질"이 나타나게/발생되게 한다. (Event: 도래, 사건)
+  객체는 무한 차원의 교차로이다.
+
+그 Tag를 붙였다가 떼었다가 하는 것은?
+  상황
+
+---
+
+Component System
+
+능력(데이터 + 로직)
+  각각이 자율적인 미니-생명 (기관, 장기)
+
+cf. ECS의 극단 (radical decomposition)
+  Entity는 Component 컨테이너를 가리키는 ID일 뿐이다
+  객체는 더 이상 “주인”이 아니라 공동체가 된다.
+
+---
+
+Interface System
+
+시간성
+  정적/불변
+
+polymorphic (하나의 정체성 Handle, 여러 개의 행동)
+  cf. Tag: 해석자
+  c.f. actor->FindComponent<UHealthComponent>()->TakeDamage(10)
+
+---
+
+Comparison
+
+Interface vs Component
+  Component: 구현 공유 가능
+  Interface: 구현 공유 불가능
+
+  Interface: Simple Polymorphism + 계약 정의
+
+Component vs Tag
+  Tag: light-weight attribute flags (true or false)
+  Component: 무거움 (데이터 + 로직)
+
+  Tag: 데이터+로직을 Encapsulate 할 수 없음
+
+Class vs Tag
+  Class: 불변 구조 표현
+  Tag: 구조적 보장 결여
+
+---
+
+Summary
+
+객체는 기본 불변 구조를 가짐 (AActor -> UObject)
+객체는 Tag의 동적 집합 
+객체는 Component의 동적 집합 
+객체는 Interface의 정적 Container 
+
+---
+
+Entropy = log₂(가능한 상태의 수)
+
+임의의 문자열 시퀀스 --- Nominal Type
+n개의 독립 태그 (2^n 조합) --- Class Hierarchy (N)
+
+Low Entropy → High Entropy
+"엔트로피 댐" 건설
+- Class: 최소 엔트로피 (강제된 구조)
+- Interface: 중간 (계약으로 제약)
+- Component: 중간 (조립 규칙)
+- Tag: 최대 엔트로피 (자유 상태)
+
+Class 모든 것이 결정된 질서의 감옥
+Class가 “너는 영원한 적이다”라고 못 박는 순간,
+Tag는 “지금은 적이지만, 상황에 따라 친구가 될 수도 있다”라고 속삭인다.
+
+---
+
+1
+관측 전에 이미 결정됨 (Creation rule/Born rule)
+AActor* actor = SpawnActor<AEnemy>();
+|Enemy⟩ 상태로 붕괴 (collapse)
+
+2 Superposition
+
+객체는 평소에 모든 태그의 가능성을 품고 있는 '확률적 구름' 상태로 존재합니다
+관측 = 태그 쿼리
+if (actor.HasTag("Enemy"))  // 측정 행위
+"Enemy"를 측정 → 붕괴
+쿼리라는 "관측"을 통해 상태 확인 (측정 의존)
+
+---
+
+Idea Trade-Off
+ΔTypeSafety · ΔFlexibility ≥ ℏ
+확실성과 불확실성 (cf. 결정적 vs 비결정적 )
+
+---
+
+Topological Idea
+분리된 경로 vs 연결된 경로
+  ClassA와 ClassB 사이에 경로 있음
+  ClassC와 ClassD 사이에 경로 없음 
+
+---
+ALTERNATIVES
+
+1
+Relational Identity: 당신은 누구와 어떻게 연결되어 있는가
+if (MyActor->HasRelation("Enemy", target))
+
+Actor enemy;
+  그러나 아무도 미워하지 않으면 "적"이 아니다
+  관계 없이는 Enenmy는 존재 불가능
+
+1-2 
+Contextual/Situational Identity (상황적 정체성)
+"당신은 어디에/어떤 조건에 있느냐에 따라 다르다"
+
+Actor {
+  GetIdentity(Context context) {
+    switch(context.Location) {
+        case "PlayerHome":  return "Guest";
+        case "Battlefield": return "Enemy";
+        case "Tavern":      return "Patron";
+        case "Arena":       return "Competitor";
+    }
+  }
+}
+
+Actor.EnterZone(WaterZone) // 수영 능력 활성화, 불 능력 비활성화
+Actor.EnterZone(SacredGround) // 폭력 불가능 상태로
+
+1-3 Narrative/Storied Identity (서사적 정체성)
+Actor {
+    NarrativeRole: {
+      Story: "DragonSlayerQuest",
+      Act: 2,
+      Role: "MiniBoss",
+      Arc: {
+        Introduction: true,
+        Complication: false,
+        Resolution: false
+    }
+  }
+}
+
+모든 객체는 이야기의 "문장"
+
+2
+Historical Provenance "당신은 어떤 과정을 거쳐 여기 있는가?"
+  Actor {
+    Provenance: [
+      {t: 0, event: "Spawned by SpawnerA at Location(10,5)"},
+      {t: 5, event: "Damaged by PlayerWeapon, -20 HP"},
+      {t: 10, event: "Applied buff from AllyB"},
+      {t: 15, event: "Teleported to Location(50,30)"}
+    ]
+  }
+
+actor.GetProvenance().FilterBy(event => event.type == "Damage"); // 누가 나를 때렸는가?
+actor.WasEverAt(ForbiddenZone) && 
+actor.WasAttackedBy(Player) &&
+actor.ReceivedBuffFrom(EnemyBoss)
+
+Provenance: 과거의 궤적, 이력서, 
+
+2-2
+Metamorphic/Phase Identity
+"당신은 어떤 발달 단계에 있는가?"
+
+Actor {
+  LifeCycle: {
+    Stage: "Larva" | "Pupa" | "Adult",
+    Metamorphosis: {
+      From: "Egg",
+      Through: ["Caterpillar", "Chrysalis"],
+      To: "Butterfly"
+    }
+  }
+}
+
+3 
+Teleological Purpose 목적 기반 선언
+
+EnemyA.Purpose = "Kill player";
+EnemyB.Purpose = "Delay player";
+
+엔진이 목적 달성 방법을 결정
+Goal-Oriented Action Planning
+
+4 
+Observer-Relative Identity (관찰자 의존적 정체성)
+"누가 보느냐에 따라 당신은 다르다"
+Actor {
+  Perspectives: {
+    ForPlayer: {Type: "Enemy", Threat: 0.8},
+    ForAllies: {Type: "Friend", Trust: 0.9},
+    ForNeutrals: {Type: "Unknown", Suspicion: 0.5}
+  }
+}
+
+PlayerView->Observe(actor); // → actor는 "Enemy"로 나타남
+AllyView->Observe(actor); // → 같은 actor가 "Friend"로 나타남
+
+if (Merchant.Sample(Player.Reputation["Merchants"]) > 0.5) {
+    GiveQuest();
+}
+
+5 Probabilistic/Statistical Tag
+
+actor.HasTag("Enemy") // binary
+actor.GetProbability("Enemy") > 0.7
+actor.ObserveEvidence("AttackedPlayer");
+
+불확실성의 명시적 모델링
+AI의 "믿음"을 표현
+안개 속 적: 위치가 확률 분포
+
+---
+
+Summary II
+
+여러 개의 고유한 "지식의 질서" 
+
+class Reality {
+public:
+    // 여러 접근 방식 제공
+    Class GetAsClass();
+    TagContainer GetAsTags();
+    ComponentArray GetAsComponents();
+    RelationGraph GetAsRelations();
+    // ...
+    
+private:
+    // 진짜 내부는 접근 불가 (private)
+    // 空, Void , Ding an Sich
+    // 아마도 아무것도 없을 것
+    void* unknowable_essence; // = nullptr
+};
+
+---
+
+LV 1 Flat Tag Container 2^N개의 차이
+  Red,Low,Collectible,1kg,Sweet
+
+LV 2 Tag Container (Hierarchically structured) (boolean flag) 2^N개의 차이 + 구조화
+  Fruit.Apple.Red, Economic.Low, Narrative.Collectible, Physical.Sphere.1kg, Taste.Sweet
+
+LV 3 Tag Container + Quantity (Associated Value) - 무한개의 차이
+  Fruit.Apple.Red: {200,30,50}, 
+  Economic.cost: {300, 'low'}, 
+  Narrative.Collectible: {by: ['good', 'moral']}, 
+  Physical.Sphere: {weight: 1kg}, 
+  Taste: {Sweet: 100}
+
+  FindAll(HasTag("Fruit.Apple.Red") 
+      WHERE ripeness > 150 
+      AND quality > 30)
+
+LV 4 Tag Container + Quantity (Associated Value) - 무한개의 차이 + 의미
+  Fruit.Apple.Red: {200,30,50} // 0~255, RGB
+  Economic.cost: {300, 'low'} // 0~10000, 'low'=0~3333, 'middle'=3334~6666 ... 
+  Narrative.Collectible: {by: ['good', 'moral']} // 'good'의 의미...
+
+---
+
+차이/변화(씨앗, 원인)가 다른 여러 개의 차이/변화(발아, Evolution)를 Drive한다. 
+
+사과객체에 Burning 태그 하나가 "추가되는 순간"
+물리 + 화학 + 마법 + 내러티브가 동시에 반응하며 Event가 터진다
+  
+한 객체의 변화를 여러 객체들이 보고 있다.
+한 객체를 바꾼다는 것은 그 세계에 Broadcast 한다는 것이다.
+여러 객체들이 응답한다. Respond
+각 목소리 Voice는 다시 세계에 Broadcast된다.
+
+ripple effect, harmony, 
+  Wave 1: 직접 청중
+  Wave 2: 2차 청중 (Wave 1의 반응을 듣는다)
+  Wave 3: 3차 효과
+
+---
+
+단순한 "상태 변화"가 아니라 발화 행위이다. (신호)
+
+actor.Tags.Add("Burning")는 발화이다. "나는 지금 불타고 있다!"
+  Event 개념과 밀접한 연관성
+
+
+---

@@ -1,0 +1,29 @@
+const gpt_con = document.querySelector("#thread > div > div > div.flex.flex-col.text-sm.pb-25"); const gpt_items = [...gpt_con.children]; gpt_items.forEach((item, idx) => { if(gpt_items.length-1 != idx)  item.remove()   });
+
+(1) Assertion(단언) = “상태에 대한 명제”
+프로그램의 특정 지점에서 “여기까지 오면 상태는 이런 성질을 가진다”를 문장으로 박습니다.
+이게 코드 이해를 상태공간의 제약으로 바꿔주는 렌즈입니다.
+
+(2) Control-flow graph(CFG) + 프로그램 점(program point)
+코드를 텍스트로 보지 않고 “흐름 그래프”로 보고, 각 노드/에지에 단언을 붙입니다.
+→ 분석/증명/디버깅이 전부 그래프 위에서 일어납니다.
+
+(3) Weakest precondition / Strongest postcondition
+WP(Q, C): “C를 실행한 뒤 Q가 되게 하려면 실행 전 무엇이 필요?”
+
+SP(P, C): “P에서 시작해 C 실행 후 도달 가능한 가장 정확한 조건은?”
+
+(4) Loop variant(종료 측도)
+정확성뿐 아니라 종료까지 보려면 “매 반복마다 줄어드는 자연수 값(variant)”을 둡니다.
+→ 종료 증명은 사실상 “불변식 + 단조 감소” 조합입니다.
+
+(5) Decomposition(분해) / Composition(합성)
+큰 프로그램을 작은 블록으로 쪼개고 각각의 사양을 증명한 뒤,
+
+순차/분기/반복 규칙으로 다시 합성합니다.
+이건 “프로그램 증명 = 모듈 추론”이라는 렌즈.
+
+(6) Safety vs Liveness
+Safety: “나쁜 일이 절대 안 일어난다” (불변식으로 주로 다룸)
+
+Liveness: “좋은 일이 언젠가 일어난다” (종료/진행성)

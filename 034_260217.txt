@@ -1,0 +1,124 @@
+AActor - Grand Crossing
+
+1 World 에 Exist 하는 것
+
+2 TArray<UActorComponent*>
+  GetComponentsByClass()
+  Component 간 관계는 트리 형태로 운영
+    attach를 통해 tree 구조 형성
+    SetupAttachment(), AttachToComponent()
+
+3 Lifecycle
+  3-1 PreInitializeComponents
+    컴포넌트 초기화 전에 액터 차원에서 선행 설정할 기회 (정책/환경)
+    “게임플레이 시작”이 아니라 “초기화 시작”
+    BeginPlay까지 기다리면 늦거나 꼬일 수 있는 종류의 일
+  3-2 InitializeComponents
+    액터가 가진 컴포넌트를 돌면서 InitializeComponent()
+    bAutoActivate, bWantsInitializeComponent
+      컴포넌트는 존재만 한다고 바로 동작하는 게 아니라 
+      활성/초기화를 거쳐 동작 상태로 들어간다
+  3-3 PostInitializeComponents
+    여기서 bActorInitialized = true로 액터를 ‘초기화 완료’ 상태로 확정
+    이 단계가 없으면 “컴포넌트 초기화가 끝났는지”를 각 코드가 제각각 추측
+    => 엔진이 보장하는 경계
+  3-4 BeginPlay
+    “월드가 실제로 시뮬레이션/네트워크/틱을 시작할 준비가 끝났는가”
+    “액터 개인 이벤트”가 아니라 월드/레벨의 시작 상태와 맞물리는 이벤트
+      네트워크/차일드 액터 같은 이유로 지연 가능
+
+4 Network
+  Replication: 서버에 있는 액터의 상태 => 클라이언트에 자동으로 동기화
+  Role: Autonomous Proxy, Simulated Proxy
+  NetMode(NM_DedicatedServer), OnRep_*
+
+5 Integration
+  월드 파티셔닝(Data Layers, Runtime Grids)과 통합
+
+6 Editor Support
+  에디터에서 배치
+
+---
+
+UObject - System-Infra Atom
+
+1 Reflection / Property System 
+  1-1 Object-Oriented Middleware
+    C++이라는 정적 언어 위에 동적인 메타데이터 층을 쌓음
+    코드 생성 기법에 기반
+  1-2 UClass
+  1-3 Unreal Header Tool
+    Pre-processor 단계의 확장
+    컴파일러가 코드를 읽기 전, UHT가 헤더 파일을 분석
+    .generated.h 및 .gen.cpp 파일을 생성
+
+2 GC
+  2-1
+    Mark and Sweep
+    Circular Reference Free
+    Outer 체인
+  2-2
+    TObjectPtr이나 UPROPERTY로 선언된 포인터
+    객체가 파괴되면 자동으로 nullptr로 클린업
+
+3 Serialization
+  다형성 직렬화
+  transient 플래그, 커스텀 Serialize
+  에디터 데이터 -> .uasset 파일
+
+4 CDO (Class Default Object)
+  클래스마다 단 하나의 '기본 객체'를 생성
+  새로운 객체를 만들 때 밑바닥부터 만드는 게 아니라, 이 CDO를 복사
+
+
+---
+
+UWorld  - API Entry Point / System Integration Hub
+  1 
+    UNavigationSystemV1 
+    UAISystem 
+    UNetDriver
+    
+  2 Time
+    GetTimerManager
+    DeltaTime
+    TimeDilation
+  
+  2-2 UWorld::Tick
+    이 시뮬레이션을 한 프레임 전진시켜라
+    물리 스텝 구동 FPhysScene (Chaos/PhysX)
+
+  3 Level
+    World의 조각
+    Persistent Level, Streaming Levels
+    LoadLevel() UnloadLevel() GetCurrentLevel()
+
+  4 게임로직 기반을 중앙에서 수행할 수 있게
+    SpawnActor
+      내부적으로는 NewObject → PostSpawnInitialize → BeginPlay 체인을 관리
+      레벨에 등록
+    DestroyActor
+      GC 대상으로 표시
+    GetActorCount
+    LineTraceSingleByChannel
+    IsServer, IsClient  
+
+  5
+    하나의 프로세스 안에 여러 월드가 공존
+    전역 상태 대신 월드 인스턴스 => 격리를 보장
+ULevel
+UMap
+
+GameInstance
+
+World Partition 시스템
+그리드 기반 셀 로딩과 거리 기반 스트리밍
+기존 레벨 분할(서브레벨) 대신 단일 퍼시스턴트 레벨을 사용
+
+
+---
+UWorldSubsystem
+UWorldSettings 글로벌 옵션
+UActorComponent
+
+APawn, ACharacter

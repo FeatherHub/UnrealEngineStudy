@@ -1,0 +1,174 @@
+single source of truth
+Server-Authoritative 
+
+게임플레이 코드는 "지금 이 코드가 서버에서 도는가, 클라이언트에서 도는가"를 항상 의식한다
+
+Listen Server
+  한 플레이어의 프로세스가 서버 역할을 겸하는 것이고
+
+Dedicated Server
+  렌더링 없이 게임 로직만 실행하는 순수 서버
+
+---
+
+Replication 
+"상태의 동기화"
+서버의 게임 상태를 클라이언트로 "복제"
+
+Actor Replication
+bReplicates = true인 Actor가 스폰되면, 관련(Relevancy) 클라이언트에도 해당 Actor가 생성
+ActorComponent 같은 서브오브젝트도 복제 가능
+
+Property Replication
+Actor 내의 특정 프로퍼티가 변경될 때 클라이언트에 동기화
+UPROPERTY(Replicated) VS UPROPERTY(ReplicatedUsing=OnRep_Function) 
+단순히 값을 받기 VS 값이 바뀌었을 때 시각적/논리적 반응을 트리거하기
+
+---
+
+Remote Procedure Call
+
+ "행위의 요청/통보"
+
+UFUNCTION(Server, Reliable, WithValidation)
+void Server_RequestFire(); // 클라이언트가 "쏘겠다"고 서버에 요청
+
+UFUNCTION(NetMulticast, Unreliable)
+void Multicast_PlayFireEffect(); // 서버가 모두에게 이펙트 재생 통보
+
+---
+
+NetDriver 
+ └─ NetConnection (논리적 세션)
+      ├─ Control Channel (연결 관리)
+      ├─ Actor Channel (Actor별 복제 데이터)
+      └─ Voice Channel (음성 채팅)
+
+**NetDriver**(`UIpNetDriver`)
+소켓 수준의 패킷 송수신
+연결 목록을 들고 tick마다 송수신/복제 플러시를 돌린다
+UDP 기반이며, 그 위에 UE 자체적인 신뢰성 계층 구축
+TCP를 쓰지 않는 이유
+  게임에서는 head-of-line blocking이 치명적
+  패킷 손실 시 재전송 제어를 게임 로직에 맞게 커스텀해야 함
+
+**NetConnection**
+클라이언트-서버 간의 논리적 연결
+서버는 클라이언트 수만큼, 클라이언트는 서버에 대한 Connection 하나를 갖는다.
+네트워크 성질 (재전송, bandwidth, 우선순위)를 채널단위로 제어한다
+
+**Channel**
+Connection의 데이터 스트림 논리적 분리
+
+
+---
+
+네트워크 전송 정책
+
+모든 Actor를 모든 클라이언트에게 매 프레임 복제하는 것은 불가능합니다. 그래서 두 단계 필터링이 있습니다.
+
+**Relevancy**: "이 Actor가 이 클라이언트에게 보여야 하는가?
+거리 기반(`NetCullDistanceSquared`), `bAlwaysRelevant`, `bOnlyRelevantToOwner`, `bOnlyRelevantToOwner` 등의 조건으로 결정
+
+**Priority**: Relevant한 Actor 중에서 제한된 대역폭을 어떻게 분배할 것인가. 
+`NetPriority` 값과 "마지막으로 복제한 이후 경과 시간"을 곱해서, 
+오래 업데이트 안 된 Actor일수록 우선순위가 올라가는 starvation 방지 메커니즘
+
+**Net Update Frequency**: Actor별로 초당 최대 몇 번 복제할지 제한
+멀리 있는 적은 낮은 빈도로, 바로 앞의 적은 높은 빈도로 업데이트
+LOD(Level of Detail) 개념을 네트워크에 적용한 것
+
+---
+
+Ownership 체인
+
+PlayerController (Connection 소유)
+ └─ Pawn (PlayerController가 Possess)
+     └─ Weapon Actor (Pawn이 Owner)
+
+`Client` RPC가 작동하려면 해당 Actor의 Owner 체인을 따라가서 `PlayerController` → `NetConnection`을 찾을 수 있어야 합니다. 
+Owner가 없는 Actor에서 `Client` RPC를 호출하면 아무 일도 일어나지 않습니다.
+
+---
+
+네트워크 가시성 - 프레임워크 수준에서 강제
+
+**GameMode**
+서버에만 존재
+게임 규칙의 SSOT
+
+**GameState**
+모든 클라이언트에 복제
+경기 시간, 점수 등 "모두가 알아야 하는 게임 상태".
+
+**PlayerState**:
+모든 클라이언트에 복제
+각 플레이어의 공개 정보(이름, 점수 등). 
+플레이어가 Pawn을 잃어도 PlayerState는 존속하므로, 리스폰 사이에도 점수가 유지됩니다.
+
+**PlayerController**
+소유 클라이언트에만 복제
+입력 처리와 서버 RPC의 진입점
+
+---
+
+UProperty 리플렉션 인프라를 사용하는 시스템들
+  이걸 레플리케이션 해야 하나?
+  이걸 GC 해야하나?
+  이걸 에디터에 노출해야 하나?
+
+---
+
+CharacterMovementComponent
+Client-Side Prediction + Server Reconciliation 패턴
+클라이언트는 입력을 저장해두고(`SavedMoves`), 서버에서 돌아온 결과와 비교합니다. 
+불일치가 있으면 서버 상태로 되돌린 후, 그 이후의 저장된 입력을 다시 재생(replay)합니다. 
+
+[클라이언트]                         [서버]
+입력 발생 → 입력 전송         ─→   입력 수신 → 권위적 시뮬레이션     
+          → 로컬 예측 실행                       
+                결과 수신     ←─   결과를 클라이언트에 전송
+서버 결과와 로컬 예측 비교
+불일치 시 → 보정(Correction)
+
+---
+
+Gameplay Ability System
+Attribute 변경을 서버 권위로 처리하되, 클라이언트 예측을 허용하는
+예측/롤백 메커니즘을 내장
+`NetExecutionPolicy`: `LocalPredicted`, `LocalOnly`, `ServerInitiated`, `ServerOnly`
+
+---
+
+`FNetworkGUID` 시스템
+**레벨에 미리 배치된 Actor**는 양쪽에 이미 존재하므로, 네트워크 시스템이 서버와 클라이언트의 Actor를 매칭(resolve)
+Level Streaming의 경우 서버가 특정 서브레벨의 Actor를 복제하려 하는데 클라이언트가 아직 그 레벨을 로드하지 않은 경우
+
+---
+
+Replication
+`FArchive` 기반 직렬화에 의존
+`NetSerialize` 메서드 오버라이딩을 통한 직렬화 최적화
+e.g. `FVector`를 full precision(12바이트)으로 보내는 대신 양자화해서 보내는 `FVector_NetQuantize`
+
+---
+
+Replication Graph
+멀티플레이어 게임에서 기본 Relevancy 시스템의 O(N×M) (N=Actor, M=Connection) 복잡도는 감당이 안 됨
+이를 공간 분할 등으로 최적화하
+"어떤 Actor를 어떤 Connection에 복제할지" 결정
+
+---
+
+싱글플레이어 코드를 멀티플레이어로 전환할 때 가장 많이 부딪히는 벽
+
+Authority (SOT) 이 없음 - inconsistent
+특정 클라이언트에만 존재하는 Actor를 참조
+
+---
+
+
+
+---
+---
+---
