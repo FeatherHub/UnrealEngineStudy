@@ -1,0 +1,717 @@
+구호를 원하면 작업장(workhouse)에 들어가서 정해진 노동을 하라
+구호가 ‘밖(현금/현물 지급)’으로 새는(outdoor relief) 것을 줄이기 위한 제도 장치
+부정 수급을 줄이기 위한 인증(verification) 설계
+작업장에 들어오게 만드는 게 억제(deterrent)가 된다”는 생각
+선별을 “면접”으로 하는 게 아니라 “추운 방에서 버틸 수 있나” 같은 스트레스 테스트로 하는 쪽
+
+길버트 법(Gilbert’s Act / Relief of the Poor Act 1782, 1782년)
+그 공동 작업장/구빈원은 원칙적으로 노약자·병자·허약자(impotent poor: elderly/sick/infirm)와 고아(orphan children) 쪽을 위한 공간으로 설계. 작업장을 “문턱”이라기보다 취약 계층 전용 보호소(shelter) + 간호 병동(ward) 쪽으로 재정의해요.
+노동 가능 빈민(able-bodied poor) 은 집에서의 구호(outdoor relief) 또는 지역 내 고용(employment near home) 쪽으로 처리하도록
+
+Speenhamland system, 1795
+입력: 빵값(예: 갤런 로프(gallon loaf) 가격) + 가족 규모
+출력: “이 정도는 벌어야 한다”는 목표 소득
+부족분: 교구의 빈민세(poor rate)에서 **임금 보조(wage supplement)**로 메워줌
+소득 쇼크 흡수장치(shock absorber) “최저선” 아래로 꺼지지 않게 받쳐주는 구조
+  교구가 부족분을 메워주니 고용주가 생계임금(subsistence wage) 아래로 줘도 
+  노동력이 유지되어 사실상 교구가 고용주를 보조하게 된다
+  빈민구제가 결혼·출산을 자극해 인구 압력을 키운다고 봄
+  임금 보조가 근로 의욕과 임금 구조를 왜곡한다
+
+Poor Law Amendment Act 1834
+지원은 주되, 게이트(작업장) 통과를 ‘의도적으로 불편하게’ 설계해서 정말 위급한 경우만 들어오게 하자
+덜한 적격성(less eligibility): 작업장 안의 조건이 바깥의 최하층 노동자보다 “덜 매력적”이어야 한다는 원리
+지원의 ‘체감 비용’을 올려서 남용을 줄이려는 자기부담금(deductible) 설계
+
+Outdoor Relief Prohibitory Order, 1844년
+기본 정책을 ‘deny’로 박고, 예외 요청은 승인 루프로 태워라”
+“금지 기본값”과 현장 현실의 마찰이 누적
+
+정책 문장이 ‘가능한 행정 세계’를 어떻게 자르는지를
+타입 시스템(type system)이 바뀌면 “현실의 데이터”가 바뀌지 않아도 컴파일되는 프로그램의 집합이 달라지는 것
+
+Poor Law Board -> Local Government Board-> Ministry of Health
+1847년 → 1871년 → 1919년
+
+빈민 행정(poor relief)과 공중보건(public health)이 같은 감독 허브
+“빈민/지방행정”보다 “보건”을 중앙 아젠다로 묶어 세우는 느낌
+
+“법(Act)”과 “명령(Order)”의 관계
+**Act(법)**는 운영체제(OS) 자체를 설치/교체
+**Order(명령)**는 그 OS 위에서 내려오는 “규칙 파일 배포”
+Order를 어느 기관이 내렸는지-> 그 시점에 OS가 뭐였지?
+
+**부처 설치(creation)**는 “새 실행 파일을 만든 것”
+
+지방정부법(Local Government Act 1929)
+**빈민법 연합(Poor Law unions)**과 **후견인 위원회(Boards of Guardians)**를 사실상 정리(폐지, abolish)하고 지방자치단체로 기능을 넘기는 전환
+  **카운티 의회(county councils)**와 **카운티 버러(county boroughs)**로
+  같은 구호라도 예산·기준·시설 운용이 지방정부 행정 논리를 타기 시작
+
+National Health Service Act 1946(1946년) 
+
+구호(poor relief)’가 아니라 ‘보편 서비스(universal service)’라는 프레임 자체를 법으로 고정
+
+**국무장관(Secretary of State)**의 의무(duty)
+같은 브랜드의 앱을 OS별로 따로 빌드한 것에 가까워요. UI는 비슷하지만(‘NHS’), 빌드 파이프라인(법률)과 운영 책임선(accountability)이 분리돼 있었던 셈
+같은 “NHS”라도 스코틀랜드는 스코틀랜드 법 체계/행정 체계로 굴러감
+
+---
+584년(6세기) 아우타리 즉위 (Accession of Authari, 584년)
+공작들이 아우타리를 왕으로 선출해 왕권을 복원한 해
+이 선택의 동기는 대체로 “외부 압력(특히 프랑크의 침입 등) 앞에서 
+분권(decentralization) 상태로는 방어·협상이 어렵다”는 문제의식으로 설명됩니다.
+
+Accession of Agilulf, 590년
+결정(decision)과 의식(ritual)이 분리
+투린 공작(duke)이던 아길룰프가 왕으로 선택
+“방패 위로 들어 올리는” 식의 공식 즉위(install/investiture)
+그 왕권이 “사라지지 않고 승계로 이어지는가”
+왕권이 정리된 다음 단계는 “전쟁 모드에서 평시 모드로 얼마나 전환했는가”
+
+전쟁이 계속이면 공급(provisioning) 자체가 랜덤워크가 됨
+협상은 파기·충돌이 가능한 **반복 게임(repeated game)**
+
+휴전(truce) vs 정전(armistice)
+짧은 멈춤 버튼(pause)
+**규칙(룰셋)**과 **연락선(채널)**을 더 갖춘 “임시 운영 규약”
+“인정(recognition) + 구독료 같은 공납(tribute) + 자산 이전(cession)”까지 붙은, 말 그대로 계약서 형태의 평화
+
+롬바르드 관습법을 라틴어로 성문화(codification)한
+Edictum Rothari promulgated, 643년
+보복(feud)에서 배상(compensation) 쪽으로 무게 이동: 전형적으로 웨어길드(wergild) 같은 “금전 배상 규칙”이 강해지면, 싸움이 “끝없는 보복”에서 “정해진 가격표로 종결”되는 쪽으로 유도
+폭력 사건이 “사적 복수”가 아니라 “규정된 벌금/배상”으로 처리되면, 통치 권력이 그 흐름을 세금처럼 흡수할 통로가 커져요.
+
+Battle of Carthage, 698년
+공급지 자체가 사라져서 멈춤/재개 이전에 “유지 비용”이 확 뛰는 전환점
+
+Abbasid Caliphate Emirate of Córdoba
+정권의 정당성을 눈에 보이게 “건축”으로 찍음
+새 정권은 “우리가 여기가 중심이다 symbolic infrastructure”를 보여주는 대형 프로젝트를 원하게 돼요
+다음 단계로 785–786년(8세기) 코르도바 대모스크(Mosque–Cathedral of Córdoba) 건설이 시작
+군대·세금만으로는 “중심”이 부족
+건축 양식으로는 하이포스타일 홀(hypostyle hall)—즉, “기둥 숲(column forest)”
+정당성(legitimacy)의 ‘눈에 보이는 저장소’
+
+해상 약탈이 잦으면 시장은 ‘값’보다 먼저 ‘불확실성(uncertainty)’이 커지는데, 함대는 그 불확실성을 낮춰서 물류와 시장을 다시 예측 가능하게 만들려는 장치
+
+*서프랑크 왕국(West Francia)**이 노르드 세력과 협상해 **노르망디 공국(Duchy of Normandy)**
+같은 바이킹 세계가 한편으로는 **‘약탈(raid)’이 아니라 ‘정착(settlement)’**으로도 굴러간다
+911년(10세기) 사건의 핵심은 “바이킹을 물리쳤다”가 아니라, 약탈(raid) 문제를 ‘영토+의무’ 계약으로 바꿨다는 점이에요.
+완충지대(buffer zone) 논리를 선택
+“적(敵)”을 “경계 수비대(border garrison)”로 재정의
+중앙이 모든 전선을 직접 관리하기보다, 지역 권력에게 권한을 주고 책임을 묶는 방식
+
+'정치 질서의 버전 업'
+왕국 프레임이 제국 프레임으로
+962년 황제 대관(Imperial coronation) — 신성 로마 제국의 기점
+왕권(kingly power)이 ‘로컬 관리자’라면, 황제권(imperial authority)은 ‘상위 인증(legitimacy layer)’이 하나 더 붙은 느낌
+“누가 누구 위에 있나”를 설명하는 상위 프레임
+
+한 번 잡힌 왕조가 계속 이어진다
+봉건 질서(feudal order)
+왕이 모든 걸 직접 통치하기보다, 봉신(vassal)·영주(lord) 네트워크를 상위 규칙(royal framework)로 묶어가는 장기 프로젝트
+
+1016년 크누트 대왕의 잉글랜드 왕 즉위
+후계(승계) 문제가 ‘타이머’처럼 작동
+
+**홀(=재산·권리) 같은 세속적 권한(temporalities)** 홀/왕홀(sceptre)
+**반지와 주교지팡이(ring and crosier)**로 주는 **영적 권한(spiritual authority)**
+“교회가 전권 관리자(admin)냐, 황제가 전권 관리자냐” 싸움이 아니라, 키를 두 개로 쪼갠 구조예요.
+
+---
+규칙을 굴릴 ‘사람’을 표준 생산하는 기술
+관료제의 표준 인력 파이프라인 형성
+교과서·직위·자격의 조합에 의존
+“누가 잘하느냐”보다 “어떤 훈련을 거쳤느냐”가 중요
+
+세금·급료·부채를 계산하는 좌표계가 흔들리면 행정이 ‘계산 실수’가 아니라 ‘세계관 붕괴’처럼 느껴져요. 
+하이퍼피론(hyperpyron)은 좌표계를 다시 고정한 거예요.
+시장에 돌아다니는 저울이 가게마다 다른 상태(=동전 품위가 들쭉날쭉)면 거래가 망가져요.
+눈금이 흔들리면 세금, 급료, 조달, 채무가 전부 같이 흔들려요.
+
+국가가 ‘계산 가능한 세계’를 다시 만든 사건
+세금(조세)·급료·물자 조달을 “무슨 동전으로, 어느 정도 가치로” 계산할지 기준이 서요.
+
+국가 수입·지출을 “감사(audit)” 가능한 형태로 매년 굴려서 기록하는 회계 행정기술
+
+Pipe Roll 1129–1130년
+반복 가능한 연간 프로세스(annual process)로 전환
+“매년 닫는” 습관이 생기면 행정이 안정화
+“지방의 복잡함”을 표준화된 숫자/항목으로 다룰 수 있게 돼요.
+
+1155년부터 1832년까지 이어지되 결락이 극히 적다
+
+1215년 마그나 카르타(Magna Carta)가 던진 “동의”를, 
+  “동의”라는 원칙 선언
+1254년에는 “그 동의를 누가 대표해서 말하나(대표성, representation)”로 한 단계 구체화해요
+그 회의실parliament에 들어올 사람knights of the shire을 **‘선출 절차’로 라우팅(routing)**하기 시작한 거예요.
+이때부터 “동의(consent)”가 단순한 분위기나 관행이 아니라, 대표를 통해 수집되는 절차적 결과
+하원(House of Commons) 요소의 싹
+
+그 구성이 관성(inertia)처럼 반복되는 표준이 된 순간
+1295년 ‘모범 의회(Model Parliament)’**
+다양한 계층(성직자 일부 포함)과 함께, 기사·시민·버지스 등을 포괄하는 구성을 **“이게 이후 의회의 모델”**로
+  동의를 받으려면 이런 구성으로 불러야 한다
+
+**“중요 변경은 (기존 관례대로) 의회라는 합의 파이프라인을 거쳐야 한다”**는 워크플로(workflow)
+House of Lords-성직자(prelates), 백작(earls), 남작(barons), 그리고 왕국 공동체(commonalty / community of the realm)의 동의(assent)
+
+1332년 기사(knights of the shire)와 버지스(burgesses)가 함께 앉아 “하원(House of Commons)”으로 불리기 시작
+1341년은 “그 팀에게 별도 회의실을 주고, 상사(왕·귀족)가 옆에 없을 때도 내부 논의를 하고 결론을 만드는 것”에 가까워요.
+하원의 책임추궁 도구가 발달할 발판
+하원이 내부적으로 정리된 목소리를 만들 수 있어야, 나중에 장관·측근을 겨냥한 절차(예: 탄핵(impeachment))도 “기관의 의사”로 실행할 수 있어요.
+
+이전엔 “왕의 은총/처벌”이 핵심이었다면, 1376년 이후엔 “공적 기관이 공직자를 추궁한다”는 문장이 가능해져요.
+
+하원이 PR의 출발 브랜치(origin branch)**가 되게 만든 사건
+**입구 제어(ingress control)**
+
+1430년 “연 40실링(40 shillings) 가치의 **자유보유지(freehold)**를 가진 사람” 중심으로 카운티(county) 선거권을 제한한 조치
+지역 엘리트(기사·에스콰이어 등)와 **동일한 발언권(voice)**을 갖는 것이 문제
+카운티 정치가 더 **자산 기반(property-based)**으로 기울어요.
+
+1487년 ‘스타 챔버(Star Chamber)’와 연결되는 **특별 재판 메커니즘(special tribunal / council court)**
+“법 집행의 대상”이 사회적 강자까지 확장되는 명분
+취지는 “너무 힘이 세서 일반 법원이 못 건드리는 사람도 건드린다”
+장기적으로는 남용 위험(절차·공개성 문제)도 같이 커짐
+
+수도원 해산(Dissolution of the Monasteries)
+토지·임대료·연금·권리 같은 건 “한 번에 현금으로 떨어지는 보물상자”가 아니라, 
+계약서 더미 + 장부 + 분쟁 + 채권이에요. 
+그래서 1536년에 Court of Augmentations를 만들어 “이 자산들을 접수하고, 임대료를 걷고, 회계감사(audit)하고, 소송을 처리하는 전담 라인”
+
+1554년에 본사 재무팀(엑스체커)로 합쳐서 비용과 중복을 줄이는
+서비스가 많아지면 데이터가 흩어지고 인터페이스가 꼬여요.
+General Surveyors, First Fruits and Tenths 같은 기능들도 엑스체커로 흡수
+
+Vagabonds Act, Poor Law 1572 
+빈민 구제(poor relief)를 “교회 자선”에서 “지역 공동체의 의무”로
+자선함은 “넣고 싶은 사람이 넣는 모금함”에 가깝고, 1572년식 빈민세(poor rate)는 “모든 세대가 내는 관리비”
+가난을 돕는 일이 “착한 마음”의 영역에
+그걸 “지역 예산 항목”으로 내려놓음
+
+치안판사(Justice of the Peace, JP)
+
+---
+
+13세기
+서정시는 “감정의 해상도(resolution)를 올리는 엔진”
+“마음속 로그(log)”를 더 정밀하게 기록
+프로토콜(protocol)
+누가 먼저 요청하고, 어떤 방식으로 예의를 지키고, 거절/보류가 어떤 의미인지가 암묵 규칙으로
+
+Thomas Aquinas의 Summa Theologiae 1265
+신학·윤리·법·인간 심리를 “질문-대답 포맷”으로 정리
+1220년 Snorri Sturluson의 Prose Edda 
+비유·은유·신화 지식이 “어떻게 작동하는지”를 정리
+1298–1299년 The Travels of Marco Polo
+
+14세기(1301–1400년)
+흑사병(Black Death): 유럽에서 1347–1351
+(Hundred Years’ War): 관례적으로 1337년
+(Western Schism): 1378–1417년
+
+전염병·전쟁·교회 분열이 만든 충격을 서사·풍자·내면 서정으로 소화
+사랑·욕망·후회·자기 성찰이 작품의 엔진으로
+**캐릭터의 내적 스탯(양심·불안·욕망)**이 게임을 움직이는 시기로
+
+제프리 초서의 캔터베리 이야기(The Canterbury Tales): 1387
+런던에서 캔터베리로 가는 순례자들
+서로 다른 직업·계층 캐릭터가 한 버스에 탑승해 “각자 에피소드”를 뽑아내는 옴니버스 시리즈
+순례자·농민·상인·성직자 같은 다양한 화자가 전면에
+
+(Sir Gawain and the Green Knight): 14세기 후반
+기사도(chivalry)라는 “규칙 게임”에서, 유혹·명예·자기통제 같은 도덕 퍼즐을 푸는 작품
+
+(El libro del buen amor): 1330년
+하나의 장르가 아니라, 서로 다른 장르 파일을 한 폴더에 넣고 “이 폴더가 말하고 싶은 바를 독자가 조합”하게 하는 모자이크 문학
+
+15세기
+1450년대 인쇄와 책 시장의 등장 (Mainz)
+  문학의 내용이 바뀐다기보다, 독자가 바뀌고(시장), 그에 맞춰 문체·장르가 재정렬
+1476년에 윌리엄 캑스턴(William Caxton)이 웨스트민스터(Westminster)에 인쇄기를 들여온 일
+프랑스어·영어·이탈리아어·스페인어·독일어 같은 속어(vernacular)로 “대형 작품”
+
+1453년 콘스탄티노폴리스 함락
+“새 시대 감각”을 강화
+
+궁정 로맨스가 “이상적 세계의 규칙”을
+“시스템 로그를 그대로 찍어 보여주는 디버그 모드”
+한 시대의 약점을 모아 “보안 감사 리포트”처럼 정리해 조롱
+
+(La Celestina)(1499년)
+서술자가 길게 설명하는 대신, 인물들의 대사만으로 사건이 굴러가는 “스크립트 기반 드라마”
+현실이 더 노골적으로 드러나요.
+
+1496년 (Oration on the Dignity of Man, Giovanni Pico della Mirandola)
+중세가 “정해진 자리표(질서)에 맞춰 인간을 배치”하는 느낌이 강했다면, 
+여기서는 인간을 “업그레이드 가능한 존재”로 다시 모델링하려는 시도
+
+Incunabula, Typography, woodcut, 레이아웃
+
+16세기
+얇은 소책자(팸플릿, pamphlet)
+Reformation 1534년 마르틴 루터 독일어 성경 번역본 
+“인간의 말투로 인간을 해부”하는 글쓰기
+검열(censorship)
+
+1511년 에라스무스의 우신예찬(In Praise of Folly)
+1511년 토머스 모어 utopia
+현실 정치를 직접 비난하기보다 “가상의 섬”이라는 샌드박스를 만들어 **규칙을 바꿔 돌려보는 시뮬레이션(simulation)** 
+1554년 Lazarillo de Tormes picaresque
+영웅 서사가 “고레벨 캐릭터”의 모험이라면, (picaresque)는 “장비도 돈도 없는 캐릭터가 도시를 떠돌며 생존하는 오픈월드(open-world) 플레이”
+1580년 미셸 드 몽테뉴 Essais
+
+17세기
+의미가 바로 드러나지 않는 장치
+고전주의(Classicism) 연극이 ‘좋은 문학’의 규격
+  작가들은 그 규격 안에서 최고의 성능을 뽑아내는 느낌
+한쪽에서는 거대한 종교·우주론을 다룬 서사시가 나오고, 
+다른 쪽에서는 개인의 양심·구원·욕망을 추적하는 글
+
+1605년 스페인
+중세 로맨스가 ‘이상적 게임 규칙’이었다면, 돈키호테는 그 규칙을 현실 맵에 그대로 적용해 생기는 버그 리포트를 소설로 만든 느낌
+
+인생은 꿈이다(1635년) “인간을 한 번 리셋했다가 다시 실행(run)해보는 시뮬레이터” 같은 극
+사건(플롯)을 키우기보다 **사람 마음속 ‘의사결정 트리(decision tree)’**를 정밀하게 클레브 공작부인(
+비극의 한 꼭짓점으로 존 웹스터의 말피 공작부인(1613)
+욕망과 죄책감 같은 내면을 ‘가장 압축된 비극 언어’로 밀어붙임 - 장 라신의 페드르(1677년)
+
+18세기
+public sphere 살롱(salon), 커피하우스(coffeehouse), 잡지·신문(periodical) 같은 공간에서 “읽고 토론하는 습관”
+**장편소설(novel)** “일상의 시간을 담는 그릇”
+혁명 전후의 불안이 고딕 소설(Gothic novel) 같은 분위기를
+Neoclassicism 형식의 단정함, 문장의 균형
+일상 드라마가 사회 전체를 설명하는 도구
+Sturm und Drang, Sentimentalism 
+심리·관계의 잔혹한 해부
+볼테르 — 캉디드 (1759년)
+드니 디드로 — 백과전서 (1751–1772년)
+이 작품은 사회를 비추는 거울인가, 개인을 확대하는 렌즈인가?
+
+19세기
+Romanticism “지도(규칙)”보다 “등반 감각(정서)”을 더 믿는 탐험가가 되는 느낌
+사실주의(Realism)
+  낭만주의가 “드라마틱한 조명”이라면, 사실주의는 “밝은 작업등 아래에서 결함까지 보며 찍는 촬영”
+Naturalism 인간을 환경·욕망·사회 조건 속 ‘실험 대상’처럼 다루려는 경향
+상징주의 Symbolism, Decadent
+**직설(설명)**보다 **암시(상징)**로, “향(이미지·리듬)”으로 의미를 떠올리게 해요.
+
+보바리 부인 — 귀스타브 플로베르 (1857년)
+악의 꽃 — 샤를 보들레르 (1857년)
+
+20세기
+“개인이 세계를 믿는 방식”을 계속 흔들었고
+신문, 라디오, 영화, 대중출판
+이전의 세계관으로는 설명이 안 되는 경험을 대량으로 만들어내요
+서사가 “사건 중심”에서 “의식·지각 중심”으로 이동
+꿈·무의식을 동력으로 삼는 방향
+“규칙을 만들어 창작한다”는 방식
+
+---
+
+원료의약품(API, active pharmaceutical ingredient) 과 첨가제(excipients) 가 전문 제조소(제약/화학 공장)
+  약효를 내는 “핵심 분자”
+  정제로 눌러 모양을 만들고, 잘 부서지게 하고, 안정성을 주는 “보조 재료”
+완제의약품(drug product) 공장에서 정제(tablet)·캡슐(capsule)·시럽(syrup) 같은 “완성품”으로
+약국으로 유통
+
+화학/바이오 공장 API manufacturing site
+(Good Manufacturing Practice) 품질 시스템
+식품의약품안전처, 유럽의약품청
+
+chemical synthesis
+반응기(reactor)에서 단계적으로 분자를 만들어 가요.
+
+발효/바이오(fermentation/biotechnology)
+미생물/세포가 만들어내는 물질을 얻는 방식
+“빵 굽기”처럼, 생물이 만들어내는 결과물을 수확하는 느낌
+
+extraction
+식물/천연물에서 성분을 뽑아 정제하는 경우
+“차(tea) 우려내기”처럼, 원료에서 성분을 끌어내는 느낌
+
+여과(filtration), 분리(separation), 농축(concentration), 결정화(crystallization) 같은 단계로
+원하는 성분만 ‘순도(purity)’ 있게 모아요.
+
+Drug Master File
+
+안정성(Stability) 시간이 지나도 규격을 유지하나?
+동물 투여(in vivo dosing) 비임상(nonclinical) 안전성 평가에 해당
+
+Active Pharmaceutical Ingredient
+therapeutic effect를 실제로 만들어내는 성분
+어떤 생체 표적(target)에 작용하느냐
+“몸에서 특정 수용체에 붙어서 신호를 바꾼다”
+
+reactor “냄비”라기보다 제어 가능한 물리 시스템
+어떤 반응은 열이 나요(발열, exothermic) 양의 피드백 폭주(runaway) 위험
+어떤 반응은 열이 필요해요(흡열, endothermic) 
+---
+
+Computer Numerical Control
+  좌표/속도/깊이 같은 **수치 명령(수치제어 코드, NC code)**으로
+  금속/플라스틱을 **절삭(machining)**해서 원하는 형상을 만드는 공작기계
+APT 시스템(Automatically Programmed Tools) 문서
+  “공구 경로(tool path)를 더 높은 수준에서 기술”하려는 시도
+
+Proportional–Integral–Derivative control
+목표값(setpoint)에 맞추려고, 현재 오차(error)를 보고 조작량(control output)을 자동으로 조절하는 방식
+feedback control, closed-loop control
+계속 보고 조절”이 PID의 본질
+P(비례, Proportional) 
+  오차가 크면 크게, 작으면 작게 조절
+  차가 중앙선에서 많이 벗어나면 핸들을 많이 꺾는 느낌
+I(적분, Integral) 
+  오차가 오래 쌓이면 0으로
+  자동이체가 조금씩 밀리면, 결국 큰 금액이 되어 한 번에 정산되는 느낌
+  **오버슈트(overshoot)** **적분 포화(integral windup)**
+D(미분, Derivative) 
+  “틀어질 ‘속도’를 보고 미리 브레이크”
+  샤워기 온도가 목표에 ‘빠르게 접근’ 중이면, 도착 전에 미리 줄여서 튀지 않게 하는 느낌
+
+---
+1897년 산업 유기합성(chemical synthesis)의 상징 — 아스피린(aspirin)
+  아세틸살리실산(acetylsalicylic acid) 안정적으로 합성했다는 기록
+1932년 합성 항균제(synthetic antibacterial) 프론토실(Prontosil)
+  염료 화학(dye chemistry) → 약
+1937년 “안전 규제”가 제조 기술의 일부가 되기 시작
+  설파닐아미드(elixir sulfanilamide) 참사
+1941년 (penicillin) — 발효의 산업화(industrial fermentation)
+  1928년에 알렉산더 플레밍
+  대량생산을 위한 스케일업이 진행 (deep-tank fermentation)
+  “화학 반응기”와는 다른 축으로, 생물 기반 생산(bioprocess)
+1962년 유효성(efficacy)까지 요구
+  품질=안전+효과
+  분석·시험·임상 데이터와 더 강하게 엮이기 시작
+1963년 완제의약품 GMP가 최종화
+1982년: 재조합 단백질(recombinant protein)
+  바이오제조(biomanufacturing)
+  “발효로 작은 분자 항생제를 만드는 시대”에서 “세포가 단백질 치료제를 만드는 시대”로
+1986년 단클론 항체(monoclonal antibody)
+1990년 국제의약품규제조화위원회(ICH)가 설립
+2004년 PAT(Process Analytical Technology)
+  “만든 뒤 검사”에서 “만들면서 제어”
+  공정 중 센서로 측정하고 제어해서 “실시간 품질(real-time quality)”로 가는 흐름
+
+apothēkē = “저장고/창고(storehouse, repository)”
+apothecarius = “창고지기/상점주인(storekeeper)”
+(특히 향신료·약재를 다루는) 전문 상인/조제자
+  약재(materia medica)를 손질하고, 처방에 맞춰 조제하고, 판매
+
+1617년: 런던에서 약제상이 길드/기관으로 독립
+  Worshipful Society of Apothecaries (왕실 칙허)
+  약 조제 기술과 직능을 공인받음
+  가정의(family doctor) 역할로 확장
+19세기 초 
+  환자를 치료하던 쪽과 조제/제조에 집중하던 쪽이 분화
+  1820년 United States Pharmacopeia가 출범 약전(pharmacopoeia) 표준
+
+“고딕”이라는 말 자체는 르네상스 후기에 이탈리아 비평가들이 “고전(그리스·로마) 스타일이 아닌 중세 양식”
+고트족(5세기)
+고딕 건축(Gothic architecture): 대략 12세기 후반~16세기 (뾰족 아치, 플라잉 버트리스 등)
+고딕 문학(Gothic novel): 18세기 중반(1764년) 이후에 성립한 ‘의도적인’ 문학 양식(중세풍 공간+공포/미스터리+금기)
+  pseudomedieval 레거시 UI 스킨
+  성(castle), 수도원(abbey), 폐허(ruin), 지하실/비밀문
+  상속(inheritance), 가문의 죄, 숨겨진 출생, 문서/유언장
+  유령/저주/악마 같은 초자연
+  sublime, 불안(anxiety), 섬뜩함(uncanny)
+
+---
+15세기
+중세가 의미를 “아이콘”처럼 붙였다면, 
+  길고 유연한 선, 화려한 옷 주름, 금박, 우아한 제스처.
+르네상스는 의미를 “좌표 위의 물체”처럼 배치해 납득
+(oil painting) 기술 금속·천·유리·피부 같은 물질의 표면이 극도로 정밀하게 표현
+
+16세기
+모든 악기(인물·공간·빛)가 “하나의 조화로운 화음”을 목표
+Mannerism 
+  비율이 늘어나고, 자세가 꼬이고, 공간이 불안해져요.
+  “자연스러움”보다 스타일(style) 자체가 전면에
+  도시·조각·건축 프로젝트는 “연극성(theatricality)”이 강하고
+  클래식의 화성 규칙을 잘 알기에, 일부러 텐션을 걸어
+
+17세기
+  **“감각을 압도해 정서를 움직이는 바로크(Baroque)
+    거대함·풍부함·극적 드라마·운동감·긴장·정서적 과잉
+    논리로 설득하기보다 감각의 볼륨을 키워 “아, 느껴진다”를 먼저 만들어요
+  규칙·명료함으로 질서를 세우는 고전주의(Classicism)
+    삼일치(three unities; 시간·장소·행동의 일치) 같은 규범
+    프로토콜(규칙)을 통해 예측 가능한 명료성을
+    “규칙 안에서의 미세한 변주”가 더 예민한 미학이 되기도
+  네덜란드 회화는 “창문 틈의 빛, 방의 공기, 생활의 촉감”을 고해상도로 렌더링해서 감정을 움직여요
+    상징/도덕(바니타스 vanitas) 같은 층위가 섬세하게 들어가기도 해요
+
+18세기
+로코코는 18세기 초 파리에서 시작해 유럽으로 확산
+  가벼움·우아함·곡선적 장식, 친밀감이 핵심 특징
+  “살롱(salon)·출판·비평이 ‘취향(taste)’을 공론화, 리뷰/평점 시스템
+  1757 Of the Standard of Taste 데이비드 흄
+알렉산더 바움가르텐의 『Aesthetica』 1권이 **1750년(1750년)**에
+아름다움 = 정상 작동하는 안정 UI(편안, 조화)
+숭고 = 부하가 걸리는 스트레스 테스트(압도, 경외, 두려움 섞임)
+신고전주의(Neoclassicism): 도덕적 엄숙함과 규칙의 복귀
+  고대 그리스·로마를 모범으로
+  린트(lint) 규칙처럼 “단순·명료·절제”로 도덕적 신뢰를 회복하려는 느낌
+
+19세기
+Romanticism  
+Realism 이상화보다 관찰, 영웅보다 일상/노동/사회 
+Impressionism 대상이 아니라 ‘빛 속에서 보이는 방식’
+Symbolism 외부 사실보다 내면의 진실을 ‘암시’로
+Aestheticism 아름다움 자체, 기능/교훈으로부터의 자율성
+공예미술운동(Arts and Crafts) → 아르누보(Art Nouveau) 
+
+20세기
+Cubism 한 시점으로 고정하지 않고, 여러 관점을 재구성
+  Pablo Picasso 와 Georges Braque
+Futurism 속도·기계·충돌·현대성을 미적 가치로 찬양
+Surrealism 이성/도덕의 검열 이전에, 사고가 움직이는 방식을 예술로 드러낼 수 있나
+  ‘의식적 편집기(editor)’를 끄고, 자동기술(automatic writing)로 원시 출력(raw output)을 뽑아보는 느낌
+
+---
+진핵생물(Eukaryota)
+LECA(Last Eukaryotic Common Ancestor)
+LUCA(Last Universal Common Ancestor)
+미토콘드리아(mitochondria): 동물·식물 모두가 가진 “발전소” 같은 기관
+   내생공생(endosymbiosis) 으로 들어온 세균이 정착한 결과로
+식물 쪽은 엽록체(chloroplast)를 얻음
+  광합성을 하게 된 핵심 기관
+  내생공생(endosymbiosis) 으로 시아노박테리아(cyanobacteria) 계통을 받아들여 생긴 것으로 설명
+동물은 식물보다 균류(Fungi)와 더 가까운 친척
+
+혼합영양(mixotrophy) 생물 유글레나(Euglena)
+산호(coral)는 몸 안에 조류(zooxanthellae 같은 공생조류) 를 키워서 그 조류가 만든 광합성 산물을 받는 공생(symbiosis) 시스템
+어떤 바다민달팽이는 조류에서 엽록체(chloroplast)를 ‘훔쳐’(엽록체 절도, kleptoplasty) 일정 기간 활용하는 사례
+
+동물과 균류가 Opisthokonta 공유 형질
+posterior flagellum “뒤쪽 편모로 추진” 형태
+  식물은 대표 저장 다당류가 전분(starch)인 경우
+  동물·균류는 탄수화물 글리코겐(glycogen) 경향
+현대 진핵세포의 시그니처
+  발달한 세포골격(cytoskeleton)과 동적 구조물
+    액틴(actin) / 튜불린(tubulin) 기반 레일과 모터 단백질
+    세포분열, 물질 이동, 형태 변화의 기반
+  핵을 포함한 막계(endomembrane system)
+    소포(vesicle) 기반 운송
+    골지체(Golgi apparatus)
+  미토콘드리아
+    기본 발전소
+  DNA를 “분리된 방(핵)”에 두고, 전사(transcription)와 번역(translation)을 공간적으로 나누는 기본 구조
+  인트론(intron) + 스플라이싱(splicing) 같은 RNA 가공 체계
+
+DNA=설계도, RNA=작업지시서, 단백질=제품
+유전자는 ON/OFF 스위치가 아니라, 대개는 세기(strength) 와 타이밍(timing) 을 가진 회로(circuit) 처럼 동작
+프로모터(promoter), 인핸서(enhancer), 전사인자(transcription factor), 후성유전(epigenetics) 같은 조절 레이어를 같이
+
+유전자공학의 강력함은 “원하는 위치를 표적화(targeting) 해서 바꿀 수 있다”
+  그 밑바탕이 상보적 결합(complementary binding)
+  CRISPR-Cas9(2012년)
+  염기교정(base editing, 2016년 이후 급성장)
+  프라임 교정(prime editing, 2019년 등장)
+  DNA는 그냥 텍스트가 아니라 “접힌 크로마틴(chromatin) 속 문서”라서, 접근성(accessibility)·수선(repair)·세포주기(cell cycle)에 따라 결과가 달라요.
+알려진 모든 세포 생물(three domains: Bacteria/Archaea/Eukaryota)
+  유전체(genome)의 주된 저장 매체로 DNA를 쓰고, 
+  그 DNA의 기본 염기(base)는 A(adenine)/T(thymine)/C(cytosine)/G(guanine) 네 글자 조합
+  동물(Animals)·식물(Plants)·균류(Fungi) 는 물론이고, 세균(Bacteria)·고세균(Archaea) 까지 전부
+5-메틸시토신(5-methylcytosine) 같은 변형은 “C라는 글자에 악센트를 붙인 것”에 가까움
+
+“T 대신 U”를 쓰는 경우: RNA 유전체(viral RNA genomes)
+  RNA는 기본 염기가 **A/C/G/U(uracil)**이고, **T(thymine)**가 아니라 **U(uracil)**를 써요.
+  박테리오파지(=세균을 감염하는 바이러스, bacteriophage) 쪽 예외
+
+DNA 염기서열(sequence)은 정말로 “A/T/C/G로 이루어진 긴 문자열”
+진핵생물(eukaryote)의 DNA spool 뉴클레오솜(nucleosome)
+  DNA가 히스톤(histone) 단백질 묶음에 감겨 있는 기본 포장 단위
+  “beads-on-a-string(구슬-실)” 모델
+같은 뉴클레오솜이라도 배열과 표지(mark)가 달라지면
+  유크로마틴에서 편집이 더 잘 되고, 헤테로크로마틴에서 덜 잘 된다는 경향
+3차원 접힘(3D folding)이 “폴더/장(chapter) + 하이퍼링크(link)”
+  3차원으로 접혀서 멀리 떨어진 구간이 가까워지기도 해요
+
+후시딘 연고
+Active ingredient 퓨시드산나트륨, sodium fusidate 
+  모체 분자는 **퓨시드산(fusidic acid)**
+  곰팡이(진균, fungus)가 만드는 물질에서 유래
+
+Excipient
+  유동파라핀(liquid paraffin),
+  백색바셀린(white petrolatum/white soft paraffin), 
+  정제라놀린(purified lanolin / wool fat), 
+  세탄올(cetyl alcohol)
+
+목표는 의도적( screening)이었고, 결과물은 꽤 우연적(serendipitous)이었어요
+  수많은 미생물/배양액을 체계적으로 검사하는 스크리닝
+  특정 균주가 완전히 새 분자를 만들었느냐
+배양액이 세균 성장을 막는지 보기
+  황색포도상구균(Staphylococcus aureus)
+  한천 컵-플레이트(agar cup-plate) 확산법
+“그 물질”을 분리·정제해서도 효과가 유지되는지 보기
+  효능이 있는 “혼합물(발효액) fermentation broth”은 수천~수만 종의 분자(당, 지질, 단백질 조각, 색소, 부산물…)가 섞인 “수프”
+  “조각 A/B/C로 나눠서 각각 효능을 재고 → 효능 있는 조각만 더 잘게 나누고 → 반복”
+  **“로그에서 버그 원인 한 줄을 좁히는 과정”**
+황색포도상구균(Staphylococcus aureus)
+  Gram-positive 구균(coccus)
+  포도송이처럼 뭉친 덩어리(grape-like clusters) 모양
+  많은 사람의 코앞(비강, anterior nares), 피부(skin) 같은 곳에 무증상 정착(colonization) 형태로 존재
+피부에 상처가 나거나(trauma), 면역 상태가 흔들리거나(immunocompromised), 의료 환경에서 장치(카테터 등)가 들어가면 **감염(infection)**으로 이어질 수 있어요.
+내성이 생긴 변형으로 메티실린 내성 황색포도상구균(MRSA; methicillin-resistant Staphylococcus aureus) 같은 유형
+
+steroid
+**서로 붙은 4개의 고리(fused four-ring skeleton)**라는 구조적 프레임
+“생명 시스템의 핵심 부품”에 반복해서 쓰임
+  세포막 구성(예: 콜레스테롤 cholesterol),
+  신호 분자(예: 성호르몬, 부신피질 호르몬),
+  소화 관련 분자(담즙산 bile acids)
+
+---
+
+信管(신관) 필요한 때/장소에서 기폭시키는 점화 장치, 한자는 기능적 인상을 주는 표지
+  예측 가능한 연소속도
+  이탈리아어 fuso(“spindle”, 실패/가락) → 라틴어 fūsus(“spindle”) 계열
+  
+도화선(導火線) “불(火)을 이끄는(導) 선(線)" 심지  
+
+vector
+  운반 경로/전달 수단 운반자/나르는 것(carrier)
+  vehere = ‘나르다(carry, convey)’
+
+  추상적 개념
+  1704년
+    방향 있는 선분(Directed segment)”이라는 직관
+    기하학/물리학 직관에서 시작했어요
+  1813년
+    천문학에서 “고정점과 변하는 점을 잇는 선” 의미로 쓰인 흔적
+    복소수(complex number)를 평면에서 **방향 있는 선분(= 화살표)**처럼 보는 기하적 해석(Argand 도식)
+  1835년
+    **등기선(equipollence)**이라는 아이디어
+    “같은 길이+같은 방향이면 같은 것으로 치자”는 동치류(equivalence class) 관점
+    “원점이 어디든 상관없이 같은 화살표면 같은 벡터”라는 생각(자유벡터, free vector)의 씨앗
+  1844년 Grassmann 
+    “벡터가 꼭 2D/3D 화살표일 필요가 없다”는 관점
+    성분이 n개인 대상’도 벡터처럼 더하고 스칼라배할 수 있으면 벡터로 다루자
+    “화살표는 2~3차원 UI일 뿐, 내부 데이터는 n차원 배열”
+  19세기 후반 Gibbs/Heaviside
+    “사원수(quaternion) 방식” vs “벡터해석학(vector analysis) 방식”
+    Giuseppe Peano linear systems
+
+지질(lipid) 어근은 그리스어 lipos = ‘지방(fat)’ 쪽
+  물에는 잘 안 녹고(water-insoluble), 비극성 용매(nonpolar solvent)에는 잘 녹는 경향을 가진 유기물 군
+  지방/기름(fats/oils, triglycerides), 인지질(phospholipids), 왁스(waxes)
+
+색소(pigment) 
+  빛의 특정 파장을 선택적으로 흡수(absorption) 해서 “색”을 만들어내는 물질
+  멜라닌(melanin), 엽록소(chlorophyll)
+
+엽록소(chlorophyll)
+  식물 잎의 녹색 물질
+  chloros(khlōros) = 연녹색/황록색 계열
+  phyllon = 잎(leaf)
+
+흑색소(melanin)
+  Modern Latin형
+  그리스어 melas / melanos(검다, black) + 화학 접미사 -in(물질명에 자주 붙는 형태)
+
+**jacket(재킷)**은 원래 “겉을 둘러싸는 외피(outer layer)”라는 일상어
+  겉껍질이 하는 역할
+  안쪽을 보호하거나, 바깥과의 교환을 조절하는 층
+  
+paraffin
+  parum(매우 조금) + affinis(친화성/반응성)
+  “반응성이 거의 없다(= 다른 것과 잘 ‘친해지지’ 않는다)”
+  **상온·일상 환경에서 ‘상대적으로 둔감’**하다는 쪽이 핵심
+
+---
+시간은 “흐름”이 아니라 “라벨(label) 붙인 자리”로
+인덱스(index)(번호)나 **변수(variable)**로 취급
+정수 시간(discrete time) t=0,1,2,3,…
+  “턴(turn)”이 있는 보드게임
+연속 시간(continuous time): t가 실수(real number)
+  “초 단위로 계속 흐르는 시계”
+
+“0행, 1행, 2행 …”처럼 번호가 붙은 칸이 있고
+규칙이 “다음 행을 어떻게 채울지”를 정해주는 느낌
+
+“시스템(system)이 기억을 가진다”는 말은 수학에서는 보통 이렇게 바꿔 말해요.
+“다음 상태는 현재 상태로부터 정해진 규칙 F로 나온다”
+  xt+1​=F(xt​)
+  “다음 값이 직전 2개 값에 의존”하면: xt+1​=G(xt​,xt−1​)
+이게 상태(state) 또는 상태변수(state variable) 개념
+
+피드백(feedback)
+  시스템이 어떤 출력(output) yt를 내고,
+  그 출력이 다시 입력(input)으로 돌아와서 다음 상태에 영향을 줘요.
+  제어 입력 ut가 있고, 
+    𝑥𝑡+1 = 𝑓 ( 𝑥𝑡 , 𝑢𝑡 ) 
+  그리고 피드백 제어는 보통 
+    𝑢𝑡 = 𝑔 ( 𝑥𝑡 ) (현재 상태를 보고 입력을 결정) 
+  두 식을 합치면
+    𝑥𝑡+1 = 𝑓 ( 𝑥𝑡 , 𝑔 (𝑥𝑡) ) = ℎ ( 𝑥𝑡 )
+  즉 “피드백이 있어도 결국은 ‘상태 업데이트 규칙’ 하나로 합쳐진다”가 수학적 관점이에요.
+수학적 피드백은 발산(diverge)하거나 진동(oscillate)할 수도 있어요. 안정성(stability) 조건이 중요해요.
+
+“선(line)”이 아니라 “원(circle)”로 옮기면 순환이 생겨요
+  순환을 가장 싸게 만드는 방법
+modular arithmetic
+각도는 2π로 모듈러 (각변수, angle modulo)
+  θ≡θ+2π
+각도 θ를 원 위의 점으로 바꿔버리면, 회전이 “그냥 곱셈”이 돼서 아주 아름다워져요.
+단위원 위 점을
+  z=cosθ+isinθ
+로 놓는다.
+회전은 “각도 더하기”인데, 복소수에서는 곱하기로 처리돼요
+  (cosθ1​+isinθ1​)(cosθ2​+isinθ2​)=cos(θ1​+θ2​)+isin(θ1​+θ2​)
+  eiθ=cosθ+isinθ
+
+“감각 세계의 다양성은 어떤 간단한 본(형상)으로부터 설명된다”는 틀 자체가, 공리적 태도를 예고
+  ‘증명 규칙’보다는 ‘존재론적 질서’를 세우는 쪽
+  수학 공리계처럼 기계적으로 굴러가지는 않아요.
+  “기호 조작”으로 완전히 밀어붙이기
+
+--- 
+
+“여러 나눗셈 조건을 동시에 만족하는 수”를 찾고 싶었어요
+“3으로 나누면 2가 남고, 5로 나누면 3이 남고, 7로 나누면 2가 남는 수는?” 같은 문제
+“여러 개의 시계(3시계, 5시계, 7시계)를 동시에 맞추는 퍼즐”
+“무한히 많은 정수”를 “나머지별로 서랍 N개에 분류”하는 느낌
+congruence(合同) 관점
+이 해석만으로는 “왜 곱셈도 자연스럽게 정의되는지(구조적 이유)”가 덜 보일 수 있어요.
+
+단위원(unit circle) 위의 점은 좌표로(x,y)인데, 
+그 점을 각도θ로 매개화(parameterization)하면
+(cos⁡θ,sin⁡θ)로 쓸 수 있어요.
+그리고 **복소수(complex number)**를 “평면의 점”으로 보고 x+iy 형태로 적기로 약속하면,
+(cosθ,sinθ) ⟷ cosθ+isinθ 라고 표현을 선택할 수 있어요.
+
+복소수 x+iy는 사실 “2D 벡터 (x,y)의 포장”
+복소수를 “점/벡터”로 보면, i는 그냥 괴상한 기호가 아니라 ‘90도 회전 연산자’처럼 해석
+
+---
+대칭(symmetry)
+  “대칭”을 할 수 있는 변환들의 집합
+  또 변환(닫힘), 되돌릴 수 있음(역원) 같은 특성
+  메뉴를 조합하면 또 메뉴가 되는 느낌
+
+곡률(curvature)
+  “평평함”의 기준을 잡고, 그 기준에서 얼마나 벗어났는지를 좌표 없이 정의
+
+연결성(connectivity): 모양을 찌그러뜨려도 남는 본질
+
+무작위(randomness)
+  많은 반복에서의 구조를 모델로
+
+요리 레시피를 ‘언어 문법’처럼 만들면, 어떤 요리가 가능한지/불가능한지 말할 수 있는 느낌이에요
+
+“작은 변화 벡터를 받아서 작은 결과 변화 벡터를 내는 장치”
+  Δf≈(어떤 선형 규칙)(Δx,Δy)
+  “작은 입력(조이스틱)을 주면 캐릭터가 얼마나 움직이는지”
+  입력이 커지면(큰 Δx) 선형 근사가 망가지고, 그때는 2차(곡률 정보) 이상이 필요해져요
+
+“gradient(그래디언트) = 가장 빨리 오르는 방향”
+안개 낀 산에서 눈이 아니라 손바닥 촉감으로 경사를 느낀다면, 그래디언트는 “가장 가파른 쪽을 가리키는 나침반” 같은 거예요.
+스칼라장(예: 지형의 고도)에서는 변화가 “방향마다 다르게” 느껴져요.
+
+“경계에서의 합” = “내부에서의 변화”
+(미적분학 기본정리, 그린 정리, 스토크스 정리, 발산 정리…가 한 패턴으로 묶임)

@@ -1,0 +1,167 @@
+Portability(이식성)
+Correctness(정확성/가시성)
+Coordination(조율/단계)
+Productivity(표현/조합성)
+
+C++11 이전
+  동시성 표준이 부재
+  각 OS별 규격의, 다른 API를 사용
+    POSIX Threads (pthreads), Windows API CreateThread.
+    다른 OS로 이식할 때 마다 Adapter (중간 언어) 필요
+      Boost.Thread 같은 라이브러리나 OS 래퍼
+      #ifdef
+  추상 장치 (Abstract Machine)
+    당시 C++ 표준은 '추상 장치'가 단 하나의 실행 흐름만 가진다고 가정했어요
+    즉, 스레드는 표준 입장에서 존재하지 않는 **'유령'**이었죠
+    세상에 오직 **'나(단일 스레드)'**만 존재
+    = 컴파일러는 '스레드'라는 존재를 몰랐습니다.
+      컴파일러는 "이 변수는 나중에 다른 스레드가 바꿀 거야"라는 걸 이해 못 하고 편집을 했어요.
+      => 언제/어떤 조건에서 재배치(reordering)가 허용되는지 규칙을 정의할 필요가 부상
+  
+C++11 2011
+  OS 주도적인 규격에서 독립
+    독자적인 API 규격에 따라 스레드를 생성/제어
+  실행 단위 execution unit
+    std::thread
+    std::this_thread
+      자기 자신에게 명령(잠시 쉬기, 양보하기 등)을 내릴 수 있는 수단
+  동기화 synchronization 도구 - 데이터 경합(Data Race)을 막는 도구
+    Mutual Exclusion
+    std::mutex, std::condition_variable, std::lock_guard, std::unique_lock
+    핵심은 “락이 편해졌다”가 아니라 운영 규칙이 정의되지 않은 세계에서 운영 규칙이 정의된 세계로 전환한 것이에요.
+    한 사람만 있는 세계에서 여러 사람들이 있는 세계로
+  memory model
+    Happens-before라는 엄격한 수학적 규칙
+    서로 다른 코어에서 실행되는 작업 간의 인과관계를 정의할 수 있게 되었어요.
+      컴파일러/CPU의 재배치까지 포함해서
+      “어떤 값이 언제 보였다고 말할 수 있는가” 가시성(visibility)과 순서(order)에 대한 규칙
+    std::memory_order
+  기다림/결과전달 도구 - Task-based 프로그래밍
+    스레드 한 개에서 스레드 간 데이터 전달로 시선이 이동
+    std::promise 
+      생산자
+      "나중에 결과를 줄게"라는 약속
+    std::future 
+      소비자
+      나중에 올 결과를 담을 바구니
+    std::async
+      일꾼(thread)은 네가 알아서 구하고, 나는 결과만 받을게
+    
+C++17 2017 병렬 알고리즘 (Parallelism)
+  Execution Policies
+    before: 1억 개의 배열을 병렬로 정렬하려면 개발자가 직접 데이터를 10개 구역으로 나누고, 스레드 10개를 관리하며, 각 결과를 합치는 코드를 짜야 했습니다
+    내부적인 스레드 풀 관리나 데이터 분할을 라이브러리가 알아서
+    수천 통의 편지를 주소지별로 일일이 분류하다가, 자동으로 분류해주는 스마트 물류 센터 시스템을 도입한 격
+  std::shared_mutex
+    읽기 작업은 여러 스레드가 동시에 할 수 있고, 쓰기 작업만 차단
+  hardware_destructive_interference_size
+    논리만 맞아도 느릴 수 있다
+    캐시 라인 간섭 물리적 요인
+    False Sharing
+
+C++20 2020 구조화(structuring) / structured concurrency(구조적 동시성) 쪽으로 이동
+  Coroutine Framework
+    비동기 흐름을 ‘서술’하는 문법/기계장치
+    co_await, co_return - 코루틴을 만드는 재료
+    Callback Hell
+      전화로 다음 목적지를 계속 알려주는 방식
+      한장의 여행 일정표
+  std::jthread (Joining Thread)
+    스레드 생명주기(lifecycle) 관리
+      스레드가 “어디서 시작했고 어디서 끝나는지”를 코드 구조에 맞추려는 흐름
+      계약서(스코프) 구조에 접붙임
+    jthread는 소멸 시 자동으로 조인하며, 스레드 중단(Stop Token) 기능도 내장
+  동기화 프리미티브 추가 
+    "현장에서 늘 만들던 도구"가 표준으로
+      “단계 맞추기”, “N명 모이면 출발”
+    std::latch 
+      “한 번만” 카운트다운
+      “정상 도착 인원 체크 후 출발” 같은 1회성
+    std::barrier 
+      “매 라운드마다” 만나서 다음 단계
+      “구간마다 집결” 같은 반복
+    std::semaphore 
+      “동시 입장권” 관리
+      “좁은 다리 동시 통과 인원 제한”
+  std::atomic::wait()과 notify_one/all()
+    락보다 가벼운 대기 경로
+  cooperative cancellation의 표준
+    stop_token/stop_source로 강제 중단 대신 “그만하자”는 신호를 전달
+
+C++26 2026 비동기 작업을 그래프처럼 조립(composition)하고 스케줄링하는 표준 어휘
+  핵심은 조합성(composability)
+    “A 끝나면 B, B와 C는 병렬, 다 끝나면 D” 같은 걸 표준 어휘로 만들려는 흐름
+  P2300 std::execution + senders/receivers
+
+---
+
+시간의 증빙 시스템(time & evidence system)
+  서로 다른 장소(코어)에서 일어난 사건(event)이 ‘어떤 순서로’ 서로에게 인정되는가
+    누가 먼저 썼는가?
+    누가 그걸 봤다고 주장할 수 있는가?
+    그 주장이 언제부터 효력을 갖는가?
+  가시성(visibility)과 순서(order)의 문제
+  증빙 가능한 시간선(time line)
+
+C++11 이전 
+  OS API(pthreads, CreateThread)는 있었지만, 표준 세계에서는 공식 기록이 없는 비공식 사건이었죠.
+  공식 시간선이 없는 사회
+  여러 사람이 같은 장부를 쓰는데 공식 도장(증빙 규칙)이 없어서 
+  “내가 먼저 썼다/네가 나중에 봤다”를 법적으로 말할 수 없는 상태
+
+C++11 공식 인과관계(causality)와 증빙 규칙을 만든 헌법 제정 Social Contract
+  1
+    happens-before는 “사건 A가 사건 B보다 먼저라는 주장”을 표준적으로 성립시키는 규칙
+   서로 다른 코어에서 일어난 일을 같은 세계관으로 묶어 말할 수 있게 됐어요.
+  2 동기화(synchronization)는 “공증 도장(notary stamp)”
+    std::mutex, std::condition_variable 같은 도구는 단순 잠금이 아니라,
+    “이 순간부터 이 기록은 사회적으로 효력을 가진다” 같은 공증 행위
+  3
+    std::atomic은 공유 상태를 다루는 최소 단위의 봉인된 상자(sealed box)
+    std::memory_order는 봉인을 언제 어떻게 인정할지(가시성/순서)를 정하는 배송 규칙
+    memory_order_relaxed는 “내용은 배송되지만, 다른 서류들과의 정렬은 보장하지 않는다”
+    release/acquire는 “발송/수령 도장으로 인과선을 만든다”
+    seq_cst는 “사회 전체가 공유하는 가장 강한 단일 질서(거의 ‘공용 달력’)를 강제로 만든다”
+
+C++17 
+  before: 시간선의 법이 제정됨. 개별 사건을 일일이 처리 - 표준화의 근거/밑바탕
+  표준화는 다음 단계인 외주화/선언화의 근거
+    “스레드 10개 만들고, 데이터 나누고, 합치고…” 같은 수작업 대신
+    “이 작업은 대량 처리 라인(par)으로 보내라”라고 선언 Order
+  사회 구조
+    읽기는 다수 동시 허용, 쓰기만 통제
+    “대부분은 읽고 소수만 고친다”
+  hardware_destructive_interference_size
+    논리적으로는 올바르지만 캐시 라인 간섭(false sharing) 같은 물리 요인으로 성능이 무너질 수 있어요
+
+C++20
+  std::jthread
+    스코프(scope) 종료 시 자동 정산(join)
+    stop_token **정리할 시간을 주는 협력적 취소(cooperative cancellation)**
+  사회적 합류 지점(rendezvous) 표준화
+    latch/barrier/semaphore
+  coroutines
+
+C++26 
+  동시성의 **'클라우드화'**
+  작업(Work)은 이제 특정 스레드나 장치에 귀속되지 않습니다. 그래프처럼 조립된 **'의지'**가 되어, CPU든 GPU든 가장 적합한 곳을 찾아 흐릅니다.
+
+---
+
+사건(event)들이 **어떤 인과관계(causality)**로 연결되는지
+전 우주 공통의 전역 시계(global clock)가 없다는 점
+
+각 스레드(thread)는 자기만의 “세계선(worldline)”처럼 **자기 내부 순서(sequenced-before)**는 확실해요.
+서로 다른 스레드 사이에는 아무 조치가 없으면 전역 시간선이 없어요.
+“A가 먼저다/나중이다”를 말하려면, 상대성이 “빛 신호”로 인과를 만들듯이, C++은 **동기화(synchronization)**로 인과를 만들어야 해요.
+
+동기화는 스레드 사이에 인과 링크(causal link)를 깔아주는 행위
+  mutex/unlock는 “이 구간의 기록은 보호됐다”는 공증(notary stamp)
+  condition_variable은 “이 사건이 일어났음을 알림”이라는 통지(notification)
+
+---
+
+모델 (Actor Model): "공유하지 말고 메시지를 보내라"
+  C++의 동시성이 '한 장부를 두고 싸우는 법'을 다뤘다면, 액터 모델은 '편지를 주고받으며 협력하는 법'을 다룹니다. 
+  (Erlang이나 Akka 같은 언어의 기반이죠.)
+  
