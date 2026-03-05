@@ -1,0 +1,428 @@
+UE 네트워크의 가장 기본적인 동작 단위
+RPC, 예측, 스폰 등은 모두 이 기본 흐름 위에 쌓이는 확장
+
+서버에서 Actor의 replicated 프로퍼티 하나가 변경되어 클라이언트에 도착하기까지
+서버에서 AMyActor::Health가 100→80으로 바뀌는 상황
+
+---
+
+UE는 OS의 BSD 소켓 API를 사용
+UDP 소켓이 bind()되어 특정 포트에서 리슨하고, 
+sendto() / recvfrom()으로 데이터그램을 주고받습니다.
+
+TCP의 순서 보장과 재전송은 게임에서 역효과를 냅니다. 
+0.5초 전의 위치 데이터가 재전송되어 도착하는 것보다, 버리고 최신 데이터를 받는 게 낫습니다.
+
+---
+
+UIpNetDriver
+FSocketBSD 위의 첫 번째 추상화
+
+엔진의 TickDispatch / TickFlush 사이클에 맞춰 동작
+
+수신 경로 (TickDispatch): 매 틱마다 소켓에서 대기 중인 모든 패킷을 읽어들입니다
+패킷의 출발지 주소를 보고 어떤 UNetConnection에 해당하는지 찾습니다.
+소켓에서 읽기, Connection으로 분배
+
+송신 경로 (TickFlush): 각 UNetConnection이 이번 틱에 쌓아둔 데이터를 실제 패킷으로 조립해서 소켓을 통해 보냅니다.
+각 Connection의 버퍼를 실제 전송
+
+NetDriver는 "어떤 Actor를 보낼지"를 전혀 모릅니다. 그저 바이트를 주고받을 뿐입니다. 
+관심사의 분리가 여기서 시작됩니다.
+
+---
+
+UNetConnection 
+
+각 클라이언트-서버 연결 하나가 UNetConnection
+신뢰성 계층: UDP 위에 자체적인 시퀀스 넘버링, ACK 추적, 재전송 로직을 구현
+ACK를 받을 때까지 버퍼에 보관하고, 일정 시간 내 ACK가 없으면 재전송
+
+패킷 조립/분해: 하나의 UDP 패킷 안에 여러 Bunch(논리적 데이터 뭉치)가 담길 수 있고, 
+하나의 큰 Bunch가 여러 패킷에 걸쳐 분할(Partial Bunch)될 수도 있습니다.
+
+대역폭 제어: Connection별로 초당 전송 가능한 바이트 수 제한이 있습니다. 
+이 예산을 초과하면 이번 틱에서 전송을 미룹니다.
+
+---
+
+UChannel 논리적 데이터 스트림
+
+Connection 내부에 여러 Channel이 있습니다.
+각 Channel은 독립적인 데이터 스트림이며, 각자의 시퀀스 넘버와 신뢰성을 관리
+
+Control Channel (0번): 연결 핸드셰이크, 로그인, 맵 전환 등. 항상 존재.
+Voice Channel: 음성 데이터 전송용.
+Actor Channel: Actor 하나에 Channel 하나. 이것이 리플리케이션의 실제 통로입니다.
+  우리 시나리오에서 AMyActor의 Health가 바뀌면, 
+  이 Actor에 할당된 Actor Channel을 통해 데이터가 흐릅니다.
+
+서로 다른 Actor의 데이터 스트림을 분리해야 Actor A의 패킷 손실이 Actor B의 업데이트를 막지 않습니다.
+
+---
+
+FRepLayout
+리플렉션 정보를 바탕으로, 복제 대상 프로퍼티들의 메모리 레이아웃을 미리 계산해둔 구조
+"이 클래스의 몇 번째 바이트부터 몇 바이트가 Health이고, 그 타입은 float이다"라는 정보
+
+FRepState / Shadow State 
+각 Connection별로, "마지막으로 이 클라이언트에 보낸 값"의 사본(Shadow Copy)을 유지
+변경 감지는 현재 값과 Shadow를 비트 단위로 비교하는 것
+
+Connection마다 독립적인 Shadow를 유지하므로, 
+클라이언트 A에는 이미 보냈지만 클라이언트 B에는 아직 안 보낸 상태를 자연스럽게 처리
+
+---
+
+변경된 프로퍼티를 FBitWriter(비트 스트림)에 씁니다.
+프로퍼티 인덱스(어떤 프로퍼티인지)와 값을 함께 기록합니다.
+변경되지 않은 프로퍼티는 기록하지 않습니다
+이것이 "델타 직렬화"입니다.
+
+---
+
+AActor::ReplicateActor / NetDriver::ServerReplicateActors
+"어떤 Actor를, 어떤 Connection에, 어떤 순서로 복제할 것인가"
+
+ServerReplicateActors는 매 틱 서버에서 호출
+
+1 
+Actor 목록 구성: bReplicates == true인 모든 Actor를 수집
+NetUpdateFrequency에 따라 "이번 틱에 업데이트 자격이 있는가"를 먼저 확인
+1초에 2번 업데이트하는 Actor는 매 틱 자격이 있는 것이 아닙니다
+
+2 
+각 Connection 순회
+
+2-1
+이 Actor가 이 Connection에 Relevant한가? 
+AMyActor가 bAlwaysRelevant이면 무조건 통과
+아니라면 클라이언트의 ViewTarget과의 거리를 NetCullDistanceSquared와 비교
+
+2-2
+Relevant한 Actor들을 Priority 순으로 정렬
+Priority = NetPriority × TimeSinceLastRep
+
+2-3
+선택된 Actor에 대해 ReplicateActor()를 호출
+변경 감지 → 직렬화가 수행되고, 결과 데이터가 해당 Actor의 Channel로 전달
+
+---
+양쪽 끝단 게임 로직
+
+서버 측 — 값 변경의 시작점
+
+void AMyActor::TakeDamage(float Damage) {
+  Health -= Damage;  // 그냥 값을 바꾸면 됨. 나머지는 엔진이 처리.
+}
+
+서버 코드는 네트워크를 거의 의식하지 않습니다. 
+그저 프로퍼티를 변경하면, 엔진이 다음 리플리케이션 패스에서 변경을 감지하고 전파합니다. 
+
+클라이언트 측 — 값 도착 후
+역직렬화된 값이 클라이언트의 AMyActor::Health에 직접 기록
+그리고
+
+void AMyActor::OnRep_Health() // 클라이언트에서, 새 값이 적용된 후 호출
+{
+    UpdateHealthBar(Health);
+    if (Health <= 0) {
+        PlayDeathAnimation();
+    }
+}
+
+---
+
+클라이언트 A의 캐릭터가 이동하면서 총을 발사하고,
+서버가 이를 검증하여 클라이언트 B의 캐릭터에 데미지를 적용하며
+모든 클라이언트에 이펙트가 재생되기까지
+
+UE 네트워크의 주요 메커니즘이 동시에 작동
+
+Client-Side Prediction, Server RPC, 서버 측 검증과 히트 판정, 
+Property Replication, Multicast RPC, Actor Spawn(투사체), OnRep 콜백, 
+그리고 이 모든 것이 여러 Connection에 걸쳐 서로 다른 타이밍에 전파됩니다
+
+---
+
+Layer 7 (게임 로직)
+
+플레이어가 W키(전진)를 누르고 마우스 왼쪽 버튼(발사)을 클릭
+Enhanced Input System이 이를 캡처하여 InputAction으로 변환
+
+여기서 핵심적인 분기가 일어납니다: 이동과 발사는 네트워크에서 완전히 다른 경로를 탑니다.
+
+이동: CharacterMovementComponent의 예측 경로
+UE에서 가장 정교한 네트워크 코드가 들어있는 컴포넌트입니다
+
+Step 1 — 입력을 FSavedMove로 패키징
+Step 2 — 로컬 예측 실행 
+  `PerformMovement()`가 호출되어 캐릭터가 로컬에서 움직입니다. 플레이어는 지연 없이 반응을 봅니다.
+  [Client A의 로컬 상태]
+  위치: (100, 0, 0) → PerformMovement() → (105, 0, 0)
+  SavedMoves 큐: [..., Move_42(Accel=Forward, DT=0.016)]
+Step 3 — 서버로 이동 전송
+  ServerMove Server RPC를 호출합니다
+  여러 프레임의 입력을 하나의 ServerMovePacked로 압축
+
+발사: 로컬 예측과 Server RPC
+발사는 이동과 다른 경로를 탑니다.
+
+void AMyCharacter::Fire() {
+    // 1. 로컬 예측: 총구 이펙트, 사운드를 즉시 재생 (모든 곳에서)
+    PlayFireEffectLocally();
+    
+    // 2. 클라이언트라면, 서버에 "발사 요청" RPC
+    if (!HasAuthority()) {
+        Server_RequestFire(GetFireTransform());
+    } else {
+        // 서버(Listen Server의 호스트)라면 직접 실행
+        AuthoritativeFire(GetFireTransform());
+    }
+}
+
+---
+
+Layer 5-3: RPC의 직렬화와 전송
+
+Server RPC는 프로퍼티 복제와 다른 경로로 직렬화됩니다.
+
+[FRepLayout::SendCommand]
+  ├─ RPC 식별자 (함수의 FName 해시 → 네트워크 인덱스)
+  ├─ 파라미터 직렬화: FTransform → FBitWriter
+  │    (위치 3 float + 회전 4 float + 스케일 3 float → 양자화 가능)
+  └─ Reliable 플래그 → 신뢰성 계층에 등록
+
+[Actor Channel에 Bunch로 기록]
+  - 이 Bunch의 타입은 "RPC" (프로퍼티 복제와 구분됨)
+  - Bunch 헤더에 bIsReliable, ChannelSequence 포함
+
+[NetConnection의 SendBuffer에 추가]
+  - 같은 틱의 이동 데이터(ServerMovePacked)도 함께 큐잉됨
+  - 하나의 UDP 패킷에 여러 Bunch가 담김:
+    ┌────────────────────────────────┐
+    │ [Bunch: CMC Move Data]         │  ← Unreliable
+    │ [Bunch: Fire RPC]              │  ← Reliable
+    └────────────────────────────────┘
+
+**Reliable vs Unreliable의 실제 차이**: 
+이동 데이터는 Unreliable입니다 — 하나가 유실되면 다음 프레임의 데이터가 대체합니다. 
+반면 발사 RPC는 Reliable입니다 — 유실되면 큰 문제(총을 쐈는데 서버가 모르는 상황)가 됩니다. 
+NetConnection은 Reliable Bunch에 대해 ACK를 추적하고, 일정 시간 내 ACK가 없으면 재전송합니다.
+
+---
+
+Layer 2-1: 패킷 전송
+
+NetDriver::TickFlush()
+  → Connection A의 SendBuffer 조립
+  → PacketHeader 추가 (전체 패킷 SeqNum, 최신 수신 AckNum)
+  → FSocketBSD::SendTo(ServerAddress, PacketBytes)
+  → OS UDP 전송
+
+---
+
+네트워크 전파 — 여기서 일어나는 일들
+
+패킷이 네트워크를 타고 서버로 이동하는 동안, 물리적 지연이 발생합니다. 
+이 지연이 30ms든 150ms든, 클라이언트 A의 캐릭터는 이미 로컬에서 이동하고 있고, 총구 이펙트도 이미 재생 중입니다. 
+서버와 클라이언트 B는 아직 아무것도 모릅니다.
+
+이 시간차가 네트워크 게임의 모든 복잡성의 근원입니다. 
+그리고 UE의 모든 예측/보정/보간 시스템은 이 시간차를 "느끼지 않게" 만들기 위해 존재합니다.
+
+---
+
+Layer 1-2: 서버 패킷 수신
+
+[서버 틱 시작]
+NetDriver::TickDispatch()
+  → FSocketBSD::RecvFrom() — 소켓에서 패킷 읽기
+  → 출발지 주소로 NetConnection 매칭 → Connection A
+  → Connection A에 패킷 전달
+
+---
+
+Layer 3: 패킷 분해
+
+UNetConnection::ReceivedPacket()
+  → PacketHeader 파싱: SeqNum 확인 (순서 역전 감지)
+  → AckNum 처리: 이전에 보낸 Reliable Bunch의 ACK 정리
+  → Bunch 분리:
+      Bunch 1 → ChannelID 매칭 → CMC의 Actor Channel
+      Bunch 2 → ChannelID 매칭 → 같은 Actor Channel (Fire RPC)
+
+---
+
+Layer 4: Channel에서 Actor로 라우팅
+
+UActorChannel::ReceivedBunch()
+  → Bunch 타입 확인
+  → RPC Bunch: 함수 인덱스 역직렬화 → 해당 UFUNCTION 찾기
+  → Property Bunch: FRepLayout으로 전달
+
+---
+
+Layer 5: 역직렬화
+
+RPC의 파라미터가 역직렬화됩니다. 
+FTransform FireTransform이 비트스트림에서 복원됩니다. 
+CMC의 이동 데이터도 마찬가지로 FVector, FRotator, 타임스탬프 등이 복원됩니다.
+
+---
+
+Layer 7: 서버의 게임 로직 실행
+
+void UCharacterMovementComponent::ServerMove_Implementation (
+    float TimeStamp, 
+    FVector_NetQuantize InAccel, 
+    FVector_NetQuantize ClientLoc, 
+    uint8 CompressedFlags
+) {
+    // 1. 타임스탬프 검증 — 너무 오래된 Move 거부
+    // 2. 서버에서 동일한 입력으로 이동 시뮬레이션
+    PerformMovement(DeltaTime);
+    // 3. 클라이언트가 보고한 위치(ClientLoc)와 서버 결과 비교
+    // 4. 오차가 허용 범위 내 → 클라이언트 예측 승인
+    //    오차가 허용 범위 밖 → ClientAdjustPosition Client RPC를 호출
+}
+
+---
+
+bool AMyCharacter::Server_RequestFire_Validate(FTransform FireTransform) {
+    // 안티치트 검증:
+    // - 발사 속도 제한을 초과하지 않았는가?
+    // - FireTransform의 위치가 서버에서 알고 있는 캐릭터 위치와
+    //   합리적인 범위 내인가?
+    // - 탄약이 있는가?
+    float DistSq = FVector::DistSquared(
+        FireTransform.GetLocation(), GetActorLocation());
+    return DistSq < MaxAllowedFireDistance * MaxAllowedFireDistance
+        && CanFire(); // 쿨다운, 탄약 등
+}
+
+Validate가 false를 반환하면 이 RPC는 무시되고, 심한 경우 해당 Connection을 끊을 수도 있습니다.
+검증을 통과하면 서버에서 권위적인 발사 로직이 실행됩니다:
+
+void AMyCharacter::Server_RequestFire_Implementation(FTransform FireTransform) {    
+    // 1. 라인 트레이스 (서버 월드 기준)
+    FHitResult Hit;
+    FVector Start = GetMuzzleLocation(); // 서버가 아는 위치 사용
+    FVector End = Start + GetAimDirection() * MaxRange;
+    
+    bool bHit = GetWorld()->LineTraceSingleByChannel(Hit, Start, End, ECC_Pawn);
+    
+    if (bHit) {
+        AActor* HitActor = Hit.GetActor();
+        // 2. 데미지 적용
+        UGameplayStatics::ApplyPointDamage(
+            HitActor, DamageAmount, GetAimDirection(), Hit, 
+            GetController(), this, DamageType);
+    }
+    
+    // 3. 투사체 스폰 (시각적 표현용, 혹은 물리 기반 투사체)
+    AProjectile* Proj = GetWorld()->SpawnActor<AProjectile>(
+        ProjectileClass, GetMuzzleLocation(), GetAimRotation());
+    // Proj->bReplicates = true → 클라이언트에도 스폰됨
+    
+    // 4. 모든 클라이언트에 이펙트 통보
+    Multicast_PlayFireEffect(GetMuzzleLocation(), GetAimDirection());
+}
+
+서버의 한 틱 안에서, 위 로직의 결과로 다음이 모두 발생합니다
+
+데미지로 인한 Property Replication
+UGameplayStatics::ApplyPointDamag가 궁극적으로 클라이언트 B의 캐릭터의 `Health`를 변경합니다
+이 변경은 즉시 네트워크로 나가지 않습니다.
+
+Connection A에 대해:
+  → Relevancy: A가 B를 볼 수 있는가? → Yes (근처에 있으므로)
+  → Shadow 비교: Health 100 vs 80 → 변경 감지
+  → 직렬화 → Connection A의 Actor Channel → Bunch
+
+Connection B에 대해:
+  → Relevancy: B 자신의 캐릭터 → Always Relevant (소유자)
+  → Shadow 비교: 동일하게 변경 감지
+  → 직렬화 → Connection B의 Actor Channel → Bunch
+  → 추가: bOnlyRelevantToOwner인 프로퍼티도 함께 전송
+
+**같은 프로퍼티 변경이 Connection마다 독립적으로 처리됩니다.** 
+Connection A에는 보냈지만 B에는 대역폭 부족으로 이번 틱에 못 보낼 수도 있습니다. 
+각 Connection의 Shadow State가 독립적이기 때문에 이것이 가능합니다.
+
+---
+
+`SpawnActor<AProjectile>`이 서버에서 호출되면
+투사체 Actor Spawn Replication
+
+1. 서버에서 AProjectile 인스턴스 생성
+2. bReplicates == true → NetworkGUID 할당
+   (FNetworkGUID: 서버-클라이언트 간 Actor 식별용 고유 ID)
+3. 다음 ServerReplicateActors()에서:
+   각 Connection에 대해:
+     → 이 Actor에 대한 Actor Channel이 아직 없음
+     → 새 Actor Channel 열기
+     → 초기 Bunch 전송:
+        ├─ Actor의 Class 정보 (어떤 Blueprint/C++ 클래스인지)
+        ├─ NetworkGUID
+        ├─ SpawnInfo (위치, 회전, 소유자 등)
+        └─ 초기 Property 값들 (속도, 방향 등)
+
+클라이언트
+1. Channel Open Bunch 수신
+2. Class 정보로 해당 클래스 찾기 (이미 로드되어 있어야 함)
+3. SpawnActor() 호출 → AProjectile 생성
+4. NetworkGUID 매핑 등록 (서버의 Actor ↔ 클라이언트의 Actor)
+5. 초기 Property 적용
+6. BeginPlay() 호출
+
+만약 클라이언트가 해당 클래스의 에셋을 아직 로드하지 않았다면? 
+이것이 Async Loading + Pending NetGUID 문제입니다. 
+클라이언트는 에셋 로드가 끝날 때까지 Actor 생성을 지연시키고, 그 사이에 오는 Property 업데이트를 버퍼링합니다.
+
+---
+
+UFUNCTION(NetMulticast, Unreliable)
+void Multicast_PlayFireEffect(FVector Location, FVector Direction);
+
+Multicast RPC의 전파 경로:
+
+서버에서 Multicast 호출
+  │
+  ├─→ 서버 자신에서 실행 (Listen Server인 경우)
+  │
+  ├─→ Connection A의 Actor Channel → Bunch (Unreliable)
+  │     → Client A에서 Multicast_PlayFireEffect_Implementation() 호출
+  │
+  └─→ Connection B의 Actor Channel → Bunch (Unreliable)
+        → Client B에서 Multicast_PlayFireEffect_Implementation() 호출
+
+왜 Unreliable인가?
+패킷이 유실되어 이펙트를 못 봤다면, 0.5초 뒤에 재전송받아 뒤늦게 폭발 이펙트가 재생되는 것보다, 그냥 안 보는 것이 낫습니다.
+
+---
+
+IF 분기 = 관측에 의한 엔트로피 감소. 프로그램이 if (x > 0)을 실행하는 순간, 변수 x의 가능한 상태 공간이 절반으로 줄어듭니다. 이것은 정확히 1비트의 정보 획득이에요. Shannon의 관점에서, 모든 분기문은 엔트로피를 소비하는 측정(measurement)입니다. 그래서 분기가 많은 코드가 "복잡하다"는 직관이 정보 이론적으로 정당화됩니다 — 그 코드는 말 그대로 더 많은 정보를 처리하고 있는 거예요. Cyclomatic complexity가 사실상 프로그램의 정보 처리량의 근사치라는 관점이 나옵니다.
+분기는 “세계의 상태를 둘로 나누는 질문”이에요.
+
+클라이언트-서버 통신 
+네트워크 지연, 패킷 손실, 타임아웃
+채널 용량 이하의 전송률에서는 오류율을 원하는 만큼 낮출 수 있다는 것. 그리고 API 설계에서 "멱등성(idempotency)"이라는 개념은 사실 "같은 메시지를 여러 번 보내도 의미가 변하지 않는" 것인데, 이것은 오류 정정 코드의 반복 코드(repetition code)와 같은 원리
+신뢰성을 얻으려면 보통 **중복(추가 비트)**을 넣어야 해요(체크섬/시퀀스 번호/재전송/정정 부호). “엔트로피를 돈 주고(오버헤드) 안정성을 사는” 느낌이 됩니다.
+
+입력 검증 = 엔트로피 관리. 외부에서 들어오는 입력은 최대 엔트로피 상태입니다 — 어떤 값이든 올 수 있으니까요. 입력 검증은 이 엔트로피를 시스템이 처리할 수 있는 수준으로 줄이는 과정입니다. 타입 시스템이 강력한 이유가 바로 여기 있어요 — 타입은 변수의 가능한 상태 공간(엔트로피)을 컴파일 타임에 제한합니다. 동적 타입 언어에서 런타임 에러가 더 많은 이유는, 엔트로피 감소가 실행 시점까지 지연되기 때문이에요.
+내부 불변식으로의 정규화 + 거부 규칙이에요
+
+
+---
+
+void AMyCharacter::Multicast_PlayFireEffect_Implementation(
+    FVector Location, FVector Direction) 
+{
+    // 로컬에서 이미 예측 재생한 경우 스킵
+    if (IsLocallyControlled()) return;
+    
+    SpawnMuzzleFlash(Location);
+    PlayFireSound(Location);
+    SpawnTracerEffect(Location, Direction);
+}
