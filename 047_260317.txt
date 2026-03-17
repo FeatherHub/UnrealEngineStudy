@@ -1,0 +1,978 @@
+산포 패턴
+하나의 위치에 존재하지 않는다
+전역에 흩뿌려져 있다
+
+어떤 상태를 동기화할 것인가"라는 질문의 답을
+중앙 레지스트리에 두지 않고
+그 상태를 소유한 클래스 안에 두기로 결정했다
+즉, Replication의 선언은 데이터와 함께 살아야 한다
+
+---
+
+물리적으로는 흩어져 있지만, 
+개념적으로는 세 개의 뚜렷한 층위를 형성한다
+
+선언 층위(Declaration Layer)
+무엇을 어떤 방식으로 동기화할 것인가
+각 UObject/AActor 서브클래스 안에 배치한다
+
+마킹된 프로퍼티들
+GetLifetimeReplicatedProps() 오버라이드
+
+복제 조건을 명시하는 술어를 등록
+
+이 정보는 런타임에 FRepLayout이라는 구조체로 수집·컴파일된다
+FRepLayout은 한 클래스의 모든 복제 프로퍼티들의 
+메모리 오프셋, 타입, 조건을 기술하는 
+클래스 수준의 복제 스키마다. 
+
+클래스당 하나 존재하며, 공유된다
+
+---
+
+수송 층위(Transport Layer)
+NetDriver → NetConnection → ActorChannel → FObjectReplicator라는 수직 스택을 형성
+
+UNetDriver는 이 스택의 루트
+모든 연결 NetConnection을 소유
+Tick마다 Relevancy 검사를 구동
+
+AActor::IsNetRelevantFor()를 모든 Actor-Connection 쌍에 대해 선형 순회
+O(Actors × Connections)라는 비용
+UReplicationGraph를 도입
+ReplicationGraph는 공간적 분할(grid node, always-relevant node, dormancy)을 이용
+각 Connection이 관심 가져야 할 Actor 집합을 사전 필터링
+
+---
+
+UNetConnection은 서버와 특정 클라이언트 사이의 논리적 연결 하나
+이 안에 UChannel들의 목록
+하나의 ActorChannel은 특정 Connection에 대해 특정 Actor의 복제를 담당하는 독립적인 파이프
+
+Actor A가 10명의 클라이언트에게 복제되고 있다면, 
+서버에는 Actor A에 대한 ActorChannel 인스턴스가 10개 존재한다
+
+FObjectReplicator는 ActorChannel의 안쪽에 존재
+실질적인 복제 작업을 수행하는 상태 기계
+이것은 **이전 프레임의 상태 복사본(shadow state)**을 들고 있으면서, 현재 상태와 비교
+변경된 프로퍼티만을 직렬화하여 패킷으로 만드는 것
+
+FObjectReplicator는 Connection-Actor 쌍마다 하나 존재
+10명 클라이언트 × N개 Actor만큼의 인스턴스가 서버에 살아있다. 
+여기서 메모리 압박이 발생하는 구조적 이유가 보인다.
+
+---
+
+동기화된 결과를 어떻게 처리할 것인가
+
+OnRep_ 콜백들
+Role/RemoteRole에 따른 브랜칭 로직
+UCharacterMovementComponent에서 볼 수 있는 
+클라이언트 측 예측(Prediction)과 서버 교정(Correction) 메커니즘
+
+---
+
+UObject 수준에는 GetLifetimeReplicatedProps()의 원형
+
+AActor 수준에는 
+bReplicates 플래그(이 Actor가 복제 대상인가), 
+NetUpdateFrequency(초당 최대 몇 번 복제 업데이트를 보낼 것인가), 
+NetPriority(복제 대역폭 경합 시 우선순위), 
+Role과 RemoteRole(현재 컨텍스트에서의 권한 상태), 
+IsNetRelevantFor()
+
+GetNetConnection()은 이 Actor를 "소유"하는 클라이언트 Connection을 반환하는데, 
+이것이 COND_OwnerOnly 복제 조건의 판정 기반
+
+APlayerController 수준에는 Connection 소유권의 앵커
+서버에서 각 PlayerController는 특정 UNetConnection과 1:1로 연결되어 있다
+
+UActorComponent 수준에는 
+SetIsReplicated(true)를 통한 컴포넌트 레벨 복제가 있다.
+복제 가능한 컴포넌트는 자신의 GetLifetimeReplicatedProps()를 선언하며,
+소유 Actor의 ActorChannel을 통해 함께 직렬화된다. 
+컴포넌트는 독립적인 Channel을 갖지 않는다
+
+---
+
+산포를 가능하게 하는 접착제
+
+이 모든 산포를 하나의 일관된 시스템으로 묶는 것이 FNetworkGUID
+서버와 클라이언트가 서로 다른 메모리 공간에 살고 있으므로, 
+객체에 대한 포인터를 그대로 전송하는 것은 불가능하다.
+NetGUID는 객체의 네트워크 신원(network identity)을 표현하는 안정적인 정수 식별자다
+
+UPackageMapClient는 NetGUID와 실제 객체 사이의 매핑을 관리한다
+프로퍼티 값 안에 객체 참조(UObject 포인터)가 있을 때, 
+직렬화 시에 포인터는 NetGUID로 변환되고, 
+수신 측에서 역직렬화 시에 NetGUID는 다시 로컬 객체 포인터로 변환된다
+
+---
+
+프로퍼티 복제가 **상태(state)**를 동기화한다면, RPC는 **사건(event)**을 동기화한다
+
+상태 복제는 신뢰성이 보장되지 않는다
+(패킷 손실 시 다음 프레임에 최신 상태가 다시 전송되므로 결과적으로 수렴한다).
+
+RPC는 명시적으로 Reliable 또는 Unreliable로 선언된다
+
+---
+
+단일 권위 경계(authority boundary) 너머로 선택적 상태를 투영하는 시스템이다
+
+이 투영 시스템은 세 개의 시간적 위상을 갖는다.
+
+저술 위상(authoring phase)
+클래스 안에서 "이 프로퍼티는 복제된다"고 선언하면,
+엔진은 이것을 컴파일하여 FRepLayout이라는 불변적인 복제 스키마로 만든다. 
+이것은 클래스당 한 번 일어나는 정적인 일이다.
+
+비교 위상(comparison phase)
+
+틱마다 
+FObjectReplicator가 현재 상태와 shadow state를 FRepLayout을 참조하여 바이트 단위로 비교한다
+변경된 프로퍼티만이 dirty 마킹된다
+
+전달 위상(delivery phase)
+Dirty 마킹된 프로퍼티들이 NetGUID로 객체 참조를 대체하면서 직렬화되어 패킷으로 패킹된다. 
+수신 측에서는 역직렬화 후 메모리에 기록되고, OnRep_ 콜백이 호출된다
+
+세 위상은 공간적으로는 선언 층위, 수송 층위, 화해 층위에 각각 대응하며, 
+시간적으로는 게임 시작 전, 매 틱, 매 패킷 수신 시점에 대응한다
+
+---
+
+서버가 가진 월드 상태를 
+각 connection마다 다르게 골라서, 
+제한된 대역폭 안에서, 비트 스트림으로 투영하는 기계
+
+---
+
+등록 층: “무엇을 네트워크 우주에 올릴 것인가”
+bReplicates, 
+GetLifetimeReplicatedProps, 
+UPROPERTY(Replicated...), 
+RPC UFUNCTION(Server/Client/NetMulticast)
+
+이 클래스의 어떤 상태와 호출이 네트워크 대상이냐
+
+특히 actor component는 기본적으로 자동 복제되지 않으며 
+owning actor의 일부로 설정해야 한다
+
+---
+
+이번 틱에 누구에게 무엇을 보낼 것인가
+
+NetDriver는 여러 UNetConnection을 관리
+대역폭이 무한하지 않기 때문에 필터링과 우선순위 문제로 바뀌어요
+
+모든 actor가 매 network update마다 반드시 replicate되는 것은 아니다 
+dormancy, relevancy, priority가 계속 개입
+
+기존 계열에서는 UNetDriver::ServerReplicateActors()가 중심 루프
+최적화 계열에서는 UReplicationDriver가 이 선택 문제를 아웃소싱 받아요
+여러 프레임과 여러 connection에 걸쳐 데이터를 캐시해 중복 계산을 줄이는 구조예요
+
+월드 전체를 매 connection에 그대로 보내는 게 아니라, 
+connection별 “부분 월드”를 매 틱 재구성한다.
+
+---
+
+서버에서 클라이언트로 replicate되는 actor마다 unique actor channel이 존재한다
+connection이 “클라이언트라는 도로”라면, 
+actor channel은 “그 도로 위에 actor별로 배정되는 전용 차선 레인”
+
+실제 property와 RPC replication은 이제 FObjectReplicator에서 일어난다
+channel은 운송 컨테이너이고, 
+replicator가 실질적인 상태 동기화 엔진
+
+NetDriver → NetConnection → ActorChannel → FObjectReplicator
+
+이 사슬이 “선택된 actor를 특정 connection - 특정 channel에 실어 보내는” 단위
+
+---
+
+표현 계층 FRepLayout
+복제하기로 결정된 데이터를 어떻게 직렬화할지
+
+FObjectReplicator: connection - actor 별 shadow state/최근 상태/RPC/rep notify 관리
+FRepLayout: 프로퍼티 (비포인터 & 포인터)의 delta 계산·serialize 담당
+
+“어떻게 비트로 만들지”는 Replicator/RepLayout이 결정
+“무엇을 보낼지”는 NetDriver/ReplicationDriver/Graph가 결정
+
+---
+
+수신 측
+GUID/handle 해석
+reference resolve
+subobject 생성
+OnRep, delayed RPC 
+
+FObjectReplicator::ReceivedBunch
+unmapped object 갱신
+
+송신보다 더 산산이 흩어져 보이는데
+“비트 → 객체” 복원은 transport, identity, lifecycle, gameplay callback이 동시에 걸려 있는 
+교차점
+
+---
+
+왜 이렇게 흩뿌려져 보이는가
+각자의 자연 서식지
+
+게임플레이
+Actor, ActorComponent, 각자 클래스 헤더/CPP에 흩어져 있어요
+
+월드 단위 선택, connection 관리, actor별 운송 레인 관리
+NetDriver, NetConnection, ActorChannel
+
+diff/serialization
+RepLayout, DataReplication
+
+스케일링 정책 - 별도 전략층
+ReplicationDriver/ReplicationGraph
+
+Iris
+actor/channel 중심 사고에서 더 일반화
+gameplay system과 replication system 사이의 의존성 축소
+
+---
+
+Legacy 계열
+NetDriver → 
+(optional ReplicationDriver / ReplicationGraph) → 
+NetConnection → 
+ActorChannel → 
+FObjectReplicator → 
+FRepLayout → 
+bunch/packet → 
+client apply
+
+“actor”와 “channel”이 중심 축
+ActorChannel이 매우 강한 존재감
+
+Iris 계열
+NetDriver → 
+ReplicationSystem + ReplicationBridge → 
+Filtering / Prioritization / Dependency / State → 
+NetSerializer / DataStream → 
+client apply
+
+“channel”보다 replicated object / handle / state / protocol 쪽이 더 중심
+Replication Bridge가 gameplay code와 replication system 사이의 communication을 제어
+Iris Filtering은 어떤 object를 어떤 connection에 replicate할지 결정
+Iris Prioritization은 제한된 bandwidth 안에서 무엇을 먼저 보낼지 결정
+
+---
+
+ReplicationGraph
+선택 층의 성능 전략 구현체
+
+persistent node들이 actor list를 connection별로 구성하는 시스템
+이 노드들이 여러 프레임과 여러 connection 사이에서 데이터를 공유하여 
+중복을 줄인다
+
+“무엇을 누구에게 보낼지”를 잘 푸는 전략
+
+---
+
+Iris는 선택 층만 바꾸는 것이 아니라, 
+더 아래의 표현/프로토콜/상태 관리 구조까지 포함하는 새 코어
+network driver는 둘 중 하나만 사용할 수 있다
+
+---
+
+FObjectReplicator는 "내가 이것을 보냈고, 아직 Ack를 받지 못했다"는 사실을 기억해야 한다
+Ack가 오면 재전송 버퍼에서 제거한다
+Ack가 오지 않으면 재전송한다
+이 Ack 추적 자체가 상태다
+
+Insight: 
+Keep track of 는 State 를 Imply 한다.
+
+이 Actor가 처음으로 스폰되는 순간인가, 
+아니면 이미 클라이언트 측에 존재하며 델타만 받으면 되는가는
+결정적으로 다른 처리를 요구한다
+
+처음 스폰 시에는 전체 초기 상태를 보내야 하고(initial bunch),
+이후에는 dirty 프로퍼티만 보낸다. 
+
+"초기 전송이 완료되었는가"라는 플래그 자체가 상태이다
+
+FObjectReplicator는 다음과 같은 전이를 가진 상태기계다
+"초기 전송 대기" → "증분 전송 중" → "Dormant" → "Dormant에서 깨어남" → 다시 "증분 전송 중"
+
+신뢰할 수 없는 채널 위에서 동작하는 Reconciler는 반드시 상태를 가져야 한다
+Ack 없이는 내가 전송한 것이 도착했는지 알 수 없고, 
+도착했는지 모르는 한 재전송 가능성을 유지해야 하며,
+재전송 가능성을 유지하는 것이 곧 상태다.
+
+---
+
+Replication이 여기저기 흩어져 있다
+흩어진 자리에 따라 서로 다른 역할을 맡는다
+
+---
+
+무엇을 원격 세계에 투영할 수 있는가
+이 클래스의 어느 조각이 network-visible한가
+
+---
+
+어느 머신이 상태 변경과 RPC 수행의 권한을 가지는지
+authoritative state는 서버가 쥐고 있고
+클라이언트는 대개 요청하거나 예측
+
+replication은 권한 코드의 “결과”를 퍼뜨리는 것
+
+---
+
+RPC
+locally called but remotely executed
+요청
+
+클라이언트들이 서버에게
+점프 입력을 반영해 달라
+무기 발사 시도를 처리해 달라
+
+서버가 클라이언트들에게 
+“이 사건을 실행해라”라고 말하는 통로
+
+RPC는 “상태를 보낸다”기보다 의도나 사건을 보낸다
+replicated property는 상태를 수렴시킨다
+결국 최신 서버 값을 반영하지만 중간 값 하나하나를 모두 보장하는 모델은 아니다
+사건이 남긴 상태를 천천히 굳혀가는 표면
+
+권한 경계를 건너는 발화
+
+---
+
+Net Driver가 
+어떤 actor를 
+어떤 connection에 어떤 우선순위로 
+복제할지 
+결정
+
+서버가 가진 결과를 connection별 부분 월드로 자르는 기계
+하나의 world는 connection 별로 잘린다
+하나의 connection은 잘라진 부분 world이다
+
+수송 층
+
+---
+
+도착한 비트를 다시 세계와 행위로 되돌리는 곳
+
+OnRep_ callback,
+role 기반 분기,
+autonomous proxy, simulated proxy
+
+RepNotify는 상태가 도착했을 때 반응하도록 설계된 공식 패턴
+actor role/remote role에 따라 같은 actor라도 각 머신에서 다른 식으로 동작
+
+많은 gameplay effect가 사실 “전송”보다 “반응”에
+그 도착을 게임플레이 의미로 번역하는 일은 유저 코드
+
+클라이언트는 의도를 낸다 → 
+서버가 권한적으로 판정하고 상태를 바꾼다 → 
+엔진이 그 상태를 connection별로 선별해 전송한다 →
+클라이언트는 그 상태를 자기 세계에 적용한다 → 
+유저가 쓴 OnRep / Client RPC / 예측 보정 코드가 의미 있는 반응을 만든다
+
+---
+
+UE가 대신 해주는 자리
+replication 정보를 스키마로 정리
+dirty state 추적
+connection별 relevancy / priority / dormancy 평가
+bitstream serialization / deserialization
+object reference resolve
+receive 후 rep notify / RPC dispatch
+
+---
+
+"서버의 실재를 어떻게 클라이언트의 지각으로 변환할 것인가?" 
+이 질문은 단일하지만, 
+그것에 답하는 작업은 시간적으로도, 공간적으로도 분리된 
+여러 국면을 갖는다. 
+
+각 국면이 코드의 서로 다른 위치에 씨앗으로 박혀 있는 것이다. 
+따라서 코드를 읽을 때 "여기 왜 이게 있지?"라고 묻는 대신, 
+"이 코드는 그 하나의 질문의 어느 국면에 답하고 있는가?"를 물어야 한다
+
+유저가 선언하고 엔진이 읽는 것
+엔진이 호출하고 유저가 구현하는 것
+유저가 능동적으로 호출하는 것
+
+---
+
+
+SetIsReplicated(true)/bReplicates = true는 단 한 줄이지만, 
+이것은 엔진에게 "이 Actor를 NetDriver의 복제 사이클에 포함시켜라"라는 등록 신청서
+
+"무엇을 어떻게 복제할지"는 아직 아무것도 말하지 않았다.
+단지 "나는 복제 대상이다"라고만 말한다.
+존재의 선언
+이 객체는 Replication System에 참여한다
+
+---
+
+스키마 선언
+내 상태 중 이것들이 실재를 구성한다
+
+GetLifetimeReplicatedProps() 오버라이드
+각 프로퍼티의 UPROPERTY(Replicated...) 마킹
+
+이 함수는 개발자가 구현하지만, 개발자가 호출하지 않는다
+엔진이 FRepLayout을 빌드할 때 호출한다
+
+---
+
+실재가 도착했을 때 나는 이렇게 반응한다
+
+OnRep_Foo()
+엔진-클라이언트가 호출, 유저가 구현
+
+무엇을 보낼 것인가
+받은 것을 어떻게 소화할 것인가
+
+엔진은 프로퍼티 값을 먼저 메모리에 기록하고 그 다음 OnRep_을 호출한다. 
+따라서 OnRep_Health() 안에서 Health를 읽으면 이미 새 값이다. 
+이전 값이 필요하다면 직접 캐시해야 한다. 
+이것이 "엔진이 호출"하는 콜백의 계약(Protocol, Convention)이다
+
+---
+
+void AMyActor::TakeDamage(float Amount)
+{
+    if (!HasAuthority()) return; // 서버에서만 상태 변경
+    Health -= Amount; // Health가 Replicated이므로 변경은 자동으로 클라이언트에 전파됨
+}
+
+나는 지금 실재를 쓸 자격이 있는가
+경계
+이 코드는 실재를 소유한 쪽에서만 실행되어야 한다
+
+---
+
+// Server RPC
+UFUNCTION(Server, Reliable)
+void Server_Fire(FVector Origin, FVector Direction);
+
+// 실행은 엔진이 디스패치하여 서버에서
+void AMyCharacter::Server_Fire_Implementation(FVector Origin, FVector Direction)
+{
+    // 여기는 서버. 검증하고 실제 처리.
+    if (CanFire()) SpawnProjectile(Origin, Direction);
+}
+
+// 클라이언트 입력 처리
+void AMyCharacter::HandleFireInput()
+{
+    // 클라이언트에서 호출
+    // 엔진이 이것을 패킷으로 만들어 서버로 전송
+    Server_Fire(GetMuzzleLocation(), GetAimDirection());
+}
+
+하나의 논리적 행위가 세 개의 코드 사이트에 걸쳐 표현된다.
+선언(UFUNCTION), 
+발화(Server_Fire() 호출)
+실행(_Implementation)
+
+---
+
+서버가 특정 클라이언트에게 지시한다
+호출은 서버 코드에서, 실행은 소유 클라이언트에서
+"딱 한 번, 이 클라이언트에게만"의 의미
+
+UFUNCTION(Client, Reliable)
+void Client_ShowKillConfirmation(AActor* KilledActor);
+
+void AMyPlayerController::Client_ShowKillConfirmation_Implementation(AActor* KilledActor)
+{
+    HUD->ShowKillFeed(KilledActor->GetName());
+}
+
+---
+
+"서버가 모든 클라이언트에게 사건을 알린다"
+
+UFUNCTION(NetMulticast, Unreliable)
+void Multicast_PlayExplosion(FVector Location);
+
+---
+
+클라이언트는 “문을 열었다”고 확정하지 않고, 
+**“열고 싶다”**고 말한다
+실제 상태 변경 권한은 서버가 가져요
+Server RPC는 그 권한 경계를 건너는 발화
+
+void ANetDoor::Interact()
+{
+    if (HasAuthority())
+    {
+        // 서버에서 직접 실행 중이면 바로 확정
+        bIsOpen = true;
+        OnRep_IsOpen(); // 서버는 자동 OnRep 대상이 아니므로 필요하면 직접 반응 호출
+    }
+    else
+    {
+        // 클라이언트라면 의도만 서버에 요청
+        Server_RequestOpen();
+    }
+}
+
+void ANetDoor::Server_RequestOpen_Implementation()
+{
+    // 여기부터는 서버 코드
+    if (!bIsOpen)
+    {
+        bIsOpen = true;
+        OnRep_IsOpen(); // 서버 로컬 반응
+    }
+}
+
+void ANetDoor::OnRep_IsOpen()
+{
+    // 여기부터는 "도착한 상태를 게임플레이 의미로 번역"하는 반응 코드
+    // 서버에서 수동 호출될 수도 있고, 클라이언트에서는 복제 수신 후 호출될 수도 있음
+    PlayDoorOpenAnimation();
+    PlayDoorSound();
+}
+
+---
+
+발사 시도는 Server RPC
+탄약 변화는 replicated property
+순수 시각 효과는 NetMulticast 또는 owner/client-specific 처리
+
+
+void AMyWeapon::InputFire()
+{
+    if (HasAuthority())
+    {
+        Server_Fire_Implementation();
+    }
+    else
+    {
+        Server_Fire();
+    }
+}
+
+void AMyWeapon::Server_Fire_Implementation()
+{
+    if (Ammo <= 0)
+    {
+        return;
+    }
+
+    // 여기부터 authoritative result
+    Ammo--;
+
+    // 히트 판정, 데미지 적용 등도 서버에서
+    PerformServerSideHitScan();
+
+    // 사건 전파
+    Multicast_PlayFireCosmetics();
+
+    // 서버 로컬 UI나 디버그 반응이 필요하면 수동 처리 가능
+    OnRep_Ammo();
+}
+
+void AMyWeapon::OnRep_Ammo()
+{
+    UpdateAmmoWidget();
+}
+
+void AMyWeapon::Multicast_PlayFireCosmetics_Implementation()
+{
+    PlayMuzzleFlash();
+    PlayFireSound();
+}
+
+---
+
+이 함수 하나 안에 이미 세 머신의 논리가 겹쳐 있어요
+서버 문장: 체력 변경
+owning client 문장: 즉시 체감 반응
+remote client 문장: 관찰자용 반응
+
+하나의 함수 안에서 의미론적으로 위상을 나눠요
+
+void AMyCharacter::ReceiveHit(int32 Damage)
+{
+    if (HasAuthority())
+    {
+        // 서버: 진짜 체력 감소
+        Health = FMath::Max(Health - Damage, 0);
+        OnRep_Health();
+    }
+
+    if (IsLocallyControlled())
+    {
+        // 로컬 플레이어: 카메라 흔들림, 진동
+        PlayLocalHitCameraShake();
+    }
+    else
+    {
+        // 원격 프록시: 피격 애니메이션 정도
+        PlayRemoteHitReaction();
+    }
+}
+
+---
+
+서버
+내가 처리했으므로 그것이 일어난 것이다
+총격이 일어났다고 믿기 때문에 그것을 처리하는 것이 아니다
+나에게 화면은 없다
+모든 관심 있는 자들에게 전달한다
+그러나 동시에, 동일하게 전달하지는 않는다
+어떤 자는 이미 알고 있으므로 다시 말하지 않는다. 
+어떤 자는 멀리 있어 아직 이 사실이 그들에게 닿지 않았다. 
+어떤 자는 소유자이므로 더 많은 것을 알 자격이 있다.
+
+실재를 소유하고 있지만 실재를 살지 않는다
+
+---
+
+소유 클라이언트
+나는 총을 쐈다. 적어도 나는 그렇게 믿는다.
+방아쇠를 당기는 순간, 나는 이미 결과를 경험하기 시작했다
+총구에서 섬광이 터졌고, 반동이 왔고, 탄피가 떨어지는 소리가 났다.
+
+서버는 아직 이 사실을 모른다. 나의 의도는 지금 막 패킷 안에 실려 네트워크를 건너고 있다
+그 사이 나는 이미 발사가 일어났다는 전제 위에서 달리고 있다.
+
+나는 서버가 동의해줄 것이라 믿고, 그 믿음 위에서 현실을 미리 구성한다
+
+가끔 서버는 동의하지 않는다
+내가 이미 살아있다고 믿었을 때, 서버는 내가 죽었다고 판정한다. 
+그 순간 나는 고무줄처럼 되감긴다. 
+내가 구성했던 미래가 지워지고 서버의 진실이 내 위에 덮어씌워진다. 
+화면이 순간 흔들리는 그것, 플레이어가 "핑이 튀었다"고 말하는 그것이 이 순간이다.
+
+나는 서버의 자식이지만 서버를 기다리지 않는다. 
+나는 믿음으로 달리고, 주기적으로 교정받는다.
+이것이 자율 프록시의 삶이다.
+내가 HP 피격을 받았다는 사실은, OnRep_Health가 호출되기 전에 이미 내 몸이 알고 있다. 
+나의 카메라 흔들림은 서버의 판정보다 먼저 시작되었다.
+진실이 도착하기 전에 나는 이미 진실을 연기하고 있었던 것이다.
+
+---
+
+관찰 클라이언트
+
+한 발의 총알이 발사되었다.
+이것은 사실인가.
+서버에서는 그렇다. 
+클라이언트 A에서는 아마도 그럴 것이다. 
+클라이언트 B에서는 80밀리초 후에 그러할 것이다. 
+클라이언트 C에서는 애니메이션 한 토막과 사운드로, 이미 일어난 일의 잔향으로 그러할 것이다.
+
+사건 자체가 아니라, 
+사건이 복제 파이프를 통해 내게 도달하기까지 걸린 지연과 필터링을 통과한 뒤의 반향
+
+서버가 말한다: "이 캐릭터는 좌표 A에 있다." 
+그리고 조금 뒤 말한다: "이 캐릭터는 좌표 B에 있다." 
+
+나는 이 두 좌표 사이를 매끄럽게 채운다. 
+그러나 그것은 내가 만든 이야기다. 
+실제 경로가 A에서 B로 직선이었다는 보장은 없다. 
+나는 두 개의 진실 사이의 공백을 지어낸다.
+
+---
+
+복제는 동기화(synchronization)가 아니다. 
+동기화는 모든 것이 동시에 같아지는 것을 의미한다. 
+그러나 빛의 속도는 유한하고 패킷은 손실되며 서버는 바쁘다.
+복제는 수렴(convergence)이다.
+
+서버는 진실을 소유하고, 클라이언트는 진실의 투영을 받고, 각자는 그 투영 위에서 경험을 구성한다. 
+세 개의 세계는 결코 정확히 같지 않다. 
+그러나 결코 너무 멀지도 않다.
+
+---
+
+정보가 유한한 속도로 전파되는 우주에서, 복수의 관찰자가 공유 현실을 구성하려는 시도
+
+UE 서버의 Health = 74라는 사실은 서버에서는 T=0에 존재한다.
+소유 클라이언트에서는 T=30ms에 존재한다.
+관찰 클라이언트에서는 T=80ms에 존재한다
+
+신경과학
+인간이 경험하는 "지금 이 순간"은 
+실제 자극이 발생한 시점에서 약 80에서 500밀리초 지연된 구성물이다
+
+뇌는 감각 신호를 수신하고, 처리하고, 
+다른 채널에서 온 신호들과 시간적으로 정렬하고, 
+그 전체를 하나의 일관된 현재로 합성하여 의식에 제출한다
+
+예측이 크게 빗나갔을 때 우리가 느끼는 그 이상한 감각, 
+"어, 잠깐"하는 그 순간이 교정의 촉감이다.
+
+Server RPC의 _Implementation이 법정이다.
+클라이언트가 보낸 것은 증언이고, 
+서버는 그것을 신뢰하지 않는다. 
+교차심문한다. IsValidFireOrigin(Origin)이 반대심문이다. 
+그리고 서버가 Health -= Damage를 실행하는 순간이 판결의 선고다.
+그 판결이 사회적 현실이 된다.
+그 판결이 복제를 통해 세계로 흘러나간다. 
+판결문의 배포가 프로퍼티 복제다. 
+OnRep_Health가 판결문을 읽고 반응하는 당사자들이다
+
+---
+
+실재를 배급하는 제국의 관료제
+제국 전체의 진짜 사건은 오직 수도에서만 일어나는데,
+수도 바깥의 모든 도시들도 마치 자기 눈앞에서 그 사건이 일어난 것처럼 살아가야 하거든요
+문이 열리면 변방의 도시들에서도 그 문이 열려 있어야 하고,
+왕이 죽으면 바다 건너 항구에서도 그 왕이 죽은 것으로 살아야 해요
+총성이 울리면 먼 변경의 병사도 그 소리를 들었다고 믿어야 하고,
+누가 다쳤으면 저쪽 산맥 너머의 마을에서도 그 상처가 존재하는 것으로 계산되어야 해요.
+
+그런데 문제는,
+제국은 너무 넓고, 길은 너무 좁고, 소식은 너무 많다는 점이에요.
+모든 것을 모든 곳에, 있는 그대로, 매번, 전부 보내는 것은 불가능해요.
+그래서 제국은 아주 특이한 해결책을 고안했어요.
+실재를 통째로 운반하지 않고,
+각 도시가 믿어야 할 만큼만 잘라서 배급한다.
+
+---
+
+실재에 관한 선언은 중앙 광장 게시판에 모여 있지 않아요.
+모든 존재는 자기 몸 안에, 자기 자신에 대한 출국 조항을 품고 있어요
+
+제국은 이 흩어진 조항들을 한 번 모아 읽고,
+혈통별로 표준 양식을 만들어 둬요.
+제국은 문 한 짝이 아니라 문이라는 종류 전체를 읽는 법을 배우는 셈이에요
+
+---
+
+변방 도시들이 흔히 하는 착각이 있어요.
+“제국은 하나이니, 우리 모두가 같은 제국을 받겠지.”
+
+북쪽 성채는 국경의 전쟁 소식을 더 많이 받아요.
+남쪽 항구는 무역선과 세금 소식을 더 많이 받아요.
+왕의 침실에 관한 소식은 왕실의 신하들에게만 가요.
+어느 병사의 사적인 속삭임은 그 병사의 주인 도시에게만 흘러가고,
+광장 한복판에서 터진 폭발은 그 광장을 볼 자격이 있는 도시들에만 가요.
+
+즉, 제국은 하나의 대륙이지만,
+배급국은 매 순간 도시마다 잘린 제국,
+곧 부분 제국을 따로 꾸려 보내요.
+
+배급국의 국장이 새벽마다 하는 일은 이것이에요.
+
+“오늘 이 도시가 믿어야 할 세계는 어디까지인가?”
+
+국장은 모든 것을 처음부터 다시 보지 않고,
+훨씬 빨리 세계를 잘라낼 수 있게 되었어요.
+
+이것이 제국의 부분 세계 편성술이에요.
+
+---
+
+같은 병사라도 열 개 도시가 그 병사를 보고 있다면,
+수도에는 그 병사 전용 통이 열 개 생겨요.
+
+이것이 실재 배급국이 결코 가벼워질 수 없는 이유예요.
+실재는 하나지만, 지켜보는 눈이 늘어날수록 배급 기계의 내장은 기하급수적으로 불어나는 것이니까요.
+
+---
+
+대조관은 매 틱마다 두 장의 문서를 겹쳐 봐요.
+
+하나는
+“지난번에 이 도시에 보냈던 당신의 모습.”
+다른 하나는
+“지금 수도에서 실제로 살아 있는 당신의 모습.”
+
+“좋다. 얼굴은 같다.
+상처는 달라졌다.
+탄약도 하나 줄었다.
+문은 이제 열렸다.
+그럼 바뀐 것만 보내자.”
+
+---
+
+상태 우편은 흙이 층층이 굳듯 쌓여요.
+중간에 한 번 놓쳐도, 나중에 더 최근의 표면이 오면 결국 맞춰질 수 있어요.
+하지만 사건 우편은 순간의 불꽃이므로, 그 순간을 놓치면 다시는 오지 않을 수도 있어요
+
+“폭발음은 외침으로 보내고,
+불타고 있다는 사실은 표면으로 보내라.”
+
+이 차이를 모르는 자는 우편 제도를 망쳐요.
+순간을 지층으로 굳히려 하거나,
+지층을 외침으로 대신하려 하기 때문이에요.
+
+---
+
+변방 도시는 종종 착각해요.
+“내가 문을 보니, 내가 문을 열었다고 선언할 수 있겠지.”
+
+변방은 세계를 청원할 수 있을 뿐,
+세계 자체를 확정할 수는 없어요.
+
+“문을 열고 싶습니다.”
+
+이 말은 곧장 실재가 되지 않아요.
+그 말은 수도로 가는 청원서가 되어 날아가요.
+수도의 담당관이 그 청원을 읽고,
+문이 정말 열릴 수 있는지, 열려야 하는지, 아직 닫혀 있어야 하는지 판정해요.
+
+제국의 모든 네트워크 비극과 희극은 여기서 나와요.
+변방은 늘 자신이 본 것을 곧 진실이라 믿고 싶어 하고,
+수도는 늘 “아직 아니다, 내가 찍어 준 도장만이 진실이다”라고 말하니까요.
+
+---
+
+변방의 기수는 수도의 허가를 매번 기다리지 않아요.
+그는 먼저 달려요.
+그리고 동시에 수도에 편지를 보내요.
+
+“저는 지금 이렇게 달렸습니다.”
+
+수도는 그 편지를 읽고,
+자기도 같은 달리기를 다시 계산해 봐요.
+그리고 말해요.
+
+“좋다, 그대로였다.”
+혹은
+“아니다, 네가 생각한 것보다 조금 오른쪽이었다.”
+
+그러면 변방의 기수는 자기 발자국을 조용히 고쳐요.
+
+---
+
+수도의 사람과 변방의 사람이 같은 사람을 가리키면서도
+실은 서로 다른 메모리 위에 산다는 점이에요.
+
+수도의 병사와 남쪽 도시가 알고 있는 병사는
+철학적으로는 같은 병사일지 몰라도,
+물리적으로는 같은 몸이 아니에요.
+서로 다른 무대 위의 다른 배우예요.
+
+그래서 제국은 포인터를 보내지 않아요.
+그런 것은 수도 안에서만 통하는 손가락질이니까요.
+
+대신 모든 존재에는 참이름 번호가 붙어요.
+이 번호는 일종의 여권이자 족보이자 영적 표찰이에요.
+
+“이 번호는 바로 그 문이다.”
+“이 번호는 바로 그 총이다.”
+“이 번호는 바로 그 병사다.”
+
+---
+
+기억의 짐꾼
+“나는 이 도시에 저 인물의 초기 얼굴을 이미 보냈는가?”
+“아직 도착 확인을 받지 못한 편지가 남아 있는가?”
+“저 인물은 지금 잠들어 있는가?”
+“잠들었다가 다시 깨어났는가?”
+“처음 보내는 것인가, 델타만 보내면 되는가?”
+
+배급이란 단순히 데이터를 흘려보내는 일이 아니에요.
+배급은 늘 기억을 유지하는 일을 포함해요.
+
+대조관은 제국의 회계사이자, 역사가이자, 간수예요.
+
+---
+
+옛 제국에서는 인물과 통이 중심이었어요.
+도시마다, 인물마다, 통마다
+어떻게든 실재를 실어 보냈지요.
+
+그러나 새 시대의 관료들은 말해요.
+
+“우리는 인물보다 더 밑바닥의 문법을 다뤄야 한다.
+통보다 더 일반적인 상태와 규약을 다뤄야 한다.”
+
+그래서 신제도에서는
+기존의 배우-통-편지 중심 사고가 조금 물러나고,
+상태, 규약, 필터, 우선순위, 의존성 같은
+더 추상적인 행정 개념이 앞으로 나와요.
+
+옛 제도는 연극에 가까웠고,
+새 제도는 기하학에 가까워요.
+
+하지만 둘 다 같은 질문에 답하고 있어요.
+
+“수도의 단 하나의 실재를
+어떻게 수많은 변방의 지각으로 나누어 줄 것인가?”
+
+---
+
+이 명부를 처음 보는 서기는 말할 것이다.
+"왜 이렇게 많은 관직이 필요한가."
+오래된 관료는 답한다.
+"실재는 하나다. 
+그러나 실재를 받아야 하는 자는 여럿이다. 
+그리고 그들은 모두 다른 거리에 살며, 다른 것을 알 자격이 있으며, 다른 방식으로 반응한다.
+하나의 실재를 여럿의 지각으로 나누는 일은, 그 나눔의 각 국면마다 다른 전문가가 필요한 일이다."
+
+---
+
+서버의 현재가 가장 권위 있는 현재인 이유는
+설계가 선택한 기준계이기 때문이다
+
+---
+
+서버가 클라이언트에게 무언가를 보내려면, 서버는 먼저 무엇을 알아야 하는가
+서버는 각 클라이언트가 현재 무엇을 알고 있는지를 알아야 한다
+
+FObjectReplicator가 shadow state를 들고 있는 이유가 바로 이것이다
+그것은 "이 클라이언트가 마지막으로 수신한 상태의 서버 측 기록"이다
+서버는 클라이언트의 현재 인식 상태를 모델링하고 있는 것이다.
+
+dirty 비교는 "무엇이 바뀌었는가"를 묻는 것이 아니라, 
+"이 클라이언트가 아직 모르는 것이 무엇인가"를 묻는 행위다
+
+그것이 Connection-Actor 쌍마다 하나씩 존재하는 이유는,
+서버가 각 클라이언트-객체 쌍에 대해 독립적인 인식 모델을 유지해야 하기 때문이다
+
+클라이언트 10명, 복제 Actor 100개라면 
+서버는 1000개의 독립적인 타자 인식 모델을 동시에 관리한다.
+
+FObjectReplicator 인스턴스 폭발이 메모리 압박을 만드는 구조적 이유라고 노트에 적혀 있다.
+그 이유가 이제 다르게 보인다. 그것은 마음 이론을 규모로 수행하는 것의 인지적 비용이다.
+
+---
+
+Dormancy에서 깨어날 때 왜 전체 상태를 다시 보내야 하는지가 명확해진다. 
+잠들어 있는 동안 서버는 이 클라이언트의 인식 모델을 갱신하지 않았다. 
+그 사이 무언가 바뀌었다면, 서버는 이 클라이언트가 현재 무엇을 알고 있는지 더 이상 신뢰할 수 없다
+
+---
+
+서버는 클라이언트가 마지막으로 받은 패킷이 도착했는지조차 항상 확신하지 못한다. 
+Reliable 전송의 Ack를 기다리는 FObjectReplicator의 상태가 이것이다
+
+---
+
+이것이 네트워크 게임에서 일어나는 수많은 기이한 현상의 근원이다
+클라이언트가 이미 죽었다는 것을 서버가 모른 채 계속 패킷을 보내거나, 
+클라이언트가 이미 받은 상태를 서버가 다시 보내는 일들. 
+이것들은 구현 버그가 아니다. 
+타자 인식의 본질적 불완전성이 코드에 나타나는 방식이다.
+
+---
+
+이 부과가 가장 폭력적으로 느껴지는 순간이 있다. 러버밴딩이다. 
+클라이언트가 자신의 경험과 믿음 위에서 구성한 현실이, 
+서버의 선언에 의해 강제로 덮어씌워지는 그 순간. 
+그것은 기술적 불쾌함이 아니다. 
+부과된 현실과 살아진 경험 사이의 충돌이 
+신체 감각으로 느껴지는 순간이다
+
+플레이어가 "핑이 높다"고 말할 때, 
+그들이 실제로 경험하는 것은 
+자신의 인식이 권위에 의해 부정당하는 경험이다. 
+나는 살아있었는데 서버가 나를 죽였다. 
+나는 총을 맞추었는데 서버가 빗나갔다고 했다. 
+이것은 단순한 불편함이 아니라 존재론적 무력감이다.
+나의 경험이 현실로 인정받지 못하는 것
+
+---
