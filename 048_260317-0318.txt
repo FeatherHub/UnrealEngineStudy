@@ -1,0 +1,1185 @@
+조건부 상태 변환 로직
+
+스턴 상태일 때는 스킬을 쓸 수 없어야 하고, 
+버프는 데미지 계산에 영향을 줘야 하며, 
+네트워크에서는 클라이언트와 서버가 같은 결과를 봐야 한다.
+
+이 문제를 그냥 두면 각 팀원이 각자의 방식으로 해결하고, 
+코드는 스파게티가 된다. 
+
+GAS는 이 복잡성을 처리하기 위한 중앙화된 아키텍처야
+
+UAbilitySystemComponent 
+시스템의 허브
+Actor에 부착
+이하 모든 요소들의 소유자
+네트워크 복제의 기준점
+
+UGameplayAbility 
+실제로 "무언가를 하는" 로직의 단위
+발동 조건, 비용, 쿨다운, 실행 로직을 캡슐화
+블루프린트로 서브클래싱 가능
+
+FGameplayAttribute와 UAttributeSet
+숫자로 표현되는 게임플레이 상태값들을 담는 구조체
+체력, 마나, 이동속도
+Base Value와 Current Value의 이중 구조
+
+UGameplayEffect 
+Attribute를 변경하는 유일한 공식 경로
+즉각적(Instant), 지속적(Duration), 영구적(Infinite) 세 종류
+스택, 조건부 적용, Modifier 연산 등을 선언적으로 정의
+
+FGameplayTag와 FGameplayTagContainer
+시스템 전체의 "의미 공유 언어"
+어떤 어빌리티를 막을지, 어떤 Effect가 활성화되어 있는지, 어떤 상태인지를 
+계층적 태그로 표현하고 필터링
+
+---
+
+GameplayAbility
+이 행동을 할 자격이 있는지 검사하고, 자격이 있으면 실행한다
+실제로 숫자를 바꾸는 일은 직접 하지 않는다.
+
+GameplayEffect와 AttributeSet
+Attribute 변경의 유일한 진입점
+모든 상태 변화가 하나의 경로를 통과하도록 강제
+복제, 스택, 조건부 적용, 되돌리기가 가능
+
+GameplayTag
+어빌리티는 태그를 보고 발동을 막고, GE는 태그를 보고 적용 조건을 판단
+
+---
+
+GameplayAbility
+Inactive → Active → Ended
+
+Active 안에 Activating → Executing → Cancelling
+
+이 전환들 각각에 진입 조건이 붙어 있고, 
+그 조건들이 외부 상태에 의존한다
+
+Inactive → Active 전환
+세 가지 조건을 동시에 통과
+UAbilitySystemComponent에 "부여되어 있는가" (Granted 상태)
+비용 Attribute가 충분한가
+현재 활성화된 태그 컨테이너가 이 어빌리티를 차단하고 있지 않은가
+
+자신을 둘러싼 환경(ASC의 태그 컨테이너, AttributeSet의 현재값)이 허용해야만 전환이 일어난다
+GameplayAbility의 상태기계는 외부 상태에 종속된 피동적 기계
+
+Active → Ended 전환은 두 경로
+GA 스스로 EndAbility를 호출하는 자발적 종료
+외부에서 CancelAbility를 호출하는 강제 종료
+스턴이 걸리거나 죽었을 때, 
+더 높은 우선순위의 어빌리티가 이 어빌리티를 취소 태그로 강제 종료
+
+---
+
+GameplayEffect
+
+Instant GameplayEffect
+발동 순간 Attribute를 바꾸고 소멸
+
+Duration/Infinite GameplayEffect
+Pending → Applied → Expired(또는 Removed)
+
+스택 시스템이 붙으면 Applied 상태 안에서 스택 카운트가 변하는 내부 전환
+스택이 최대치에 도달하면 다른 행동을 트리거
+스택이 0으로 떨어지면 자동으로 Removed로 전환
+
+---
+
+TagContainer
+상태가 활성화된 태그들의 집합으로 표현
+GameplayAbility 상태기계와 GameplayEffect 상태기계 모두의 게이트키퍼
+
+---
+
+AttributeSet의 이중 상태 구조가 왜 필요한가
+Base/Current Value
+
+Current Value가 Base + Σ(Applied GE Modifiers)로 계산되는 이유는, 
+GE들의 Applied 상태가 언제든 제거될 수 있기 때문
+버프 GE가 제거되면 그 Modifier도 계산에서 빠지고,
+Base Value는 오염되지 않은 채로 유지돼. 
+
+만약 GE가 Base Value를 직접 수정했다면, GE를 제거해도 Attribute를 원래대로 되돌릴 방법이 없어.
+
+---
+
+에셋으로 존재하는 정의 데이터(Definition Data)
+에셋 형태로 메모리에 하나만 존재하고 공유
+
+런타임에 ASC 안에 살아있는 인스턴스 데이터
+ASC가 소유하며 Actor마다 별도로 존재
+
+무엇을에 해당하는 정의는 공유되지만
+얼마나, 언제부터, 스택 몇 개에 해당하는 상태는 
+각 Actor의 ASC 안에 독립적으로 살아 움직인다
+
+---
+
+Progressive Materialization
+call 경로를 따라가다 보면 데이터가 점점 구체화되는 패턴이 보여
+
+TryActivateAbility (AbilitySpecHandle)
+ASC의 ActivatableAbilities 배열에서 FGameplayAbilitySpec을 찾아내
+
+GA::ActivateAbility가 실행되면서 FGameplayEffectSpec을 만들어
+이 구조체가 데이터 흐름의 핵심 운반체야
+GE CDO 참조
+Level과 SetByCaller 값
+FGameplayEffectContext
+
+ApplyGameplayEffectSpec이 이 Spec을 받아
+FActiveGameplayEffect로 변환하고 ASC의 ActiveGameplayEffects 컨테이너에 등록해
+이 순간부터 데이터는 GE CDO(공유)에서 FActiveGameplayEffect(Actor 전용)로 "구체화"돼.
+컨테이너에 등록되면 즉시 Attribute 집계 재계산이 트리거돼.
+
+---
+
+FGameplayAttributeData
+수치 하나를 담는 래퍼
+BaseValue, CurrentValue
+버프가 끝났을 때 원래 값으로 돌아가는 동작을 구현
+
+FGameplayAttribute는 이 필드들 중 하나를 가리키는 포인터야
+실제 값을 들고 있는 게 아니라 어디를 봐야 하는지를 담고 있어
+UMyAttributeSet 클래스의 Health 필드
+
+---
+
+class UMyAttributeSet : public UAttributeSet
+{
+    UPROPERTY()
+    FGameplayAttributeData Health;
+
+    UPROPERTY()
+    FGameplayAttributeData Mana;
+
+    // Accessor 매크로 — GAS가 이 필드를 찾을 수 있도록
+    ATTRIBUTE_ACCESSOR(UMyAttributeSet, Health)
+    ATTRIBUTE_ACCESSOR(UMyAttributeSet, Mana)
+};
+
+FGameplayAttributeData Health가 실제 float 두 개(Base, Current)를 들고 있는 필드
+
+ATTRIBUTE_ACCESSOR 매크로가
+GetHealth, SetHealth, GetHealthAttribute들을 자동 생성
+
+GetHealthAttribute() -> FGameplayAttribute는 독립적인 오브젝트가 아니라, 
+이 accessor를 통해 얻는 "Health 필드를 가리키는 값"
+
+---
+
+// MyCharacter.cpp -> BeginPlay 또는 생성자에서
+
+AbilitySystemComponent->AddAttributeSet(
+  UMyAttributeSet
+);
+
+---
+
+GE는 코드가 아니라 에디터에서 Blueprint로 만들어
+
+`GE_FireballCost` — 마나 소모용.
+DurationPolicy: Instant
+Modifiers:
+    Attribute: Mana        ← SetManaAttribute() 로 지정
+    Op: Add
+    Magnitude: -20.0
+
+
+`GE_FireballDamage` — 체력 데미지용.
+DurationPolicy: Instant
+Modifiers:
+    Attribute: Health      ← SetHealthAttribute() 로 지정
+    Op: Add
+    Magnitude: SetByCaller _ Tag = "Data.Damage"
+
+실제 데미지 크기를 어빌리티 실행 시점에 주입받기 위해
+레벨, 크리티컬, 무기 강화 배율을 GE 에셋을 건드리지 않고 반영
+
+---
+
+class UGA_Fireball : public UGameplayAbility
+{
+    // 에디터에서 할당
+    TSubclassOf<UGameplayEffect> CostEffectClass;   // GE_FireballCost
+    TSubclassOf<UGameplayEffect> DamageEffectClass; // GE_FireballDamage
+
+    virtual void ActivateAbility(...) override
+    {
+        // 1. 마나 소모 GE 적용 (자기 자신에게)
+        ApplyGameplayEffectToOwner(
+            Handle, ActorInfo, ActivationInfo,
+            CostEffectClass.GetDefaultObject(), 1.0f
+        );
+
+        // 2. 파이어볼 발사 (Projectile spawn 등)
+        SpawnFireballProjectile();
+
+        // 파이어볼이 적에게 닿으면 OnHit이 불림
+    }
+
+    void OnFireballHit(AActor* HitActor)
+    {
+        auto TargetASC =
+            UAbilitySystemLibrary::GetAbilitySystemComponent(HitActor);
+
+        // 3. Damage GE Spec 만들기 — 이 시점에 수치를 주입
+        FGameplayEffectSpecHandle SpecHandle =
+            MakeOutgoingGameplayEffectSpec(DamageEffectClass, 1.0f);
+
+        SpecHandle.Data->SetByCallerTagMagnitudes.Add(
+            FGameplayTag::RequestGameplayTag("Data.Damage"),
+            -35.0f   // 런타임에 결정된 데미지
+        );
+
+        // 4. 적의 ASC에 적용
+        ApplyGameplayEffectSpecToTarget(Handle, ActorInfo, ActivationInfo,
+                                        SpecHandle, TargetASC);
+    }
+};
+
+UGameplayAbility::ActivateAbility
+GAS가 어빌리티를 발동시킬 때 호출하는 함수
+직접 구현하는 곳 (override point)
+
+UGameplayAbility::ApplyGameplayEffectToOwner
+파이어볼을 쏘는 주체는 플레이어이고, 마나는 플레이어에게서 빠져나가야 하니까 ToOwner
+
+1 Handle은 지금 실행 중인 이 어빌리티 인스턴스의 식별자
+GAS가 어떤 어빌리티가 이 GE를 만들었는지 추적하는 데 쓰인다
+
+2 ActorInfo는 이 어빌리티와 연결된 Actor 정보 묶음
+
+3 ActivationInfo는 네트워크 컨텍스트
+이 발동이 서버에서 일어났는지 클라이언트에서 일어났는지, 예측 키는 무엇인지
+
+4 CostEffectClass.GetDefaultObject()
+BP 에서 작성한 GE의 CDO
+
+5 1.0f 는 어빌리티 레밸
+
+---
+
+OnFireballHit
+적에게 닿았을 때 호출되는 함수
+
+적의 ASC를 가져오기
+데미지 GE를 적용하려면 적의 ASC가 필요
+
+Attribute 변경은 항상 ASC를 통해서만 일어나
+
+직접 Enemy->Health -= 35 같은 건 GAS 패턴이 아니야.
+
+FGameplayEffectSpec 산출하기
+MakeOutgoingGameplayEffectSpec(DamageEffectClass, 1.0f);
+BP 에서 작성한 GE 에샛 (클래스 정보) 를 가지고
+이번에 사용할 GE 인스턴스를 찍어낸다
+
+이 인스턴스의 내용물을 채우기
+
+SpecHandle.Data->SetByCallerTagMagnitudes.Add
+  FGameplayTag::RequestGameplayTag("Data.Damage")
+  -35.0f
+
+SetByCallerTagMagnitudes는 Spec 안에 있는 Tag → float 맵
+"Data.Damage" 태그를 키로 해서 -35.0f를 집어넣어
+나중에 GE가 실제로 실행될 때 이 맵에서 해당 태그로 값을 꺼내 쓰게 돼.
+
+완성된 GE 인스턴스를 적의 ASC에 전달
+ApplyGameplayEffectSpecToTarget(Handle, ActorInfo, ActivationInfo, SpecHandle, TargetASC)
+이 시점부터 GAS 내부에서 "Spec을 보고 Attribute를 어떻게 바꿀지" 계산이 일어나고, 
+그 결과가 적의 UMyAttributeSet에 반영돼
+
+---
+
+GE가 Attribute를 바꾸고 나면, 
+GAS가 AttributeSet의 이 함수를 자동으로 호출해줘
+
+이 함수는 어떤 Attribute가 바뀌어도 다 호출돼
+체력이 바뀌어도 오고, 마나가 바뀌어도 와.
+
+// MyAttributeSet.cpp
+void UMyAttributeSet::PostGameplayEffectExecute(
+    const FGameplayEffectModCallbackData& Data)
+{
+    // 지금 바뀐 게 Health냐?
+    // Health 필드를 가리키는 식별자로 비교
+    if (Data.EvaluatedData.Attribute == GetHealthAttribute())
+    {
+        if (GetHealth() <= 0.0f)
+        {
+            // 죽음 GA 발동 또는 이벤트 전송
+        }
+    }
+}
+
+Data
+방금 일어난 변경의 모든 정보가 여기 들어있어
+어떤 Attribute가 바뀌었는지, 누가 적용했는지, 어떤 GE에 의한 건지, 최종 수치가 얼마인지
+
+GetHealth()
+방금 GE가 바꾼 후의 CurrentValue를 읽어
+
+---
+
+// MyCharacter.cpp
+void AMyCharacter::BeginPlay()
+{
+    AbilitySystemComponent->GiveAbility(
+        FGameplayAbilitySpec(UGA_Fireball::StaticClass(), 1)
+    );
+}
+
+void AMyCharacter::OnFireballInputPressed()
+{
+    AbilitySystemComponent->TryActivateAbilityByClass(UGA_Fireball::StaticClass());
+}
+
+---
+
+State를 직접 건드리지 마라. 모든 변경은 Action → Reducer 파이프라인을 통과해야 한다.
+
+store                          AbilitySystemComponent
+store.getState()               AttributeSet 현재값들
+store.dispatch(action)         ASC->TryActivateAbility()
+Action 객체                    GameplayAbility (의도)
+Action payload                 FGameplayEffectSpec (운반 데이터)
+Reducer                        GE Modifier + PostGameplayEffectExecute
+Middleware                     GameplayTag (파이프라인 게이트)
+
+store.dispatch({ type: "DEAL_DAMAGE", payload: { amount: 35 } })
+
+GASComp::TryActivateAbility(UGA_Fireball)
+=> FGESpec (payload: { damage: 35 })
+
+---
+
+Redux Reducer는 순간이야
+GAS는 여기에 시간 축이 추가돼
+
+이 Action이 30초 동안 State에 계속 영향을 미친다
+
+Redux-Saga의 long-running task에 가까워
+
+Tag는 Redux Middleware야
+
+Redux Middleware가 dispatch 앞에서 "이 Action 통과시킬까 말까"를 결정하잖아
+TryActivateAbility가 호출되면 "현재 Tag 컨테이너에 이 어빌리티를 막는 Tag가 있냐?"를 먼저 체크해
+(그래서 Try야. 즉, 이것은 의도이고, 시도이고, 요청이야. 실제 Authoritative Core는 GAS 의 predefined pipleline이야)
+
+이 파이프라인 구조가 C++ 코드 여러 파일에 흩어져 있어서, Redux처럼 한눈에 보이는 중앙 구조가 안 보인다
+구조는 같은데 가시성이 훨씬 낮은 거야.
+
+---
+
+GE_FireballDamage : UGameplayEffect
+    DurationPolicy = Instant
+    Modifier:
+        Attribute  = Health        ← "Health 필드를 가리켜라"
+        Op         = Add
+        Magnitude  = SetByCaller(Tag="Data.Damage") 
+
+{ type: "DEAL_DAMAGE", payload: { amount: ??? } } 에서 
+??? 자리를 SetByCaller로 비워둔 것
+
+---
+
+class UMyAttributeSet : public UAttributeSet {
+    FGameplayAttributeData Health;  // { BaseValue, CurrentValue }
+
+    ATTRIBUTE_ACCESSOR(UMyAttributeSet, Health)
+    // 위 매크로가 생성하는 것:
+    //   GetHealth()           → CurrentValue 읽기
+    //   SetHealth(float)      → CurrentValue 쓰기
+    //   GetHealthAttribute()  → "Health 필드를 가리키는 포인터" 반환
+    //                           (Layer 0 에서 Attribute 지정할 때 쓴 바로 그것)
+
+    // ↓ GAS가 GE 적용 후 자동 호출 — Redux의 Reducer
+    void PostGameplayEffectExecute(const FGameplayEffectModCallbackData& Data);
+};
+
+---
+
+class UGA_Fireball : public UGameplayAbility {
+
+    TSubclassOf<UGameplayEffect> CostEffectClass;    // → GE_FireballCost 에셋
+    TSubclassOf<UGameplayEffect> DamageEffectClass;  // → GE_FireballDamage 에셋
+    //   위 둘은 에디터에서 Blueprint asset을 드래그해서 연결
+
+    void ActivateAbility(...);   // GAS가 호출 — override point
+    void OnFireballHit(...);     // 내가 직접 호출
+};
+
+Action creator + 발동 조건 선언
+
+---
+
+AMyCharacter::BeginPlay() 
+// "이 캐릭터는 Fireball을 쓸 수 있다"고 ASC에 등록
+// Redux: store에 reducer 연결
+ASC->GiveAbility(FGameplayAbilitySpec(UGA_Fireball::StaticClass(), /*level=*/1));
+
+// AttributeSet 인스턴스를 ASC에 등록
+// Redux: store의 initial state 세팅
+ASC->AddAttributeSetSubobject(CreateDefaultSubobject<UMyAttributeSet>())
+
+
+AMyCharacter::OnFireballInputPressed
+// Redux: store.dispatch({ type: "FIREBALL" })
+// "Try" = 의도/요청. GAS 파이프라인이 태그/비용 체크 후 허가 또는 거부
+ASC->TryActivateAbilityByClass(UGA_Fireball::StaticClass());
+
+---
+
+파이프라인이 다시 내 코드를 부름
+
+// GAS가 허가 판정 후 호출
+UGA_Fireball::ActivateAbility(...) {
+
+    // ① 마나 차감 — "나(플레이어)의 ASC에 Cost GE를 dispatch"
+    ApplyGameplayEffectToOwner(Handle, ActorInfo, ActivationInfo,
+                               CostEffectClass.GetDefaultObject(), 1.0f);
+
+    // 이 시점에 GE_FireballCost가 즉시 실행됨
+    // → Mana.CurrentValue -= 20
+    // → PostGameplayEffectExecute(Mana) 호출됨
+
+    // ② 투사체 발사. 충돌하면 OnFireballHit 호출
+    SpawnFireballProjectile();
+}
+
+UGA_Fireball::OnFireballHit(AActor* HitActor) {
+    UAbilitySystemComponent* TargetASC = GetASC(HitActor);
+
+    // Action payload 조립 — GE Blueprint + 런타임 수치
+    FGameplayEffectSpecHandle Spec =
+        MakeOutgoingGameplayEffectSpec(DamageEffectClass, 1.0f);
+
+    // SetByCaller* 슬롯에 수치 주입
+    // Redux: { type: "DEAL_DAMAGE", payload: { amount: -35 } }
+    Spec.Data->SetByCallerTagMagnitudes.Add(
+        FGameplayTag::RequestGameplayTag("Data.Damage"), -35.0f);
+
+    // "적의 ASC에 dispatch"
+    ApplyGameplayEffectSpecToTarget(Handle, ActorInfo, ActivationInfo,
+                                    Spec, TargetASC);
+
+    // 이 시점에 GE_FireballDamage가 적에게 실행됨
+    // → Health.CurrentValue -= 35
+    // → 적의 PostGameplayEffectExecute(Health) 호출됨
+}
+
+// GAS가 Attribute 변경 후 자동 호출 → Reducer
+void UMyAttributeSet::PostGameplayEffectExecute(
+        const FGameplayEffectModCallbackData& Data) {
+
+    // switch(action.type) — 어떤 Attribute가 바뀌었나
+    if (Data.EvaluatedData.Attribute == GetHealthAttribute()) {
+
+        // 새 값 클램프 (GAS는 이걸 자동으로 안 해줌)
+        SetHealth(FMath::Clamp(GetHealth(), 0.f, GetMaxHealth()));
+
+        if (GetHealth() <= 0.f) { /* 사망 처리 */ }
+    }
+
+    if (Data.EvaluatedData.Attribute == GetManaAttribute()) {
+        SetMana(FMath::Clamp(GetMana(), 0.f, GetMaxMana()));
+    }
+}
+
+---
+
+이 연쇄에서 내가 작성하는 코드는 네 군데뿐이야
+나머지 화살표들은 전부 GAS가 그어줘
+GAS의 가시성이 낮은 이유가 여기 있어. 
+내 코드와 GAS 내부가 제어권을 계속 주고받으면서 실행되는데, 
+GAS 내부 부분은 코드베이스 어디에도 안 보이거든.
+
+---
+
+여러 에이전트가 공유된 세계 상태를 놓고 경쟁하는 시뮬레이션
+적, 환경, 물리, 버프, 스킬
+이것들이 전부 동일한 상태(체력, 마나, 이동속도)에 동시에 접근해서 읽고 쓰려 해.
+
+이 상태 변환들은 단순히 "값을 바꿔라"가 아니야.
+세 가지 차원이 동시에 얽혀 있어
+
+조건성. "스턴 상태가 아닐 때만", "마나가 20 이상일 때만", "이 태그가 없을 때만"
+변환은 항상 조건부야
+
+시간
+효과는 즉각적으로 끝나기도 하고, 30초 동안 지속되기도 하고, 영구적이기도 해
+
+분산
+클라이언트와 서버가 "동일한" 결과를 봐야 해.
+
+복잡도는 선형이 아니라 조합론적으로 폭발해
+능력이 100개가 되면, 그리고 각각이 서로의 상태에 조건부로 반응하기 시작하면, 
+아무도 전체 시스템의 행동을 예측할 수 없어.
+
+다수의 쓰기 주체가 조건부로 공유 상태를 변환하며, 그 효과가 시간 위에 펼쳐진다
+
+---
+
+왜 국소적 해결이 실패하는가
+
+A는 Enemy->Health -= damage를 직접 써.
+B는 데미지 계산 함수를 만들어. 
+C는 버프 시스템을 별도로 짜. 
+셋 다 맞는 코드야. 
+그런데 버프가 적용된 적에게 데미지를 줄 때 
+A, B, C 중 누구의 경로를 타야 하는지 아무도 몰라.
+
+국소적 해결이 실패하는 이유는 각 해결책이 문제의 한 차원만 다루기 때문이야. 
+조건성을 다루는 코드, 시간을 다루는 코드, 복제를 다루는 코드가 각자 분리되어 있으면, 
+이 세 차원이 교차하는 지점에서 아무도 책임지지 않는 공백이 생겨
+
+---
+
+쓰기 경로의 독점화
+Enemy->Health -= 35는 불가능하게 만들어
+모든 변경이 GE → AttributeSet 파이프라인을 통과하도록 강제해
+어디서 무엇이 일어났는지 항상 추적 가능해지고, 복제와 되돌리기가 구조적으로 보장돼.
+
+의도와 효과의 분리
+
+"파이어볼을 쏜다"는 의도(GA)와 "체력을 35 깎는다"는 효과(GE)
+를 완전히 다른 객체로 분리해
+
+의도는 조건을 검사하고 실행 타이밍을 결정해. 
+효과는 순수하게 "어떤 Attribute를 어떻게 바꿀지"만 선언해. 
+
+이 분리가 효과를 재사용 가능하고 조합 가능하게 만들어
+
+Insight 1: 분리는 조합을 가능하게 한다.
+Insight 2: 객체는 데이터셋을 의미할 수 있다.
+
+---
+
+여러 주체가 공유 상태를 조건부로, 시간적으로 변환해야 하는 시스템에서는, 
+변환의 의도와 실행을 분리하고, 
+모든 실행을 단일 경로로 수렴시키며, 
+상태를 직접 저장된 값이 아니라 활성화된 영향들의 연속적 투영으로 정의하라
+
+Redux가 이 원칙의 공간적 인스턴스라면,
+GAS는 그것의 시간적 확장이야. 
+
+Redux는 "지금 이 순간의 상태"를 Action의 누적으로 정의해. 
+
+GAS는 한 걸음 더 나아가 "지금 이 순간의 상태"를 현재 살아있는 영향들의 함수로 정의해. 
+
+Redux가 불변 히스토리 위의 투영이라면, GAS는 가변적 현재 영향들 위의 실시간 투영이야.
+
+---
+
+파이어볼은 “버튼을 눌렀다”로 끝나지 않아요.
+
+마나가 충분해야 하고, 침묵 상태가 아니어야 하고, 
+시전 중 다른 행동과 충돌하지 않아야 하고, 
+적에게 맞았을 때는 상대의 방어 버프와 약화 디버프를 반영해야 하고, 
+이 모든 결과를 서버와 클라이언트가 비슷하게 보아야 해요
+
+게임의 행동은 본질적으로 독립적 함수 호출이 아니라, 
+상태가 허락해야만 일어나는 전이예요.
+
+체력 같은 수치 상태가 있고
+스턴, 침묵 같은 의미 상태가 있고
+버프처럼 시간에 걸쳐 지속되는 상태가 있고
+네트워크 권위처럼 누가 최종 판정권을 가지는지도 상태예요
+
+“행동”이란 사실상
+현재 세계질서 전체를 통과해야만 승인되는 요청이 돼요.
+
+---
+
+다섯 가지 병
+
+조건의 산포
+if (bIsStunned)가 여기저기 흩어져요
+한 팀원은 Ability 안에서 막고, 다른 팀원은 Animation에서 막고, 또 다른 팀원은 Input에서 막아요.
+
+상태 변경 경로의 무질서
+누군가는 Health -= 35를 직접 쓰고, 누군가는 함수로 감싸고, 누군가는 이벤트를 쏴요
+그러면 “누가 바꿨는지”, “언제 되돌려야 하는지”, “중첩을 어떻게 계산해야 하는지”가 사라져요
+
+시간
+10초 버프는 세계 안에 살아남아요
+계산이 아니라 런타임의 거주자가 돼요.
+
+의미 공유의 실패
+한 시스템은 Stunned, 다른 시스템은 CrowdControl.Stun, 또 다른 시스템은 bool 플래그를 써요.
+그러면 시스템끼리 대화가 안 돼요.
+
+권위와 관측의 분리
+입력은 클라이언트에서 먼저 일어나지만, 최종 판정은 서버가 가져가요.
+그러면 세계는 본질적으로 서로 다른 시점과 관점으로 갈라져요
+GAS가 prediction을 품고 있는 건, 문제 자체가 다중 관점적이기 때문이에요.
+
+---
+
+GAS의 답은
+변화가 일어나는 세계에 몇 가지 역할을 고정해 버리는 거예요
+
+Ability
+의도
+의도는 결과가 아니에요
+
+Effect
+공식적으로 어떤 변화가 일어나는가
+승인된 변환 형식
+즉시, 지속, 무기한, 중첩, 제거 가능성까지 여기로 모아요
+상태 변화는 더 이상 임의의 코드 조각이 아니라, 제도화된 변환이 돼요
+
+Attribute
+세계가 공식적으로 추적하는 수치
+
+Tag
+세계가 공유하는 의미 언어
+시스템 간의 공용 어휘
+스턴, 실드, 버닝, 데드 같은 의미를 모든 시스템이 같은 "단어"로 이해하게 해요
+
+ASC
+각 Actor 안에 붙어 있는 작은 통치 기관
+
+---
+
+Governed State Transition System
+
+의도된 변화가 세계에 들어올 때, 
+그 변화가 현재 조건과 시간적 맥락과 의미적 제약과 권위 구조를 
+통과한 뒤에만 실제 상태가 되도록 만드는 체계
+
+---
+
+의도, 욕망이 사실이 되려면
+세계의 상태가 실제로 달라지려면
+반드시 어딘가를 통과해야 한다
+
+법적 질서
+특정한 형식을 갖춘 청원이 되어야 해
+청원은 자격을 갖춘 기관(법원)에 제출되어야 하고
+그 기관은 절차에 따라 판단하고, 
+승인된 청원만이 세계 안에서 합법적인 변화를 만들어
+
+TryActivateAbility는 청원서를 접수창구에 내미는 행위야
+파이어볼이 원한다는 것과 파이어볼이 발동된다는 것은 다른 사건이야. 
+GAS는 이 둘 사이에 — 욕망과 사실 사이에 — 법정을 세워놨어.
+
+---
+
+ActivateAbility라는 이름의 법정 승인을 받아. 
+그 순간, 의도는 처음으로 실재의 영역에 발을 들여놓아.
+파이어볼이 발동되었다는 것은 아직 체력이 줄었다는 뜻이 아니야
+
+승인된 의도는 다시 FGameplayEffectSpec이라는 이름의 정식 문서로 변환되어야 해
+이 문서는 양식을 따라야 해.
+
+그리고 이 문서는 적의 법정 — 적의 ASC — 에 제출되어야 해.
+내가 원한다고 해서 남의 상태를 바꿀 수 없어.
+반드시 상대방의 권위 기관을 통해야 해
+
+---
+
+체력이라는 수치는 단일한 사실이 아니야. 
+현재 세계 안에서 살아있는 모든 승인된 효과들의 합산이야. 
+CurrentValue = BaseValue + Σ(현재 법정에 등재된 모든 효과들)
+버프가 끝나면 — 효과가 법정 기록부에서 제거되면 — 체력은 자동으로 재계산돼
+상태는 "저장된 값"이 아니라 "현재 유효한 영향들의 투영"으로 정의되어 있으니까.
+현실에서도 어떤 사람의 "체력"은 타고난 기저값에 현재 병, 피로, 약, 감정, 날씨의 영향이 중첩된 합산이잖아
+
+---
+
+PostGameplayEffectExecute
+법원 서기가 판결 후 당사자에게 결과를 통보하는 순간이야
+당신의 체력이 방금 이런 이유로, 이 주체에 의해, 이 크기만큼 바뀌었습니다
+
+---
+
+문명이 무거운 것과 같은 이유로 무거워
+절차 없이 더 빠를 수 있어. 
+그러나 절차 없이는, 아무것도 확실하지 않아.
+
+---
+
+팔림프세스트는 본래 글을 지우고 같은 표면 위에 새 글을 덧쓴 문서인데, 
+이전 층의 흔적이 완전히 사라지지 않고 아래에서 계속 남아 있는 형식이에요
+
+---
+
+누군가는 칼끝으로 직접 살갗에 새기려 한다. Health -= 35
+누군가는 붉은 먹으로 우회하여 쓴다.
+누군가는 구두로만 낭독하고
+누군가는 본문이 아니라 여백에 주석처럼 적어 둔다.
+그리하여 어느 날 서로 다른 필체들이 겹쳐진 불량한 문서가 된다.
+이 문서의 비극은
+모든 문장이 자기가 본문이라고 우긴다는 데 있다.
+
+그래서 GAS는 필사 규율로 등장한다.
+
+GAS 이전의 세계에서 버프는
+값을 바꿔 놓고 달아나는 폭도였다.
+어디서 왔는지,
+언제 끝나는지,
+끝났을 때 무엇을 원상복구해야 하는지
+
+GAS는 이 폭도를
+고정된 역할로 승격시킨다.
+
+Effect는 선언한다.
+나는 체력을 이만큼 바꿀 것이다.
+나는 10초간 지속될 것이다.
+나는 세 번까지 중첩될 것이다.
+나는 특정 태그가 없을 때만 효력을 갖는다.
+나는 사라질 때 내가 남긴 흔적도 함께 거두어 갈 것이다.
+
+---
+
+보통 스킬 시스템을 생각할 때
+강한 의지를 상상한다.
+버튼을 누르면 불이 나가고,
+권한이 있으면 세계가 복종한다고 여긴다.
+그러나 GAS에서는 정반대다.
+의지는 가장 약한 층에 있다.
+의지는 청원하고,
+결정은 환경이 내린다.
+
+인간은 늘 “내가 했다”고 느끼지만
+실은 대부분의 행동이
+당시의 혈당, 피로, 법률, 언어, 기후,
+타인의 시선, 이미 맺어진 계약에 의해
+허용되거나 거부된다.
+
+GAS는 스킬 시스템의 얼굴을 하고 있지만,
+그 밑바닥에서는
+행동을 주체의 표현이 아니라
+조건들의 합법적 교차점으로 재정의한다.
+
+---
+
+수행발화에는 이상한 속성이 하나 있다. 조건이 맞지 않으면 그 문장은 세계에 아무 흔적도 남기지 못한다
+배를 명명하는 자리에 선주가 아닌 구경꾼이 서 있다면, 그 외침은 공중에서 녹아버린다. 
+판사가 아닌 죄수가 "유죄를 선고한다"고 말한다면, 그 문장은 단지 소리일 뿐이다
+오스틴은 이것을 **불발(misfire)**이라고 불렀다. 발화는 일어났다. 그러나 아무것도 일어나지 않았다.
+
+파이어볼을 쏘겠다는 선언은 수행발화다
+그것은 세계를 기술하는 문장이 아니다
+동사형
+의도가 언어의 형태를 입은 것
+
+마나가 충분한가 — 당신은 이 의식을 치를 자원을 갖추고 있는가.
+태그가 차단하지 않는가 — 당신은 지금 발언권을 가진 상태인가.
+어빌리티가 부여되어 있는가 — 당신은 이 발화를 할 자격이 있는 주체인가.
+
+---
+
+몸 안에 아드레날린이 분비된다. 
+이것은 선언이 아니다. 이것은 분자의 등장이다
+
+아드레날린은 "심박수를 올려라"고 명령하지 않는다. 
+아드레날린은 심장 근육의 β수용체에 결합하고, 
+그 결합이 세포 내 신호 연쇄를 일으키며, 
+그 연쇄의 끝에서 심박수가 올라간다. 
+
+ApplyGameplayEffectSpecToTarget이 하는 일이 정확히 이것이다. 
+GE는 체력에 직접 손을 대지 않는다. 
+GE는 AttributeSet이라는 수용체 집합에 Modifier로 결합하고, 
+그 결합이 CurrentValue를 바꾼다. 
+GE는 명령자가 아니라 리간드다. 
+AttributeSet은 수신자가 아니라 수용체다.
+
+---
+
+분자는 도달하지만 — 결합이 성립하지 않는다. 수용체가 없으면 효과가 없다.
+스턴 GE가 State.Stunned 태그를 추가하면, 이 Actor의 "수용체 프로파일"이 바뀐다
+태그는 지금 이 순간 이 Actor가 가진 수용체 발현 패턴이다
+
+---
+
+UMyAttributeSet::PostGameplayEffectExecute 항상성 피드백이다
+이 피드백 루프들은 값이 허용 범위를 벗어나는 것을 막는다
+
+---
+
+UE가 제공하는 primitive facility들 위에,
+GAS가 자신만의 internal primitive들을 구축하는 구조
+
+Reflection System / FProperty
+
+struct FGameplayAttribute
+{
+    TFieldPath<FNumericProperty> Attribute;
+    // "UMyAttributeSet 클래스의 Health 필드"를
+    // 런타임에 참조 가능한 형태로 들고 있는 것
+};
+
+`FNumericProperty`는 UE 리플렉션 시스템이 
+UPROPERTY로 표시된 숫자 필드에 대해 생성하는 
+메타데이터 객체야
+
+GE Modifier가 "Health를 수정해라"고 할 때, 
+실행 시점에 이 `FNumericProperty` 포인터를 통해 
+AttributeSet 인스턴스 위의 실제 float 메모리 주소를 계산해서 접근해.
+
+리플렉션이 없으면 GE가 Attribute를 선언적으로 지정하는 것 자체가 불가능해. 
+이것이 `ATTRIBUTE_ACCESSOR` 매크로가 `GetHealthAttribute()`를 생성하는 이유야
+이 함수가 `FNumericProperty*`를 감싼 `FGameplayAttribute`를 반환하고, 
+GAS 내부 시스템이 그것을 키로 써.
+
+---
+
+**FName + 전역 레지스트리**
+
+`FGameplayTag`는 내부적으로 `FName`이야. 
+그런데 단순한 `FName`이 아니라 `FGameplayTagNode` 트리에 등록된 `FName`이야.
+
+"State.Stunned.Heavy"가 등록될 때
+GameplayTagManager는 내부적으로
+    "State"
+    "State.Stunned"
+    "State.Stunned.Heavy"
+세 노드를 트리에 등록하고 각각 인덱스를 부여해
+
+FGameplayTag는 계층적 온톨로지 안에 위치한 노드의 핸들이야.
+
+---
+
+FAggregator — CurrentValue 계산의 실제 엔진
+AttributeSet 안의 각 `FGameplayAttributeData`는 내부적으로 `FAggregator`를 들고 있어
+
+---
+
+태그의 실제 저장 구조
+struct FGameplayTagCountContainer
+{
+    TMap<FGameplayTag, int32> GameplayTagCountMap;
+    // "State.Stunned" → 2  (두 개의 GE가 이 태그를 부여 중)
+
+    TMap<FGameplayTag, int32> ParentTagCountMap;
+    // "State" → 2  (부모 태그도 자동으로 카운트됨)
+};
+
+`AddTag("State.Stunned")`가 호출될 때 내부적으로 일어나는 일:
+"State.Stunned" 카운트 +1
+"State" 카운트 +1  ← 부모 태그 자동 처리
+
+이 RefCount 구조 덕분에 같은 태그를 부여하는 GE가 여러 개 중첩되어도 
+카운트가 0이 될 때만 태그가 실제로 제거돼
+**태그의 존재 여부는 단순한 bool이 아니라 RefCount > 0인지의 여부야.**
+
+---
+
+변하지 않는 것들
+GE → AttributeSet 파이프라인 구조
+CDO, 태그 레지스트리, FAggregator의 평가 알고리즘, FGameplayAttribute가 가리키는 필드의 위치.
+
+변하는 것들
+CurrentValue, ActiveGameplayEffects 컨테이너의 내용, TagCountContainer의 RefCount, GA의 상태
+
+변하지 않는 것들이 전부 "계산의 규칙"이고, 변하는 것들이 전부 "계산의 입력"
+
+---
+
+FGameplayAttribute를 AttributeSet 안의 FGameplayAttributeData 또는 float property를 기술하는 타입
+체력을 “35가 깎인 수치”보다 먼저, 어디에 변화가 기록되어야 하는가라는 자리의 문제로 봐요
+불변인 것은 값이 아니라 “자리”예요
+그 값은 언제나 AttributeSet이라는 구조 안에 놓여 있어요
+불변인 것은 체력이라는 변화의 좌석이에요
+
+무언가가 변하려면, 먼저 그 변화가 “이것의 변화”라고 말할 수 있는 동일성의 축이 있어야 해요.
+GAS는 그 축을 low-level에서는 reflected property로 붙잡고 있어요.
+그래서 GAS의 첫 번째 불변 항은 자리의 존재론, locus ontology예요.
+
+---
+
+먼저 형식이 있다.
+그 다음에야 개별 사건이 있다.
+
+UGameplayEffect 에셋은 형식이에요.
+FGameplayEffectSpec은 그 형식이 이번 상황의 문맥을 입은 것이고,
+FActiveGameplayEffect는 실제 세계 안에 살아 있는 사건이에요.
+
+GAS의 세계에서 개별 사건은 
+항상 사전에 준비된 형식의 구체화예요
+
+개별 사건은 우연하고 유동적이지만, 
+그 사건을 사건답게 만드는 문법은 미리 있어요
+
+형식의 우위
+
+---
+
+현재값이 어떻게 산출되는가를 보존하는 시스템
+
+현재는 실체가 아니다.
+현재는 지금 유효한 영향들의 투영이다
+현재를 산출하는 규칙
+
+투영은 매우 비실체적이에요
+
+CurrentValue 자체는 끊임없이 변하지만
+평가 구조, 값이 드러나는 방식은 보존돼요
+
+Gameplay Attribute를 저장·계산·수정되는 값
+Gameplay Effect는 그 값을 바꾸는 수단
+duration/infinite effect는 Active Gameplay Effects Container에 살아 있다
+
+---
+
+Gameplay Tags
+세계 안에 흩어진 상태들을 공유 가능한 의미 공간 안에 정박시켜요
+
+State.Stunned가 중요한 이유는
+그 문자열이 예쁘기 때문이 아니라 (트리 구조)
+모든 서브시스템이 같은 말로 읽고 쓰도록 강제하기 때문이에요.
+
+---
+
+그 변화가 intelligible 하려면 몇 가지 불변 항이 먼저 있어야 한다
+
+변화가 귀속될 자리
+변화가 취할 형식
+변화를 읽을 단어사전
+변화를 승인할 절차
+분산된 관점을 화해시킬 권위
+현재를 산출하는 평가 규칙
+
+불변인 것은 구문론적-제도적-형식적 구조예요
+
+---
+
+The inversion of normal programming flow is probably the real sticking point
+instead of writing code that directly does things, 
+you're writing declarations and then requesting actions 
+that the system either grants or denies
+
+GAS isn't a library you call into
+it's an environment you inhabit. 
+Your code mostly lives in callbacks
+reacting to what the system decides to do,
+they orchestrating actions directly
+
+The frustration of working within these constraints is 
+actually what makes you feel why they exist
+
+try to work around it and see what breaks
+stop studying it from the outside and start living inside it
+
+it's a framework that calls your code, 
+a data-driven system where much of the state lives in assets rather than code, 
+a network-aware system built around replication, 
+and a composition system of small declared pieces
+
+---
+
+제약을 통한 이해
+세 개의 금지
+
+enemy->Health -= 35;          // 하지 마
+fireball->Execute();           // 이런 거 없어
+if (bIsStunned) { ... }       // 이렇게 묻지 마
+
+이 세 금지가 왜 존재하는지를 역방향으로 추적하면 GAS의 전체 구조가 나와.
+
+금지 1을 위반하면 무슨 일이 생기나
+코드베이스가 커지면 어떻게 되냐
+
+enemy->Health -= warrior->AttackPower;
+enemy->Health -= trapDamage * 0.5f;
+enemy->Health -= poisonDPS * deltaTime;
+
+// 버프가 받는 피해를 증폭시킬 때
+// ... 어디다 곱해야 하지?
+// warrior 공격 코드? 함정 코드? 독 코드? 전부?
+
+버프 하나가 생기는 순간 데미지를 주는 모든 코드를 찾아서 수정해야 해
+
+새로 입사한 팀원이 데미지 코드를 하나 추가하면 
+그 팀원은 버프 로직을 끼워야 한다는 걸 어떻게 알아? 몰라
+
+GE → AttributeSet 단일 경로가 존재하는 이유가 이거야. 
+버프를 한 군데만 수정하면 모든 데미지 소스에 자동 반영되기 위해서
+
+GE는 "35를 빼라"는 명령이 아니야. 
+GE는 "Additive 채널에 -35를 등록해라"야.
+
+변화의 소스를 분산시키지 마라. 집계를 한 곳에서 해라
+
+---
+
+금지 2를 위반하면 무슨 일이 생기나
+
+AMyCharacter::PressFireball()
+{
+    if (mana >= 20)
+    {
+        mana -= 20;
+        SpawnFireball();
+    }
+}
+- 침묵 상태에서는 마법 사용 불가
+- 시전 중에는 다른 어빌리티 사용 불가
+- 멀티플레이어에서 서버가 최종 판정
+- 쿨다운 추가
+- 어빌리티 레벨 시스템 추가
+- 특정 버프가 있을 때 마나 비용 감소
+
+PressIceBolt, PressTeleport가 생기면 
+이 체크 로직이 함수마다 중복돼. 
+침묵 체크 로직이 바뀌면 모든 어빌리티 함수를 수정해야 해.
+
+TryActivateAbility가 존재하는 이유가 이거야
+모든 어빌리티에 공통으로 적용되는 게이팅 로직을 한 곳에 모아두기 위해서
+침묵 태그 체크, 비용 체크, 쿨다운 체크가 
+GAS 파이프라인 안에 있으면 
+새 어빌리티를 만들 때 이 로직을 다시 짤 필요가 없어. 
+자동으로 통과해
+
+공통 게이팅 로직을 어빌리티 안에 넣지 마라. 파이프라인이 처리하게 해라
+
+---
+
+금지 3을 위반하면 무슨 일이 생기나
+
+// 어빌리티 시스템
+if (character->bIsStunned) { return; }
+
+// 애니메이션 시스템
+if (character->stunState == EStunState::Stunned) { return; }
+
+// AI 시스템
+if (character->GetStatusEffect() == "stun") { return; }
+
+// 입력 시스템
+if (character->crowdControlFlags & CCF_STUN) { return; }
+
+네 시스템이 "스턴"을 네 가지 다른 방식으로 표현해. 
+"빙결 상태에서는 스턴처럼 행동하되, 불 데미지를 받으면 해제되어야 한다"는 요구사항이 생기면
+이 연결고리를 어떻게 표현하지?
+각자의 bool과 enum과 string과 flag로?
+
+GameplayTag
+모든 시스템이 같은 단어를 쓰게 강제
+State.Stunned라는 태그는 어빌리티 시스템도 읽고, AI도 읽고, 애니메이션도 읽어
+
+상태를 각자의 방언으로 표현하지 마라. 공유 어휘를 써라
+
+---
+
+세 금지 모두 같은 문제를 막고 있어
+지식의 분산
+이것들이 코드베이스 여기저기에 흩어지면 아무도 전체를 알 수 없어.
+GAS는 이 지식들을 강제로 한 곳에 모아
+
+---
+
+GAS는 각 Actor 옆에 붙어 있는 “상태 런타임”
+
+지금 이 Actor에게 붙어 있는 영향들을 들고 있고
+그 영향들로부터 현재 수치를 계산하고
+들어오는 행동 요청을 허가/거부하고
+그 결과를 네트워크와 맞추는 장치
+
+ASC를 Actor와 GAS를 잇는 bridge이자 main interface
+
+---
+
+non-instant Gameplay Effect는 Active Gameplay Effects Container에 들어가며
+Ability는 비용과 조건을 가진 실행 단위
+
+---
+
+Attribute를 Actor에 직접 두지 마라
+
+class AMyCharacter : public ACharacter
+{
+    float Health;
+    float Mana;
+    float MoveSpeed;
+    float AttackPower;
+    float Defense;
+    float CritRate;
+    // ... 게임이 커지면 계속 늘어나
+};
+
+class AEnemyCharacter : public ACharacter
+{
+    float Health;
+    float AttackPower;
+    // Mana는 없고, Defense는 있고...
+};
+
+GE는 Actor의 타입을 알 필요 없이 
+"이 ASC에 Health AttributeSet이 등록되어 있으면 그걸 건드려라"고 할 수 있어
+
+AttributeSet을 별도 클래스로 분리한 이유가 이거야
+
+---
+
+GE를 코드로 만들지 마라
+
+코드는 절차야. "이 순서로 이렇게 해라"를 명령으로 표현해. 
+선언은 GAS가 읽어서 네트워크 복제, 스택 관리, 조건부 적용을 자동으로 처리할 수 있어
+절차는 GAS가 읽을 수 없어. 코드는 실행될 뿐이야.
+
+void UGA_Fireball::ApplyDamage(AActor* Target)
+{
+    auto* TargetChar = Cast<AMyCharacter>(Target);
+    TargetChar->Health -= 35.0f;
+    TargetChar->Health = FMath::Clamp(TargetChar->Health, 0.f, 100.f);
+}
+
+파이어볼 데미지를 35에서 40으로 올려주세요.
+그리고 화염 저항 버프가 있으면 데미지가 반감되게 해주세요.
+레벨 5 이상이면 3초 화상 DoT도 추가해주세요.
+
+이 요청을 처리하려면 프로그래머를 불러야 해. 
+코드를 수정하고, 빌드하고, 테스트해야 해. 
+기획이 바뀔 때마다 이 사이클이 반복돼.
+
+GE를 Blueprint 에셋으로 만드는 이유가 이거야
+"이 효과는 이런 구조다"를 데이터로 표현해
+
+기획자가 에디터에서 
+Magnitude를 35에서 40으로 바꾸고, 
+조건 태그에 Buff.FireResist를 추가하고, 
+DoT용 GE를 연결해
+
+효과의 구조를 절차가 아니라 선언으로 표현해라
+
+---
+
+후처리 로직을 GE 안에 넣지 마라
+"체력이 0이 되면 죽게 하고 싶은데, 이걸 GE 안에 넣으면 안 될까?"
+
+독 데미지 GE도 체력을 깎아. 이 GE 안에도 사망 체크를 넣어야 해. 
+환경 데미지 GE도. 반사 데미지 GE도. 
+체력을 깎는 GE가 10개라면 사망 체크 코드가 10군데에 있어.
+
+그리고 "갓모드 버프가 있을 때는 체력이 0이 돼도 죽지 않는다"
+는 요구사항이 생기면 10군데를 전부 수정해야 해.
+
+PostGameplayEffectExecute가 AttributeSet에 있는 이유가 이거야
+체력이 바뀌는 이유가 무엇이든 — 데미지든, 독이든, 환경이든 — 체력이 바뀐 결과에 대한 반응은 한 군데서 일어나야 해.
+
+변화의 원인에 후처리를 붙이지 마라. 변화의 결과에 붙여라
+
+---
+
+이 구조가 없으면 두 번째 데미지 소스가 생기는 순간부터 문제가 시작돼
+GAS의 복잡도는 기능 하나를 위한 것이 아니야. 
+기능이 열 개, 백 개가 됐을 때 시스템 전체가 무너지지 않도록 하기 위한 거야
+
+---
+
+`PostGameplayEffectExecute`는 **서버에서 실행돼.** 
+서버에는 오디오 시스템이 없어. 
+사운드를 재생하는 코드를 여기 넣으면 서버에서 조용히 무시되거나, 더 나쁘게는 크래시가 나.
+
+GAS에는 이것을 위한 전용 시스템이 있어. `GameplayCue`야.
+GameplayCue는 클라이언트에서만 실행되는 것이 보장돼. 
+서버는 "이 Cue를 발동시켜라"는 신호만 복제하고, 실제 재생은 클라이언트가 해.
