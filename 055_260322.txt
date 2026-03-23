@@ -1,0 +1,1664 @@
+why does PlayerController exist as a distinct entity from both the Pawn and the player's "self"?
+
+persistence problem
+A player's identity must survive across Pawn deaths
+level transitions, possession changes
+The Pawn is mortal; the player is not
+the persistent projection of player identity into the game world
+
+In networked games, the server needs a stable anchor for a connected client's intent
+PlayerController persists on the server for the lifetime of a connection 
+while Pawns are ephemeral
+
+input-to-world translation boundary
+sits at the threshold between raw human input and world commands
+PlayerController manages the camera through PlayerCameraManager, 
+handling perception that exists outside the physical actor hierarchy.
+
+The architecture splits identity into three layers
+APlayerState holds statistical identity (score, name, ping) and replicates everywhere
+APlayerController manages volitional identity (commands, input, camera, HUD) server-side per connection
+APawn provides the physical body that can be swapped or destroyed
+
+The crucial insight is that PlayerController embodies agency without substance
+it has will and perception but no physical form
+
+The network topology reinforces this separation
+PlayerController only exists on the owning client and server, 
+creating a private channel for the player
+
+PlayerState replicates to all clients as public identity
+
+Pawn exists everywhere as physical presence
+
+When the controller possesses a pawn through the Possess mechanic, 
+it's claiming a body as its instrument while remaining distinct
+
+The HUD is presentation, owned by the controller but disconnected from physics and game logic
+
+All of this reinforces that the PlayerController sits at the boundary between human intent and the game world
+between persistent identity and mortal physics, 
+between private information and public knowledge.
+
+---
+
+subject-object distinction
+
+the Pawn is the player as object
+something physical in the world with position and physics. 
+
+The PlayerController is the player as subject—the perceiver, the intender, the commander
+
+---
+
+APawn 하나를 만들고, 거기에 입력을 연결하는 설계
+Pawn은 죽는다. 
+플레이어는 죽지 않는다. 당신의 점수, 당신의 팀 소속, 당신의 연결 상태는 사라지지 않는다
+그것을 담고 있던 Pawn이 Destroy된다면, 그 정보는 어디에 있어야 하는가.
+
+서버 입장에서 클라이언트 A는 
+"지금 이 Pawn을 조종 중인 연결"이 아니라 "연결 그 자체"다. 
+클라이언트가 리스폰되면 다른 Pawn을 받는다.
+서버는 어디에 연결을 고정시키는가.
+
+카메라는 물리 세계에 속하지 않는다
+탑다운 전략 게임의 카메라, 
+죽고 나서 바라보는 스펙테이터 시점, 
+컷씬 중 캐릭터 위를 날아다니는 카메라
+이것들은 물리 배우(Actor)의 속성이 아니다. 
+그런데 누군가가 소유해야 한다
+
+---
+
+APawn은 모든 클라이언트가 보는 물리적 정체성이다. 충돌, 위치, 애니메이션. "이 플레이어가 세계에서 어떻게 보이는가".
+당신에 대해 모든 사람이 알아야 하는 것은 PlayerState에, 
+당신과 서버만 알아야 하는 것은 PlayerController에, 
+모든 사람이 보아야 하는 것은 Pawn에 산다.
+
+PlayerController는 플레이어의 사적 채널이다. 
+서버-클라이언트 간의, 다른 누구도 개입할 수 없는, 의도의 전용선.
+
+Pawn 없이 존재하는 PlayerController
+스펙테이터 상태
+UnPossess()
+
+---
+
+the rules of the world
+Who decides when a player can join,
+what Pawn class they get, 
+when the game ends, 
+what score conditions apply
+
+only exists on the server
+It's not replicated
+
+GameState (replicated, current state of those rules playing out).
+
+The legislative branch of the game world
+
+handles player login and logout
+manages the match lifecycle through different states like waiting, in-progress, and completion.
+
+PreLogin can reject connections, 
+Login creates the PlayerController,
+PostLogin handles spawning and team assignment
+
+---
+
+세계가 어떤 종류의 존재들로 구성되는지를 선언하는 것
+
+AGameModeBase::AGameModeBase()
+{
+    DefaultPawnClass = ADefaultPawn::StaticClass();
+    PlayerControllerClass = APlayerController::StaticClass();
+    PlayerStateClass = APlayerState::StaticClass();
+    GameStateClass = AGameState::StaticClass();
+    HUDClass = AHUD::StaticClass();
+    SpectatorClass = ASpectatorPawn::StaticClass();
+}
+
+World Settings에서 GameMode를 교체하면, 
+동일한 맵이 전혀 다른 규칙과 전혀 다른 클래스 구성을 가진 다른 게임이 된다
+
+---
+
+PlayerState 없이 GameState만 있다고 가정하자.
+GameState 없이 PlayerState만 있다고 가정하자.
+
+GameState가 담는 것: 이 세계 자체에 속하는 정보.
+PlayerState가 담는 것: 이 세계 안의 특정 시민에게 속하는 정보.
+
+PlayerState는 GameState 안의 배열에서 관리된다.
+// AGameState 내부
+UPROPERTY(Replicated)
+TArray<TObjectPtr<APlayerState>> PlayerArray;
+
+---
+
+void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+out parameter는 "호출자가 빈 그릇을 건네주면, 피호출자가 채워서 돌려주는" 패턴이다.
+Get이라는 이름은 구현자가 아닌 호출자 관점에서 붙여졌다
+복제 시스템이 이 함수를 호출하면서 하는 말은: "이 클래스의 복제 대상 프로퍼티 목록을 내놔라." 
+복제 시스템 입장에서 이것은 Get이다.
+
+UPROPERTY로 선언된 필드들
+Replicated는 그 중에서 복제 대상으로 표시된 것들
+
+One-time replication과 대비
+RPC처럼 한 번 발사되고 끝나는 복제
+
+Lifetime Replication
+"이 Actor가 살아있는 동안 지속적으로 복제될"
+
+---
+
+DOREPLIFETIME
+
+OutLifetimeProps.Add(FLifetimeProperty( 
+    ReplicatedProperty->RepIndex, 
+    LocalParams.Condition, 
+    LocalParams.RepNotifyCondition, 
+    LocalParams.bIsPushBased 
+));
+
+---
+
+ARogueProjectile::ARogueProjectile()
+{
+    SphereComponent = CreateDefaultSubobject<USphereComponent>(TEXT("SphereComp"));
+    RootComponent = SphereComponent;
+    SphereComponent->SetSphereRadius(16.0f);
+    SphereComponent->SetCollisionProfileName("Projectile");
+    
+    ProjectileMovementComponent = CreateDefaultSubobject<UProjectileMovementComponent>(TEXT("ProjectileMoveComp"));
+    ProjectileMovementComponent->InitialSpeed = 2000.f;
+    ProjectileMovementComponent->ProjectileGravityScale = 0.0f;
+
+    LoopedNiagaraComponent = CreateDefaultSubobject<UNiagaraComponent>(TEXT("LoopedNiagaraComp"));
+    LoopedNiagaraComponent->SetupAttachment(SphereComponent);
+
+    LoopedAudioComponent = CreateDefaultSubobject<UAudioComponent>(TEXT("LoopedAudioComp"));
+    LoopedAudioComponent->SetupAttachment(SphereComponent);
+}
+
+UE의 CDO(Class Default Object) 시스템
+
+엔진이 시작될 때, 혹은 모듈이 로드될 때, 
+UE는 UCLASS()로 선언된 모든 클래스에 대해
+생성자를 단 한 번 호출해서 원형 객체를 만든다
+
+// 엔진 내부에서 일어나는 일
+ARogueProjectile* CDO = new ARogueProjectile(); // 생성자 호출
+// 이 CDO는 이후 모든 인스턴스의 원형이 된다
+
+실제 게임에서 Projectile이 스폰될 때는 CDO를 복사해서 인스턴스를 만든다
+
+CreateDefaultSubobject는 CDO 컨텍스트에서만 호출될 수 있도록 설계된 함수다
+CDO 바깥에서 호출하면 assert가 터진다
+일반 NewObject가 아니다
+
+// 생성자에서 불가능한 것들
+GetWorld()              // nullptr 반환, 월드가 없다
+GetOwner()              // CDO는 Owner가 없다
+SetActorLocation()      // 월드 안에 없다
+AddDynamic()            // 델리게이트 바인딩, 인스턴스 시점 작업
+
+// 생성자에서 가능한 것
+CreateDefaultSubobject<>()   // 서브오브젝트 구조 선언
+SetupAttachment()            // 계층 구조 예약
+UPROPERTY 필드 값 설정       // CDO 디폴트값 지정
+
+---
+
+SphereComponent->OnComponentHit.AddDynamic(this, &ARogueProjectile::OnActorHit);
+
+#define AddDynamic(UserObject, FuncName)
+__Internal_AddDynamic(UserObject, FuncName, STATIC_FUNCTION_FNAME(TEXT(#FuncName)))
+
+Dynamic은 함수 포인터가 아닌 함수 이름 문자열로 바인딩을 저장한다.
+
+함수 포인터는 컴파일 타임 타입 안전성을 위해, 문자열은 런타임 리플렉션 바인딩을 위해
+&는 전자를 위해 필요하고, 문자열에 섞여 들어온 &는 런타임에 조용히 제거된다.
+
+---
+
+class UGameplayStatics : public UBlueprintFunctionLibrary
+
+UBlueprintFunctionLibrary 상속의 계약
+주된 목적은 static 함수들을 묶어 Blueprint와 C++ 양쪽에 노출하는 것이다
+**“UObject 껍데기를 쓴 함수 모음 네임스페이스”**
+static UFUNCTION들을 담는 것
+
+C++ namespace는 엔진의 reflection 대상이 아니에요.
+
+---
+
+분석 원칙: 무엇이 여기 있으면 안 되는가
+함수가 어디 있어야 하는지를 알려면, 
+각 클래스의 책임 경계를 먼저 그어야 한다.
+
+AActor의 멤버 함수 — 특정 Actor 인스턴스에 귀속되는 것. GetActorLocation(), Destroy().
+UWorld의 멤버 함수 — 특정 World 인스턴스에 귀속되는 것. SpawnActor(), LineTraceSingleByChannel().
+
+UGameplayStatics가 담는 것
+World나 Actor의 인스턴스 없이는 표현할 수 없지만, 
+어느 특정 인스턴스에도 속하지 않는 것.
+
+---
+
+World 접근의 표준화된 진입점
+
+AActor*             GetActorOfClass     (UObject* WorldContext, TSubclassOf<AActor> ActorClass);
+APlayerController*  GetPlayerController (UObject* WorldContext, int32 PlayerIndex);
+AGameModeBase*      GetGameMode         (UObject* WorldContext);
+
+UFUNCTION(meta=(WorldContext="WorldContextObject"))
+Blueprint에게 "이 파라미터는 자동으로 self에서 채워라"라고 알려준다
+
+---
+
+두 Actor 사이의 관계 연산
+
+float   GetDistanceTo           (const AActor* Actor1, const AActor* Actor2);
+bool    AreActorsWithinDistance (...);
+AActor* FindNearestActor        (...);
+
+"A와 B 사이의 거리"는 A에도 B에도 속하지 않는다
+관계는 항상 어느 한 인스턴스 바깥에 있다
+이것을 담을 자연스러운 장소가 없기 때문에 UGameplayStatics에 온다
+
+---
+
+생성과 소멸의 팩토리 레이어
+
+UAudioComponent*          SpawnSoundAtLocation(...);
+UParticleSystemComponent* SpawnEmitterAtLocation(...);
+void                      PlaySoundAtLocation(...);
+
+---
+
+“전역 상태 그 자체”가 아니라, 
+이미 어딘가에 존재하는 월드/플레이어/오디오/세이브 시스템에 접근하는 함수들의 입구
+
+GameplayStatics
+Gameplay
+렌더링, 에디터, 빌드 시스템, 파일 경로 같은 전 범주가 아니라
+플레이어, pawn, state, audio spawn, actor query, save game 같은 것들
+
+---
+
+Blueprint-friendly façade
+Unreal의 많은 하부 시스템은 C++ 객체 그래프 안에 분산돼 있어요
+Blueprint 사용자에게 매번
+먼저 world를 구하고
+거기서 player controller를 타고
+다시 pawn을 찾고
+또 manager를 따라가고
+이렇게 시키면 너무 번거롭고 graph도 지저분해져요
+
+UGameplayStatics는 이 복잡한 접근 경로를 평평하게 펴주는 façade 역할을 해요
+“깊은 엔진 내부 구조”를 “한 개의 간단한 static node 호출”로 눌러주는 층이에요
+
+---
+
+시청 내부에는 실제로 수많은 부서가 있죠.
+주민등록
+건축과
+세무과
+교통과
+UGameplayStatics는 시청 민원창구에 가까워요.
+민원인은 창구에 와서 “이걸 처리해 주세요”라고 하면, 창구가 적절한 내부 부서로 연결해 줍니다
+
+---
+
+UFUNCTION(BlueprintCallable, Category="Combat", 
+meta=(WorldContext="WorldContextObject"))
+
+meta=() 안 
+UHT가 파싱해서 UFunction의 메타데이터 맵에 키-값 쌍으로 저장한다
+주로 에디터와 Blueprint VM이 소비한다
+게임 실행에 영향을 주는 것이 아니라 도구가 이 함수를 어떻게 다룰지를 지시한다.
+
+---
+
+월드 문맥에서 자주 필요한 공용 gameplay 연산을
+Damage / Projectile / Ballistics
+
+월드 스캔 / actor 컬렉션 질의
+
+Player / Controller / GameFramework 접근
+
+Level / Streaming / Travel / SaveGame
+
+Time / Pause / World Origin 
+
+Screen / View / Projection / Camera-space 변환
+
+Audio / Reverb / Spatialization / Subtitle / SoundMix
+
+---
+
+전통적인 프로그래밍 언어는 두 가지를 하나의 텍스트 흐름 안에 섞는다.
+cppint result = Foo();  // 데이터 흐름
+Bar();                  // 제어 흐름
+
+텍스트에서는 위에서 아래로 읽는 순서가 암묵적 실행 순서다
+
+┌─────────────────────┐
+▶ ────────────────── ▶   ← Execution Pin (흰색 화살표)
+│   SpawnActor        │
+○ ActorClass          │
+○ Location         ○──┘  ← Data Pin (색깔 있는 원)
+└─────────────────────┘
+
+2D 공간에 노드를 자유롭게 배치하면
+"위에서 아래"라는 암묵적 순서가 없어진다.
+따라서 실행 순서를 명시적인 선으로 표현해야 했다. 
+그것이 Exec Pin이다.
+
+---
+
+ExpandEnumAsExecs
+
+┌──────────────┐
+▶ ──────────── ▶
+│ QuerySomething│
+│           Result ○   ← enum 데이터 핀 하나
+└──────────────┘
+
+┌──────────────┐
+▶ ──────────── ▶ Success
+│ QuerySomething ▶ Failed
+│               ▶ NotFound
+└──────────────┘
+
+enum의 각 값이 별도의 Exec 출력 핀이 된다. 
+데이터를 실행 흐름으로 승격시키는 것이다.
+Switch를 함수 노드 자체에 흡수시킨다
+
+---
+
+**Exec Pin이 있는 노드 — Statement(문)**. 
+실행 흐름 안에 존재한다. 
+순서가 있다. 사이드 이펙트를 일으킨다. 
+
+▶ Print String ▶
+▶ Spawn Actor  ▶
+▶ Set Variable ▶
+
+
+**Exec Pin이 없는 노드 — Expression(식)**. 
+실행 흐름 바깥에 존재한다. 
+입력을 받아 출력을 반환한다. 
+순서 개념이 없고 사이드 이펙트가 없다. 
+
+○ Add ○
+○ GetActorLocation ○
+○ IsValid ○
+
+---
+
+Unreal이 이미 UBlueprintPathsLibrary, UPluginBlueprintLibrary, UAbilitySystemBlueprintLibrary처럼 
+주제별 library를 운영하고 있기 때문이에요
+
+Blueprint UX 관점에서
+
+어디서 찾을지 모르는 library가 너무 많아지고
+초심자 discoverability가 떨어지고
+“간단한 것 하나 하려는데 진입비용이 커지는” 문제가 생겨요
+
+---
+
+즉 베이스 클래스가 “배선(wiring)”은 책임지고,
+서브클래스는 “행동(behavior)”만 선택적으로 바꿔요.
+
+이 함수는 직접 호출되는 일반 polymorphic API라기보다,
+“순수한 도메인 계약”이라기보다 “delegate callback slot”이에요
+
+OverlapComponent->OnComponentBeginOverlap.AddDynamic(this, &ThisClass::OnActorOverlapped);
+
+---
+
+Blueprint 쪽 계약을 만들고 싶을 때는
+UFUNCTION(BlueprintImplementableEvent) 또는 BlueprintNativeEvent
+
+---
+
+수동태
+
+Actor가 무언가를 일으키는 것이 아니라
+당하거나 
+감지되는 것에 반응
+
+Actor는 실행 흐름을 소유하지 않는다
+실행 흐름이 Actor를 방문한다
+
+월드가 밀어 넣는 사건을 받는 반응 지점들의 묶음
+Actor는 월드 안에 놓인 존재이고,
+엔진은 그 존재에게 lifecycle/event를 계속 밀어 넣어요
+
+가능한, 발생이 보장되지는 않은 이벤트
+overlap이 오고
+damage가 오고
+interact가 오고
+health change가 오고
+
+발생이 보장된, 시점이 고정된 이벤트
+begin play가 오고
+tick이 오고
+
+---
+
+초기 조립과 이벤트 배선
+생성자
+PostInitializeComponents
+BeginPlay
+
+---
+
+이것들을 대응되는 자극생성기에 배선시킨다
+
+OnActorOverlap
+OnHealthChanged
+OnSeePawn
+OnInteract
+OnDeath
+
+자극 (Signal)을 받는 Port
+그 자극의 발생시점은 배후의 driving 시스템에 의해 결정된다
+그 자극의 정보는 callback의 signature에 payload로 담겨서 온다
+그리고 그 Port는 callback의 body의 형태를 하고 있다
+
+---
+
+tick 
+자기 의지의 outward verb의 자리
+“내가 매 프레임 세상을 훑는다”
+
+---
+
+충돌, 오버랩. 세계 안에 물리적으로 존재해야만 받을 수 있는 신호
+OnActorHit          ← 물리 시스템이 호출
+OnActorOverlapped   ← 물리 시스템이 호출
+
+모든 Actor가 받지만 각자 다르게 반응한다.
+PostInitializeComponents  ← 엔진 라이프사이클이 호출
+BeginPlay                 ← 엔진 라이프사이클이 호출
+
+다른 게임 엔티티가 명시적으로 호출한다
+OnHealthChanged     ← 게임 로직(AttributeSystem)이 호출
+TakeDamage          ← 다른 Actor가 호출
+Interact            ← InteractionComponent가 호출
+
+입력 촉발 
+ARoguePlayerCharacter   Move, Look, StartAction
+PlayerController만 여기 속한다. 
+인간의 의도가 직접 들어오는 유일한 클래스
+
+그런데 Actor는 그 신호의 Source를 구분하지 않는다. 
+어디서 오든 "무언가 일어났다"는 형태로 받는다.
+
+---
+
+반응의 방향
+
+내부 상태 변경 — 자신의 값을 바꾼다.
+// OnHealthChanged
+if (FMath::IsNearlyZero(NewHealth))
+    DisableInput(nullptr);
+    PlayAnimMontage(DeathMontage);
+
+다른 Actor를 생성/소멸
+세계에 새 존재를 추가하거나 제거한다.
+// OnActorHit
+PlayExplodeEffects();
+Destroy();
+
+시스템에 위임 — 자신이 처리하지 않고 다른 시스템으로 넘긴다.
+// TakeDamage
+ActionSystemComponent->ApplyAttributeChange(...);
+
+---
+
+Lifetime Scope
+
+ARogueProjectile     스폰 → 충돌 → Destroy
+ARoguePickupActor    스폰 → 획득 → Destroy
+ARogueExplosiveBarrel 배치 → 폭발 → Destroy
+
+ARoguePlayerCharacter    플레이어가 있는 한
+ARogueAICharacter        처치될 때까지
+
+AGameMode     맵 전체
+AGameState    맵 전체
+
+조건부 생존, 세션 생존, 접속 생존...
+
+안전장치로 lifespan을 두기
+안 맞고 영원히 날아가는 projectile는 쉽게 누적
+
+---
+
+사전에 N개 생성해두고 숨겨놓음
+├── 필요할 때: 풀에서 꺼내 위치/방향 설정 후 활성화
+└── 충돌 시: Destroy 대신 비활성화 후 풀에 반납
+
+---
+
+기존: ARogueProjectile (Actor) × 수백 개
+      각각 UObject, 컴포넌트, 물리 등록, 렌더 등록
+Actor 하나하나 = 개별 생명체
+
+Mass Entity Framework
+Mass: Projectile Entity × 수천 개
+      위치(float3), 속도(float3), 수명(float) — 순수 데이터
+      처리는 ProjectileMovementProcessor가 배치로
+SIMD 친화적이고 캐시 친화적이다.
+
+
+---
+
+Actor로 다루지 않아도 되는 것
+기관총 탄
+매우 빠른 소총탄
+1프레임성 히트스캔
+단순 데미지 전달체
+
+Actor이 어울리는 것
+블랙홀
+유도탄
+수류탄
+텔레포트 탄
+느리고 관찰 가능한 마법체
+
+---
+
+GameFramework는 소수의 Originator와 다수의 Reactor로 이루어진다
+
+발원 능력이 큰 Source
+발원 능력이 작은 Source
+
+연결된 엣지의 개수가 많냐
+연결된 엣지의 개수가 적냐
+
+---
+
+ARoguePlayerCharacter는 표면이지만, 
+체력/액션 상태는 AttributeComponent나 ActionSystemComponent에 더 깊게 살아요.
+
+AIController는 의사결정 표면이지만, 
+실제 사고 흐름은 BehaviorTreeComponent와 Blackboard에 많이 살아요.
+
+Projectile은 상태와 표면이 거의 같은 곳에 응축돼 있어요.
+
+---
+
+같은 On*처럼 보여도 신호는 서로 다른 관로로 와요.
+virtual override
+delegate broadcast
+direct function call
+engine tick/lifecycle callback
+input dispatch
+
+같은 “외부에서 온 흐름”이라도
+강결합 호출인지, 느슨한 방송인지, 엔진 레벨 예약 호출인지가 드러나요
+
+예를 들어 OnHealthChanged는 보통 delegate 냄새가 나고, 
+TakeDamage는 direct call 냄새가 나고, 
+BeginPlay는 엔진 lifecycle callback 냄새가 나죠
+
+---
+
+BeginPlay, Tick
+→ UWorld가 직접 순회하며 호출
+→ Actor는 UWorld의 TActorIterator 안에 등록된 존재
+
+OnActorHit, OnActorOverlapped  
+→ Chaos Physics가 FCollisionNotifyInfo를 생성
+→ UWorld::SendAllEndOfFrameUpdates()에서 일괄 디스패치
+→ Actor가 직접 호출받는 것이 아니라 컴포넌트가 먼저 받고 Actor로 올라옴
+
+TakeDamage
+→ 순수 virtual 함수 직접 호출
+→ 물리도 엔진도 개입하지 않음
+→ 다른 Actor의 코드가 명시적으로 찾아와서 호출
+
+UWorld의 스케줄러, 물리 엔진의 콜백 큐, 다른 Actor의 직접 호출
+세 개의 다른 관로가 같은 표면(Actor)에 도달한다
+
+---
+
+// UWorld가 Actor를 순회하며 직접 호출
+// Actor의 의지와 무관, 반드시 온다
+virtual void BeginPlay();
+virtual void Tick(float DeltaTime);
+virtual void EndPlay(const EEndPlayReason::Type EndPlayReason);
+
+이것은 구독이 아니다. 
+Actor가 UWorld에 등록되는 순간 자동으로 예약된다
+
+---
+
+물리 시스템 콜백 — 컴포넌트 경유
+// Chaos → UPrimitiveComponent → Actor로 버블링
+// Actor가 직접 받는 것이 아니라 컴포넌트가 직접 받음
+SphereComponent->OnComponentHit.AddDynamic(this, &ARogueProjectile::OnActorHit);
+
+물리 이벤트는 Actor에게 직접 오지 않는다. 
+컴포넌트가 먼저 수신하고, AddDynamic 바인딩을 통해 Actor로 전달한다.
+
+---
+
+Delegate Broadcast — 느슨한 방송
+// 발신자는 수신자를 모른다
+// 수신자가 미리 등록해두어야 한다
+FOnAttributeChanged& Event = ActionSystemComponent->GetAttributeListener(Tag);
+Event.AddUObject(this, &ARoguePlayerCharacter::OnHealthChanged);
+
+가장 느슨한 결합.
+
+Direct Function Call — 강결합 직접 호출
+float TakeDamage(float DamageAmount, FDamageEvent const& DamageEvent, ...);
+IRogueInteractionInterface::Execute_Interact(SelectedActor);
+
+---
+
+Input Dispatch — 인간 의지의 직접 주입
+
+다른 모든 관로는 게임 세계 안에서 발생하지만
+이것만 게임 세계 바깥(인간)에서 온다.
+
+하드웨어 이벤트 → OS → UE Input System → PlayerController → Pawn의 체인
+
+EnhancedInput->BindAction(Input_Move, ETriggerEvent::Triggered, 
+    this, &ARoguePlayerCharacter::Move);
+
+
+---
+
+Contingent Event
+조건부 사건
+overlap은 두 객체의 collision response가 overlap을 허용해야 하고, 
+관련 객체들에서 overlap event 생성이 켜져 있어야 해요
+
+hit도 blocking collision이 실제로 발생해야 하고,
+물리 시뮬레이션에서 hit를 받으려면 Simulation Generates Hit Events가 켜져 있어야 해요
+
+이런 포트는 “언젠가 불릴 수도 있는 포트”
+
+Scheduled Lifecycle Event
+특정 시점에 예약해 둔 사건
+
+---
+
+생성자
+구조를 선언하는 자리
+CDO(Class Default Object)
+
+PostInitializeComponents
+생성자보다 늦게, BeginPlay보다 이르게 해야 하는 연결
+“이 instance가 실제로 world에 올라간 뒤의 wiring”
+delegate binding
+
+BeginPlay
+실제 gameplay 시작 반응의 자리
+타이머 시작
+AI tree 시작
+initial effect 적용
+world query 시작
+
+---
+---
+---
+
+Port = Potentiality
+Trigger = Materialization
+Trigger 되어서 어디까지 퍼지는가
+Trigger 되는 모듈은 (문어처럼) 여러 개의 다리를 뻗고 있다
+
+---
+
+점대점 호출 포트
+TakeDamage
+Interact
+ApplyAttributeChange
+StartAction
+호출자와 피호출자의 결합이 더 직접적
+
+broadcast
+점대다 호출 포트
+
+---
+
+Source의 정체가 함수의 Signature 로 추상화된다
+어떤 Source이든 그 Signature 형태의 Payload를 모듈에 공급하면서 동시에 Trigger 한다
+
+---
+
+Tick
+엔진이 매 프레임 “지금이면 능동적 verb할 수 있다”라고 허용해 주는 
+주기적인/반복적인 방문 슬롯
+
+---
+
+Actor는
+engine/world/system이 호출권을 쥔 callback surface
+Component의 컨테이너
+Replication 단위의 Anchor
+
+On*는 
+서로 다른 driving system이 표준화된 payload를 밀어 넣는 port들이다
+
+Contingent Event는 조건이 충족될 때만 오고,
+Lifecycle Event는 엔진 스케줄에 따라 온다.
+
+---
+
+SphereComponent->OnComponentHit.AddDynamic(...) 
+엔진이 이미 소유하고 있는 물리/충돌 이벤트 표면에, 
+Actor가 reflection-aware 방식으로 접속하는 것
+Engine-owned observational signal
+
+FOnAttributeChanged& Event = ActionSystemComponent->GetAttributeListener(Tag); 
+Event.AddUObject(...)
+프로젝트가 직접 만든 게임 로직용 이벤트 버스에, 
+UObject 멤버 함수를 C++ 방식으로 접속하는 것
+Game-owned semantic publish/subscribe signal
+
+---
+
+GetOuter — UObject 세계의 계층
+
+모든 UObject는 반드시 하나의 Outer를 가진다
+Outer 체인이 곧 **오브젝트의 전체 경로**다.
+"/Game/Maps/MyMap.MyMap:PersistentLevel.BP_Barrel_0.StaticMeshComp"
+
+UPackage  "/Game/Maps/MyMap"          ← .uasset 파일
+└── UWorld                             ← Outer = Package
+    └── ULevel "PersistentLevel"       ← Outer = World
+        ├── AActor "BP_Barrel_0"        ← Outer = Level
+        │   ├── UStaticMeshComponent   ← Outer = Actor
+        │   └── URadialForceComponent  ← Outer = Actor
+        └── ARoguePlayerCharacter      ← Outer = Level
+            ├── URogueActionSystemComponent  ← Outer = Actor
+            └── UCameraComponent             ← Outer = Actor
+
+GC는 Outer 체인을 따라 오브젝트의 생존 여부를 판단한다. 
+Outer가 소멸하면 Inner도 소멸할 수 있다. 
+CreateDefaultSubobject가 Outer를 설정하는 이유가 여기 있다
+컴포넌트를 Actor의 Outer 안에 넣어 Actor와 생명주기를 묶는 것.
+
+네이밍 스코프
+같은 이름의 오브젝트가 다른 Outer 안에 공존할 수 있다. 
+StaticMeshComp라는 이름이 모든 Actor 안에 있어도 충돌하지 않는 이유.
+
+직렬화 경계
+.uasset 저장 시 Package를 루트로 삼아 
+Outer 체인 전체가 함께 직렬화된다.
+
+---
+
+UActorComponent::GetOwner() 
+이 컴포넌트를 품고 있는 Actor를 반환
+컴포넌트에 한해서는 Outer와 Owner가 같은 대상을 가리킨다
+
+AActor::GetOwner()
+기본값은 nullptr
+ARogueProjectile
+Outer   = ULevel                 ← "나는 레벨 안에 존재한다"
+Owner   = ARoguePlayerCharacter  ← "나는 이 캐릭터가 발사했다"
+
+---
+
+Outer
+객체가 어느 객체 안에 “거주”하는지
+이름 경로가 어떻게 생기는지
+
+USceneComponent의 attach 관계
+
+PlayerController가 Pawn을 possess하는 관계
+
+---
+
+Owner
+그것들이 특정 캐릭터의 발사물이고 
+특정 클라이언트와 연결된 객체라는 사실은 
+Outer로는 표현되지 않아요
+
+이런 종류의 의미를 실어 나르기 위해 Owner가 필요해요
+
+bOnlyRelevantToOwner가 켜져 있으면 
+그 actor를 소유한 연결만 그 actor의 property update를 받아요
+
+valid owner와 owning connection이 있어야 RPC가 실행될 수 있다
+이 함수 호출을 어느 네트워크 연결로 보내야 하느냐
+
+---
+
+Connection → PlayerController → Pawn → Inventory/Weapon/Projectile
+
+controller는 자신의 connection에 의해 owned되고, 
+pawn은 그것을 possess하는 player controller에 의해 owned돼요. 
+또 inventory item처럼 actor에 부착된 다른 actor들은 
+그 actor의 owner와 같은 owning connection을 가질 수 있어요
+
+RPC 라우팅
+Owner 체인이 끊기면 RPC가 어느 클라이언트로 가야 하는지 알 수 없다.
+
+---
+
+movement/attribute/interaction component가 자기 actor를 알아내기
+component 내부에서 actor transform, controller, world 접근하기
+replicated actor component가 자기 owning actor 기준으로 동작하기
+
+---
+
+weapon actor가 character를 owner로 두고, 
+projectile actor가 weapon이나 shooter를 owner로 두는 식이에요
+발사체가 자기 owner를 보고 자기편 무시, 킬 크레딧 전달, HUD/interaction 귀속 같은 로직을 쉽게
+
+---
+
+SetOwner() 하나로 표현하려는 것들
+
+네트워크 의미론
+  "이 Actor의 RPC를 어느 NetConnection으로 보낼 것인가"
+
+게임플레이 의미론 
+  "이 피해는 누가 일으킨 것인가" (킬 로그, 점수)
+  "이 소환물의 마스터는 누구인가"
+  "이 Projectile은 누가 발사한 것인가"
+  "Owner의 팀이 곧 나의 팀이다"
+
+// 이 SetOwner가 무슨 의미인가?
+Projectile->SetOwner(PlayerCharacter);
+  네트워크 라우팅을 위한 것인가?
+  킬 귀속을 위한 것인가?
+  주종 관계를 선언하는 것인가?
+  읽는 사람이 알 수 없다
+
+소환된 AI 미니언
+  네트워크 Owner → PlayerController (RPC 라우팅 필요)
+  주종 Owner     → SummonerCharacter (마스터가 누구인지)
+  귀속 Owner     → 마지막으로 명령한 Player
+하나의 SetOwner로는 이 세 가지를 동시에 표현 불가
+
+---
+
+UE가 이 문제를 부분적으로 인식한 흔적
+AActor* Owner;       // 소유 관계
+APawn*  Instigator;  // 인과 관계 (이걸 촉발한 Pawn)
+
+서로 다른 의미론을 하나의 채널에 다중화(multiplex)하면
+각 의미론이 명확하게 표현되지 않고, 
+충돌 시 해결 방법이 없고, 
+읽는 사람이 의도를 파악할 수 없다.
+
+시스템이 성숙할수록 하나의 채널에 묶여있던 의미론들이 분리되어 나온다.
+
+GAS의 FGameplayEffectContext, 
+Enhanced Input의 분리된 입력 채널들
+
+---
+
+UFUNCTION(BlueprintCallable, Category="Combat")
+void FireWeapon();
+C++에서 구현하고, Blueprint에서 호출한다.
+구현은 C++ 안에 고정되어 있다
+
+UFUNCTION(BlueprintImplementableEvent, Category="Events")
+void OnPickedUp();
+C++에서 선언만 한다. 구현은 Blueprint의 몫이다.
+
+// UHT가 generated.h에 생성하는 것 (단순화)
+void OnPickedUp()
+{
+    // 리플렉션을 통해 Blueprint 구현을 찾아 호출
+    ProcessEvent(FindFunction("OnPickedUp"), nullptr);
+}
+
+C++에서 `OnPickedUp()`을 호출하면 Blueprint 그래프의 구현이 실행된다. 
+Blueprint가 구현하지 않으면 아무 일도 일어나지 않는다. 기본 동작이 없다.
+
+
+UFUNCTION(BlueprintNativeEvent, Category="Events")
+void OnPickedUp();
+
+// C++에서 반드시 이 이름으로 기본 구현을 작성해야 한다
+void AMyActor::OnPickedUp_Implementation()
+{
+    // 기본 동작
+}
+Blueprint가 override할 수 있다. 
+Blueprint가 override하지 않으면 C++ 기본 구현이 실행된다.
+
+---
+
+Event Node
+"누군가가 촉발한다"를 함축한다
+
+---
+
+USActionEffect는 자기 시작 시각 TimeStarted와 지속시간 Duration만 들고 있어요.
+그런데 “지금 몇 초가 지났는가”는 자기 혼자 결정하지 않아요.
+그건 월드 전체가 공유하는 시간 기준축에서 읽어와야 해요.
+GameState가 들고 있는 서버 동기화 시간
+월드 전체가 공유하는 상태와 시간의 저장소
+
+GetWorld()->GetGameState<AGameStateBase>()
+GameState->GetServerWorldTimeSeconds()
+
+---
+
+UEngine (GEngine)
+├── UGameViewportClient       — 화면 출력과 입력 수신의 단일 창구
+├── TArray<FWorldContext>     — 활성 World들의 목록
+├── UGameInstance             — 게임 상태의 영속적 컨테이너
+└── UConsole                  — 콘솔 명령어 처리
+
+
+---
+
+GEngine과 UWorld 사이에 FWorldContext가 있다
+struct FWorldContext
+{
+    UWorld*        ThisCurrentWorld;   // 실제 World 포인터
+    UGameInstance* OwningGameInstance;
+    TArray<UNetDriver*> ActiveNetDrivers;
+    FString        TravelURL;          // 맵 전환 목적지
+};
+
+GEngine
+└── TArray<FWorldContext>
+    ├── FWorldContext (Editor World)    — 에디터 뷰포트
+    ├── FWorldContext (PIE World 1)     — Play In Editor 창 1
+    └── FWorldContext (PIE World 2)     — Play In Editor 창 2
+
+런타임에는 보통 하나. 에디터에서는 복수가 된다.
+
+---
+
+World보다 오래 사는 것
+
+UGameInstance
+├── TArray<ULocalPlayer*>     — 로컬 플레이어들 (스플릿스크린 포함)
+├── UOnlineSession            — 온라인 세션 관리
+└── TArray<USubsystem*>       — GameInstanceSubsystem들
+
+맵 전환 시 UWorld가 소멸하고 새 UWorld가 생성되는 동안 살아남는다
+세이브 데이터, 온라인 상태, 설정값처럼 맵과 무관하게 유지되어야 하는 것들이 여기 산다
+
+ULocalPlayer는 UGameInstance 소속이다. 
+물리 세계에 존재하지 않는 추상적 플레이어 표현이다.
+Actor가 아니다. 
+
+---
+
+UWorld로 내려가기 전에 패키지 레이어가 있다.
+```
+UPackage "/Game/Maps/MyLevel"   ← .umap 파일 하나
+└── UWorld "MyLevel"
+
+UWorld의 Outer는 UPackage다
+UPackage가 저장되면 그 안의 UWorld와 ULevel과 모든 Actor가 함께 저장된다
+
+---
+
+UWorld — 시뮬레이션의 컨테이너
+
+UWorld  (Outer = UPackage)
+│
+├── ULevel "PersistentLevel"          ← 항상 로드된 기본 레벨
+├── TArray<ULevelStreaming*>           ← 스트리밍 레벨들
+│
+├── 
+│   ├── AGameMode*          (서버만, 실제 Outer는 Level)
+│   ├── AGameState*         (모든 클라이언트, 실제 Outer는 Level)
+│   ├── FPhysScene*         (Chaos 물리 시뮬레이션 컨텍스트)
+│   ├── UNavigationSystem*  (길찾기 전체)
+│   ├── UAISystem*          (AI 전역 조율)
+│   └── UNetDriver*         (네트워크 연결 전체)
+│
+└── TArray<UWorldSubsystem*>          ← World 수명 동안 사는 서브시스템들
+
+World는 이들을 소유하는 것이 아니라 빠른 접근을 위해 캐싱한다
+
+---
+
+레벨 단위로 Actor 묶음을 통째로 로드/언로드할 수 있다.
+
+ULevel "PersistentLevel"  (Outer = UWorld)
+└── TArray<AActor*> Actors
+    ├── AGameMode          (Outer = Level)
+    ├── AGameState         (Outer = Level)
+    ├── APlayerController  (Outer = Level)
+    ├── APlayerState       (Outer = Level)
+    ├── ARoguePlayerCharacter
+    ├── ARogueAICharacter
+    ├── ARogueProjectile
+
+
+---
+
+AActor  (Outer = ULevel)
+│
+├── [Outer 기반]
+│   └── TArray<UActorComponent*>   (Outer = Actor)
+│       ├── URogueActionSystemComponent
+│       ├── USphereComponent
+│       └── UCameraComponent
+│
+├── [Owner 기반]
+│   └── AActor* Owner              (SetOwner로 설정, 기본 nullptr)
+│
+└── [Instigator]
+    └── APawn* Instigator
+
+Actor에서 Outer 트리와 Owner 트리가 분기한다
+
+---
+
+GEngine
+UEditorEngine, UGameEngine
+“게임플레이 월드”보다 더 바깥쪽
+프로세스 레벨 엔진 허브
+
+이 스코프에 붙는 것들
+프로세스 전체에서 하나
+UEngineSubsystem, UGameInstanceSubsystem, UWorldSubsystem
+
+---
+
+UGameInstance
+월드가 바뀌어도 살아남는 상태
+매치 간 전환을 넘어 유지되어야 하는 상위 상태
+UGameInstanceSubsystem이 붙어요
+
+---
+
+UGameViewportClient
+플랫폼별 렌더링, 오디오, 입력 서브시스템을 감싸는
+게임 뷰포트 인터페이스
+
+ULocalPlayer
+현재 클라이언트 또는 리슨 서버에서 활성인 로컬 플레이어
+맵을 넘어 유지될 수 있으며 분할 화면이면 여러 개가 존재할 수 있어요
+
+단순히 Engine → World 직선이 아니라
+한쪽에는 월드 가지
+다른 한쪽에는 로컬 플레이어 / 뷰포트 가지
+가 동시에 자란다
+
+---
+
+UWorld가 persistent level과 optional streaming levels를 가진다
+이 월드 스코프에는 UWorldSubsystem이 붙고, 
+타이머 매니저 같은 월드 범위 서비스도 여기에 귀속돼요
+
+---
+
+Engine
+“월드 하나를 돌리는 것”보다 더 바깥의 문제를 풀기 위해서
+어떤 월드가 editor용이고 어떤 월드가 PIE용인가
+어떤 world context가 어떤 game instance에 속하나
+
+월드 내부의 시뮬레이션 문제가 아니고, 
+월드들을 운영하는 운영체제적 문제
+
+
+---
+
+[ 운영체제 프로세스 ]
+        │
+        │  단 하나. 프로세스당 하나.
+        ▼
+   GEngine (UEngine*)
+        │
+        │  모든 UObject 계층의 뿌리
+        │  Outer 없음 — 이것이 시작점
+
+레이어 1 — 프로세스 스코프
+
+GEngine
+   │
+   ├──▶ UGameInstance          (맵 전환을 가로질러 생존)
+   │         │
+   │         ├── ULocalPlayer[]        (로컬 플레이어, 스플릿스크린)
+   │         ├── UOnlineSession        (온라인 세션)
+   │         └── UGameInstanceSubsystem[]
+   │               
+   │                   
+   │
+   └──▶ UGameViewportClient    (화면과 입력의 단일 창구)
+
+---
+
+GEngine
+   └──▶ TArray<FWorldContext>
+              │
+              │  에디터: PIE마다 하나씩 복수 존재
+              │  런타임: 보통 하나
+              │
+              └── FWorldContext (구조체, UObject 아님)
+                       │
+                       ├── UWorld*           (실제 World 포인터)
+                       ├── UGameInstance*    (소유 GameInstance 참조)
+                       ├── TArray<UNetDriver*>  (활성 네트워크 드라이버들)
+                       └── FString TravelURL    (다음 맵 전환 목적지)
+
+
+
+---
+
+UPackage "/Game/Maps/MyLevel"    ← .umap 파일 하나
+   │
+   │  Outer 없음 (패키지가 직렬화 루트)
+   │  패키지가 저장되면 그 안의 모든 것이 함께 저장됨
+   │
+   └──▶ UWorld "MyLevel"         (Outer = UPackage)
+
+---
+
+UWorld
+   │
+   ├── [단수 서비스들 — 각각 정확히 하나]
+   │         │
+   │         ├── FPhysScene*          물리 시뮬레이션 전체
+   │         │       Chaos가 여기서 돌아간다
+   │         │       UObject 아님 — 직접 메모리 소유
+   │         │
+   │         ├── UNetDriver*          모든 NetConnection의 관리자
+   │         │       클라이언트 연결들이 여기 모인다
+   │         │
+   │         ├── UNavigationSystem*   길찾기 정보 전체
+   │         │       NavMesh가 여기 산다
+   │         │
+   │         └── UAISystem*           AI 전역 조율자
+   │                 개별 AIController들의 배후 조율
+   │
+   ├── [World 수명 서브시스템]
+   │         └── TArray<UWorldSubsystem*>
+   │                  World가 살아있는 동안 존재하는 서비스들
+   │
+   ├── [레벨 구조]
+   │         ├── ULevel* PersistentLevel    항상 로드
+   │         └── TArray<ULevelStreaming*>   필요시 로드/언로드
+   │
+   └── [빠른 접근용 캐시 — 실제 Outer는 Level]
+             ├── AGameMode*     ← GetGameMode()
+             ├── AGameState*    ← GetGameState()
+             └── APlayerController* ← GetFirstPlayerController()
+             
+---
+
+FEngineLoop Implements the main engine loop
+게임 프레임 갱신의 소유자는 UGameEngine::Tick()
+현재 시뮬레이션 우주의 갱신 책임자는 UWorld::Tick()
+
+상위 루프가 UWorld를 매 프레임 방문한다
+Engine이 정한 프레임 루프 안에서 tick entry를 받아요
+
+“Engine이 Owner/Outer 트리를 재귀적으로 DFS 순회하는 방식”
+  우선순위 개념 결여
+
+등록된 tick function들을, 월드가 프레임 단계별 스케줄에 따라 실행하는 방식
+
+Actor/Component ticking을 tick group으로 설명하고
+각 tick group이 그 그룹에 속한 actor와 component의 tick을 모두 끝낸 뒤 다음 그룹으로 넘어간다
+tick prerequisite를 통해 같은 그룹 안에서도 선후관계를 지정할 수 있다
+
+FEngineLoop
+→ UGameEngine::Tick()
+→ 현재 UWorld::Tick()
+→ 그 월드에 등록된 tickable 대상들(actors, components, world subsystems 등)을 
+  tick group 순서와 prerequisite dependency에 따라 실행
+→ 물리/카메라/스트리밍 같은 프레임 단계들을 사이에 끼워 넣음
+
+phase + dependency 기반의 frame scheduler예요
+
+tick group은 주로 물리 시뮬레이션과의 상대적 시점을 정하기 위해 존재하고, 
+그룹은 순차적으로 진행돼요
+TG_PrePhysics, TG_DuringPhysics, TG_PostPhysics 같은 그룹
+
+“지금은 물리 전에 돌아야 하는 대상들”
+→ “지금은 물리와 병행 가능한 대상들”
+→ “지금은 물리 결과를 본 뒤 돌아야 하는 대상들”
+→ “그 뒤 타이머/카메라/스트리밍”
+
+의미 있는 프레임 단계들로 잘려 있다
+
+---
+
+int32 GuardedMain(const TCHAR* CmdLine)
+{
+    // ...초기화...
+    
+    while (!GIsRequestingExit)
+    {
+        EngineTick();  
+    }
+    
+    // ...해제...
+}
+
+void EngineTick()
+{
+    // 1. 플랫폼 이벤트 수집
+    FPlatformMisc::PumpMessages();      // OS 메시지 펌프
+    
+    // 2. 시간 계산
+    GEngine->UpdateTimeAndHandleMaxTickRate();
+    
+    // 3. 엔진 틱
+    GEngine->Tick(FApp::GetDeltaTime(), bIdleMode);
+    
+    // 4. 렌더 커맨드 플러시
+    RHITick(FApp::GetDeltaTime());
+}
+
+void UEngine::Tick(float DeltaSeconds, bool bIdleMode)
+{
+    // 1. 모든 FWorldContext를 순회
+    for (FWorldContext& Context : WorldList)
+    {
+        UWorld* World = Context.World();
+        
+        // 2. World에게 틱을 위임
+        World->Tick(LEVELTICK_All, DeltaSeconds);
+    }
+    
+    // 3. 스트리밍 관련 업데이트
+    // 4. 가비지 컬렉션 조건 검사
+    // 5. 통계 업데이트
+}
+
+void UEngine::Tick(float DeltaSeconds, bool bIdleMode)
+{
+    // 1. 모든 FWorldContext를 순회
+    for (FWorldContext& Context : WorldList)
+    {
+        UWorld* World = Context.World();
+        
+        // 2. World에게 틱을 위임
+        World->Tick(LEVELTICK_All, DeltaSeconds);
+    }
+    
+    // 3. 스트리밍 관련 업데이트
+    // 4. 가비지 컬렉션 조건 검사
+    // 5. 통계 업데이트
+}
+
+void UWorld::Tick(ELevelTick TickType, float DeltaSeconds)
+{
+    // ── Phase 1: 입력 ──────────────────────────────
+    // PlayerController들이 입력을 처리
+    
+    // ── Phase 2: 틱 그룹 순차 실행 ─────────────────
+    RunTickGroup(TG_PrePhysics);
+        // 물리 시뮬레이션 전 로직
+        // 이동 의도 결정, 애니메이션 업데이트
+    
+    RunTickGroup(TG_StartPhysics);
+        // Chaos 물리 시뮬레이션 시작 (비동기)
+    
+    RunTickGroup(TG_DuringPhysics);
+        // 물리 시뮬레이션과 병렬 실행 가능한 것들
+    
+    RunTickGroup(TG_EndPhysics);
+        // 물리 결과 수집 대기
+    
+    RunTickGroup(TG_PostPhysics);
+        // 물리 결과를 읽는 것들 (IK, 래그돌 보정)
+    
+    RunTickGroup(TG_PostUpdateWork);
+        // 모든 것이 끝난 후 마지막 정리
+    
+    // ── Phase 3: 충돌 이벤트 디스패치 ──────────────
+    // Chaos가 수집한 충돌 정보를 Actor에게 전달
+    // OnComponentHit, OnActorOverlapped 여기서 발화
+    
+    // ── Phase 4: 레벨 스트리밍 ─────────────────────
+    // 로드/언로드 요청 처리
+}
+
+---
+
+void RunTickGroup(ETickingGroup Group)
+{
+    // FTickTaskManager가 이 그룹에 등록된
+    // 모든 FTickFunction을 실행
+    
+    TickTaskManager.RunTickGroup(Group, ...);
+}
+
+여기서 중요한 것 — UWorld가 Actor를 직접 순회하지 않는다.
+Actor가 BeginPlay에서 자신의 PrimaryActorTick을 등록해두면, 
+FTickTaskManager가 그것을 틱 그룹별로 분류해서 보관한다. 
+RunTickGroup은 그 목록을 실행한다
+
+// Actor가 틱을 "예약"하는 구조
+void AActor::BeginPlay()
+{
+    // PrimaryActorTick은 FTickFunction
+    // 이것이 FTickTaskManager에 등록된다
+    RegisterAllActorTickFunctions(true, false);
+}
+
+---
+
+GuardedMain 루프
+    → GEngine::Tick
+        → UWorld::Tick (WorldList 순회)
+            → RunTickGroup
+                → FTickTaskManager
+
+Director::mainLoop()
+    → Scene::visit()
+        → Node::visit() 재귀
+            → Node::visit() 재귀
+
+---
+
+UGameEngine::Tick()은 무엇을 직접 밀어주나
+
+현재 활성 월드 문맥들을 전진시킨다
+UWorld::Tick()은 월드를 variable delta time만큼 업데이트한다
+
+---
+
+위상 + 의존성 스케줄링
+tick group으로 큰 위상을 나눈다
+
+그룹 사이사이에 월드 프레임 단계가 끼어든다
+의존성에 따라
+tick groups 사이에 
+  latent actions, 
+  world timer manager, 
+  camera update, 
+  streaming volumes, 
+  level streaming, 
+  deferred spawning 
+
+tick group 실행 → 프레임 단계 처리 → 다음 tick group 실행
+
+---
+
+FEngineLoop가 직접 소유하는 tick
+  UGameEngine::Tick()
+  UEditorEngine::Tick() 
+
+
+---
+
+상주 스레드
+프로세스
+├── Game Thread (Main Thread)
+│       앞서 다룬 것. GuardedMain 루프.
+│
+├── Render Thread
+│       FRenderingThread::Run()
+│       Game Thread가 생성한 렌더 커맨드를 소비하는 루프
+│
+├── RHI Thread (선택적)
+│       Render Thread가 생성한 RHI 커맨드를 소비
+│       GPU 제출 직전 단계
+│
+└── Audio Thread
+        FAudioThread::Run()
+        사운드 믹싱, 스패셜라이제이션 처리
+
+아래 세 스레드는 독립 루프가 아니라 파이프라인이다.
+
+Game Thread
+    │
+    │  FRenderCommandFence / 렌더 커맨드 큐
+    ▼
+Render Thread
+    │
+    │  FRHICommandList
+    ▼
+RHI Thread
+    │
+    │  GPU 드라이버 API (DX12, Vulkan, Metal)
+    ▼
+GPU (별도 하드웨어)
+
+Game Thread와 Render Thread는 보통 1~2프레임 차이로 비동기 실행된다. 
+Game Thread가 프레임 N+1을 계산하는 동안 Render Thread는 프레임 N을 렌더링하고 있다.
+
+---
+
+TaskGraph — 상주하면서 Work를 기다리는 워커 풀
+
+TaskGraph에서 실행되는 것들
+
+ParallelFor                 배열을 병렬 처리
+Async()                     일반 비동기 작업
+UE::Tasks::Launch()         UE5의 새 Task 시스템
+애니메이션 평가 병렬화
+물리 시뮬레이션 서브태스크
+내비게이션 경로 계산
+
+---
+
+스레드 간 통신 패턴
+**커맨드 큐 (Command Queue)**
+락 없는 구조로 성능 최적화
+
+Fence — 동기화 포인트
+
+// Game Thread가 Render Thread의 완료를 기다려야 할 때
+FRenderCommandFence Fence;
+Fence.BeginFence();
+// ... Game Thread 작업 ...
+Fence.Wait();  // Render Thread가 여기까지 처리할 때까지 대기
+
+**TEnqueueUniqueRenderCommand**
+
+Game Thread에서 Render Thread로 일회성 작업 전달
+람다를 캡처해서 Render Thread 큐에 삽입
+
+
+---
+
+CPU 코어들
+│
+├── Core 0: Game Thread ──────────────────────────────
+│             UWorld::Tick 루프
+│             Actor/Component 틱
+│             └── ENQUEUE_RENDER_COMMAND → 큐 push
+│
+├── Core 1: Render Thread ────────────────────────────
+│             커맨드 큐 소비 루프
+│             씬 렌더링 로직
+│             └── FRHICommandList push → 큐 push
+│
+├── Core 2: RHI Thread ───────────────────────────────
+│             RHI 커맨드 큐 소비
+│             GPU API 호출 (DX12/Vulkan)
+│
+├── Core 3: Audio Thread ─────────────────────────────
+│             사운드 믹싱 루프
+│
+└── Core 4~N: TaskGraph Workers ──────────────────────
+              Task 큐 대기 루프
+              ParallelFor, 애니메이션, 물리 서브태스크
+              로딩, 내비게이션 경로 계산
+
+
+---
+
+예산 시스템
+Tick()은 기본적으로 “이번 프레임에 호출되면 그 함수 본문이 끝까지 실행된다”는 가정 위에 짜여 있어요
+mid-tick preemption은 아니에요.
+**“호출된 함수 본문을 중간에 잘라서 다음 프레임에 이어서 실행”**
+
+레벨 스트리밍 중 actor registration 단계에 프레임당 최대 몇 ms를 쓰게 할지 정하는 값이에요
+Level Streaming Hitching Guide
+
+---
+
+선점형 breadth scheduler
+round-robin time slicing
+“World A를 2ms 돌리고 끊고, World B를 2ms 돌리고, 다시 World A로” 
+같은 보편적 per-world timeslice scheduler
+
+
+---
+
+상태 일관성
+Tick 중간에 중단하면 World가 반쯤 업데이트된 상태가 된다
+Actor A는 이번 프레임 위치로 이동했고, Actor B는 아직 이전 프레임 위치에 있다
+물리, 충돌, 렌더링이 모두 이 불일치를 봐야 한다
+처리가 복잡해진다.
+
+Tick 중간 중단 시
+    Actor A: 프레임 N+1 상태
+    Actor B: 프레임 N 상태    ← 불일치
+    물리 시뮬레이션: 어느 상태 기준으로 계산?
+
+**Unreal의 Mass Entity + 멀티스레드 Processor**
+각 Processor가 Time Budget을 인식하고
+이번 프레임에 처리할 Entity 수를 조절한다
+
+---
+
+“공평하게 조금씩 돌리자”보다 
+“정해진 시점에, 정해진 순서로, 관련 시스템이 일관되게 보게 하자”에 더 가깝습니다
+물리 시뮬레이션 전/중/후 같은 상대적 시점을 정의하고
+prerequisite로 선후관계를 명시할 수 있다
+
+
+---
+
+while (hasMoreWork) {
+    performUnitOfWork();
+    
+    if (shouldYield()) {  // 5ms 초과?
+        // 메인 스레드 반환
+        // 다음 프레임에 계속
+        scheduleCallback(continuework);
+        break;
+    }
+}
+
+React가 이것을 구현한 이유는 **브라우저 메인 스레드를 공유**하기 때문이다. 
+렌더링이 메인 스레드를 독점하면 사용자 입력, 스크롤, 애니메이션이 모두 멈춘다.
+
+---
+
+게임 World는 다르다.
+
+프레임은 원자적이어야 한다
+    물리가 절반만 진행된 World
+    AI가 절반만 결정한 World
+    충돌이 절반만 해결된 World
+    → 이 상태를 렌더링하면 아티팩트
+    → 이 상태에서 다음 로직이 읽으면 버그
+
+React의 Virtual DOM은 중간 상태를 안전하게 보존할 수 있는 구조로 설계되었다. 
+UE의 World 상태는 그렇지 않다. 
+수백 개의 Actor가 서로의 상태를 읽으면서 업데이트하는 구조에서 중간 중단은 불일치를 만든다.
+
+---
+
+UE는 처음부터 "Game Thread를 짧게 유지하라"가 아니라 
+"Game Thread 바깥으로 작업을 꺼내라"는 방향으로 설계되었다.
+
+---
+
+지금 Unreal의 일반 gameplay 코드는 대체로 이런 계약을 전제해요.
+
+Tick() 안에서 바로 위치를 바꿈
+바로 damage 적용
+바로 delegate broadcast
+바로 actor spawn/destroy
+바로 overlap/hit 반응
+바로 component state 변경
+바로 replicated state 수정
+
+즉 계산과 커밋이 한 몸이에요.
+
+읽기 단계: 오직 현재 확정 상태 N만 읽는다
+계산 단계: 변경 의도만 기록한다
+커밋 단계: 모든 의도를 합쳐서 N+1을 확정한다
+이벤트 단계: 커밋 이후에만 dispatch한다
+
+엔진 전체를 transaction/commit 모델로 재해석하는 일이에요.
+
+---
+
+연속 신호 (Continuous)
+    아날로그 스틱: -1.0 ~ +1.0 사이의 실수값
+    마우스 이동: 매 프레임 델타값
+
+이산 신호 (Discrete)
+    버튼: Pressed / Released / 두 상태만
+
+BindAxis의 콜백 시그니처:
+void MoveForward(float Value)
+매 프레임 들어오는 -1.0 ~ 1.0
+방향과 세기가 하나의 float에 인코딩된다
+
+BindAction의 콜백 시그니처
+void PrimaryAttack()
+IE_Pressed와 IE_Released를 따로 바인딩하는 것이 이것을 드러낸다
+눌림과 뗌이 별개의 사건이다
+
+Enhanced Input은 이 이분법을 해체했다.
+
+UPROPERTY(EditDefaultsOnly)
+UInputAction* Input_Move;    // Value Type: Axis2D (FVector2D)
+
+UPROPERTY(EditDefaultsOnly)
+UInputAction* Input_Sprint;  // Value Type: Digital (bool)
+
+// 콜백 시그니처도 통일됨
+void Move(const FInputActionValue& Value)
+{
+    FVector2D Input = Value.Get<FVector2D>();
+}
+
+void Sprint(const FInputActionValue& Value)
+{
+    bool bPressed = Value.Get<bool>();
+}
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
