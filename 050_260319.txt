@@ -1,0 +1,761 @@
+UMaterialInterface
+렌더러가 바라보는 인터페이스
+Insight: Interface 라는 정보에 접혀 들어가 있는 정보들 
+(다른 말로 하면, Interface 라는 정보가 함축하는 정보들 Implicated, Implied)
+(또 다른 말로 하면, Interface 라는 정보가 전제하는 구조)
+- related questions: (결국 시스템에서) 누가 보는 Interface 인가?
+- related keyowrds: Polymorphism. Abstract, 
+
+렌더링 시스템은 구체 타입을 알 필요 없이 
+이 인터페이스를 통해 Shader를 얻어간다
+
+---
+
+UMaterial은 asset이다
+실제 Material Graph를 소유
+
+UMaterialInstance / UMaterialInstanceDynamic
+
+---
+
+Material Domain
+이 Material이 어느 렌더링 경로에서 사용될지
+Surface, Deferred Decal, Light Function, Post Process, Volume
+
+Blend Mode
+이 Material의 불투명도
+Opaque, Masked, Translucent, Additive
+
+Shading Model
+조명 방정식
+Default Lit, Unlit, Subsurface, Clear Coat, Hair, Cloth, Eye, Single Layer Water
+Material Expression을 통해 동적으로 지정
+
+---
+
+Main Material Node의 Pins
+
+Base Color, Metallic, Specular, Roughness, Normal, Emissive Color, Opacity, Opacity Mask, 
+World Position Offset, Pixel Depth Offset, Refraction, Ambient Occlusion, Custom Data 0/1, Displacement
+
+---
+
+Low-Level 특성의 누수
+
+Opaque/Translucent의 하드한 이분법
+완전히 다른 렌더링 경로를 의미
+
+Opaque Material은 Deferred Shading의 GBuffer에 기하 정보를 쓰고 
+후처리에서 조명을 계산한다.
+
+Translucent Material은 GBuffer를 쓸 수 없기 때문에 
+Forward Shading 경로를 강제로 사용한다. 
+
+결과적으로 쓸 수 있는 Shading Model이 제한되고, 
+SSR이나 Contact Shadow 같은 GBuffer 기반 기능들이 막힌다.
+
+이것은 GPU에서 투명도 처리가 구조적으로 불가능하다는 사실이 새어나온 것이다
+
+진정한 추상화라면 사용자가 불투명도를 설정하기만 해도 
+나머지는 자동으로 처리되어야 하지만, 
+UE에서는 사용자가 이 경계를 인지하고 제약을 감수해야 한다.
+
+---
+
+왜 Boolean Scalar Parameter가 아니라 
+"Static Switch"가 별도 타입으로 존재
+
+런타임 분기(if문)와 컴파일타임 분기(#if문)는 
+GPU에서 비용이 근본적으로 다르기 때문이다
+
+GPU 셰이더에서 런타임 조건 분기는 
+분기하지 않는 쪽도 실행하고 결과를 버리는 방식(predicated execution)이므로 
+분기 이득이 작다. 
+
+Static Switch는 서로 다른 Shader를 컴파일해 두고 
+상황에 맞는 것을 선택하는 Permutation 방식이다.
+
+MID에서 Static Switch를 바꿀 수 없는 이유도 여기 있다
+이건 "Parameter 변경"이 아니라 "Material 변경"이다
+다른 Shader 바이너리로 전환한다
+
+---
+
+WPO(World Position Offset)는 Vertex Shader 단계에서 실행된다. 
+나머지 대부분의 입력들(Base Color, Normal, Roughness 등)은 
+Pixel Shader 단계에서 실행된다. 
+
+GPU 파이프라인의 두 셰이더 스테이지가 그대로 인터페이스에 투영된 것이다.
+
+WPO로 정점을 이동하면 픽셀 셰이더에서 계산하는 Normal은 
+이동 후의 지오메트리를 인식하지 못하므로 조명이 틀어진다. 
+이를 보정하려면 Normal도 수동으로 맞춰야 한다.
+
+---
+
+Pixel Depth Offset
+GPU 파이프라인 내부 개념
+Depth Buffer 조작을 그대로 노출
+
+Shading Model의 GBuffer 패킹 누수
+Deferred Shading은 GBuffer에 Shading Model ID를 저장한다
+이 모드에서 모든 Shading Model에 대한 조명 계산 코드가 포함된 셰이더가 컴파일되어야 하고 
+GBuffer 패킹 방식도 달라진다
+GBuffer의 비트 레이아웃이 인터페이스 선택지에 영향
+
+---
+
+Material Domain의 분리
+
+Surface와 Deferred Decal이 
+왜 같은 Material 타입으로 통합되지 못하고 
+별도 Domain으로 분리되는가
+
+Decal은 DBuffer라는 별개의 렌더 타겟에 쓰고, 
+이후 GBuffer 합성 시 적용되는 별도의 렌더링 경로를 사용하기 때문이다.
+개념적으로 "다른 표면 위에 투영하는 Material"이라는 것은 단일 개념인데, 
+렌더링 경로가 달라서 별도 타입이 되어버렸다.
+
+---
+
+Translucency Sort Priority
+투명 오브젝트의 렌더링 순서를 수동으로 지정
+GPU가 투명도를 정렬하지 못한다는 사실을 노출
+진정한 추상화라면 엔진이 카메라 거리에 따라 알아서 정렬해야 하지만, 
+복수의 반투명 메쉬가 겹치는 상황에서 자동 정렬이 깨지는 경우가 존재하기 때문에 
+사용자에게 제어권을 넘긴 것이다.
+
+Refraction 입력은 물리적 굴절이 아니다. 
+내부적으로는 Scene Color를 샘플링할 때 UV를 오프셋하는 Screen-space 근사다.
+진짜 굴절은 렌더링 시점에 굴절된 방향의 Scene Color가 아직 계산되지 않았기 때문에 불가능하다
+즉, 이 인터페이스는 실제로 구현된 것(UV 왜곡)을 숨기고 물리적 개념(굴절)으로 포장하는 데 실패했다
+
+---
+
+렌더링 파이프라인의 어느 단계에서, 무엇을 입력으로 받는 함수의 인자가 되는가
+
+그룹 1 — Geometry Modification
+
+**World Position Offset**
+
+Mesh는 CPU에서 정점 데이터를 제출한 뒤, 
+Vertex Shader 단계에서 최종 위치가 결정된다
+
+이 단계에서 위치를 조작할 수 있는 유일한 Material 인터페이스가 WPO다
+풀의 바람 흔들림, 파도, Morph 애니메이션 등이 이 Pin을 통해 Material 레이어에서 표현된다
+
+이 Pin은 "표면이 어떻게 생겼는가(appearance)"가 아니라 "표면이 어디에 있는가(geometry)"를 제어한다
+다른 거의 모든 Pin이 appearance를 다루는 것과 달리, WPO만 geometry를 다룬다
+
+Vertex Shader → Pixel Shader
+WPO로 정점을 이동하면 Pixel Stage에서 계산되는 Normal은 이동 이전의 기하를 기준으로 한다
+
+**Displacement**
+
+Tessellation을 통해 정점을 추가 분할한 뒤 각 정점을 Normal 방향으로 이동한다
+Height Map 기반의 실제 기하 변형이 목적이다
+Displacement는 정점의 "높이"를 Normal 방향으로만 바꾼다.
+(WPO는 정점의 "위치"를 임의 방향으로 바꾼다)
+
+Tessellation은 Hull Shader → Tessellator → Domain Shader 단계를 요구
+이 파이프라인이 활성화되어 있어야만 Displacement Pin이 유효하다.
+
+UE5에서 Nanite의 Virtual Geometry가 이 역할을 대체
+
+---
+
+그룹 2 — GBuffer Material Properties
+
+Deferred Shading + Microfacet PBR
+
+이 그룹의 Pin들은 픽셀 셰이더에서 계산된 뒤 GBuffer의 특정 채널에 기록
+조명은 나중에 별도의 Lighting Pass에서 GBuffer를 읽어 계산
+이 그룹의 Pin들은 "조명 함수에 넘길 인자"들
+
+**Base Color**
+표면의 고유색과 입사광을 분리
+동적 조명 변화에 대응 기반이 된다 (Combinatorics 사고방식)
+Deferred Shading의 전제 
+
+물리적으로 표면 색은 어떤 파장의 빛을 얼마나 반사하는지(albedo)로 정의된다.
+Base Color는 이 albedo에 해당
+
+**Metallic**
+금속과 비금속은 빛과 상호작용하는 방식이 물리적으로 다르다
+
+금속(도체)은 자유 전자가 빛을 흡수하여 확산 반사(diffuse)가 없고, 
+반사색이 금속 고유의 색(complex IOR)을 가진다
+비금속(절연체)은 확산 반사가 있고 반사색이 거의 흰색이다
+
+Metallic Pin은 이 두 극단 사이를 0-1 스칼라로 보간한다
+
+Epic의 Metallic/Roughness PBR Workflow. 
+물리적으로 Metallic은 연속값이 아니라 이분법이지만,
+더럽거나 산화된 금속 표면을 표현하기 위해 0-1 범위를 허용한다
+
+**Specular**
+비금속의 정반사 강도를 조절
+
+물리적으로 비금속의 F0(수직 입사 반사율)는 
+물질의 굴절률로 결정되며, 대부분의 일반 물질이 약 2-4% 범위에 있다
+UE의 Specular 기본값 0.5는 F0 = 0.04(4%)에 해당한다
+
+Schlick Fresnel 근사.
+F0를 직접 저장하는 게 아니라 0-1 범위의 Specular 값으로 매핑한다
+이 Pin이 존재하는 이유는, 물리적으로 엄밀하지 않더라도 
+아티스트가 비금속의 반사 강도를 직관적으로 조절할 수 있어야 하기 때문이다.
+파이프라인의 내부 파라미터 하나를 노출한 것이다
+
+**Roughness**
+
+표면의 미세 구조(microfacet distribution)를 제어
+
+Roughness 0은 완벽하게 정렬된 microfacet → 거울 반사, 
+Roughness 1은 완전히 무작위한 분포 → 확산적 반사.
+조명 계산에서 정반사 lobe의 폭을 결정하는 핵심 파라미터다.
+
+GGX(Trowbridge-Reitz) Microfacet BRDF. 
+BRDF에서 Normal Distribution Function과 Geometry Term이 Roughness를 입력으로 받는다. 
+즉 이 Pin은 특정 BRDF 구현체의 파라미터가 직접 인터페이스로 올라온 것이다. 
+UE가 Blinn-Phong을 쓰던 시절에는 이 자리에 Specular Power(지수)가 있었다.
+
+**Normal**
+
+Mesh의 기하학적 법선과 다른 "지각적 법선"을 픽셀 단위로 지정한다
+기하 변형 없이 고주파 표면 디테일(scratch, bump, wrinkle)을 표현하기 위해 존재한다
+
+근사의 유효 범위 
+시차(parallax)가 없고, 가장자리 실루엣이 실제 기하를 따른다
+Normal Map은 빛이 표면에 부딪히는 방향을 속이지만,
+기하 자체가 바뀌지 않으므로 실루엣과 Self-Occlusion은 속일 수 없다.
+
+**Ambient Occlusion**
+간접광의 국소적 차폐
+Screen-space 방법은 넓은 범위의 AO는 근사하지만 
+텍스처에 베이크된 고주파 AO(틈새, 나사구멍, 직물 사이)를 재현하지 못한다
+
+이 Pin은 아티스트가 베이크한 AO 맵을 간접광 계산에 곱해 들어가도록 한다
+
+간접광과 직접광의 분리
+이 값은 조명 Pass에서 
+간접광(Image-Based Lighting 등) 항에만 곱해지고, 직접광에는 곱해지지 않는다. 
+
+"그림자는 직접광이 막히는 것이고 AO는 간접광이 차폐되는 것"이라는 개념적 분리
+
+**Custom Data 0 / 1**
+일부 Shading Model은 표준 PBR 파라미터 외에 추가 데이터를 필요
+Subsurface는 표피 아래 산란색이 필요하고, 
+Clear Coat는 코팅 레이어의 Roughness가 필요하며, 
+Hair는 Backlit 값이 필요하다. 
+이 데이터들이 Custom Data 0/1을 통해 GBuffer의 특정 채널에 기록된다
+
+GBuffer의 채널 레이아웃이 Shading Model마다 다르다는 사실. 
+Custom Data 채널이 무엇을 의미하는지는 Shading Model에 따라 달라진다. 
+즉 같은 Pin이 문맥에 따라 다른 의미를 가지는 다형성 구조인데, 
+이는 GBuffer 비트를 아끼기 위한 하드웨어 레벨 결정이 인터페이스까지 올라온 것이다
+
+---
+
+그룹 3 — Lighting Bypass Term
+
+**Emissive Color**
+
+일부 표면은 입사광 없이 스스로 빛을 낸다
+스크린, 불꽃, 네온사인은 조명 방정식의 출력과 무관하게 특정 색과 강도를 가진다
+이 값은 BRDF 계산을 거치지 않고 최종 색에 더해진다
+
+Final Color = BRDF_result + Emissive
+조명 방정식이 가산적(additive) 항들의 합으로 구성된다는 것
+
+Lumen이 활성화된 경우 광원으로 인식될 수 있어 간접광에도 기여
+
+---
+
+그룹 4 — Visibility / Blend Control
+
+
+**Opacity Mask**
+Masked Blend Mode에서 사용
+픽셀 셰이더에서 임계값 이하면 discard
+해당 픽셀의 처리를 중단
+GBuffer에 쓰고 Deferred Shading 경로를 탄다
+불투명도가 이진(binary)
+
+**Opacity**
+Translucent Blend Mode
+연속적인 알파 블렌딩
+Forward Shading 경로
+GBuffer에 쓰지 않는다
+
+두 개의 근본적으로 다른 렌더링 경로를 선택하는 스위치
+물리적으로 이 두 개념은 연속선상에 있지만, 파이프라인 구조가 이 선을 이분화한다.
+
+---
+
+그룹 5 — Depth Buffer Manipulation
+
+**Pixel Depth Offset**
+Depth Buffer에 기록되는 깊이값을 픽셀 단위로 앞/뒤로 밀어낸다
+실제 기하 위치와 Depth Buffer에 기록되는 위치를 분리한다
+
+평면 폴리곤에 나무 텍스처를 입혀 원거리 나무를 표현할 때,
+깊이값을 왜곡해서 단순한 평면처럼 보이지 않게 만든다
+원거리 LOD Impostor 카드의 실루엣 보정이다
+
+이 Pin은 GPU 파이프라인의 Depth Write 단계를 직접 노출한다. 
+"재질"과 "깊이"는 개념적으로 분리된 것처럼 보이지만, 
+구현상 하나의 픽셀 처리 결과에 묶여 있기 때문에 
+이 조작이 Material Node에 놓이게 되었다.
+
+Depth Buffer가 렌더링 파이프라인에서 별도로 관리되는 버퍼이며, 
+픽셀의 실제 기하 위치와 Depth Buffer에 기록되는 값이 
+독립적으로 제어 가능하다는 것.
+
+---
+
+그룹 6 — Screen-Space Composite
+
+Refraction
+투명한 매질(유리, 물)을 통과하는 빛은 굴절된다
+이 현상을 재질 인터페이스에서 표현
+
+그러나 실제로 구현된 것은 굴절이 아니다.
+
+내부적으로 이미 렌더링된 Scene Color 텍스처를 샘플링할 때의 UV Offset으로 사용된다. 
+굴절된 광선이 실제로 어느 픽셀에 닿는지 추적하는 것이 아니라, 
+현재 픽셀 좌표에서 일정 거리 오프셋된 화면 좌표의 색을 가져오는 것이다.
+
+레이트레이싱이 아닌 Rasterization 기반 렌더링의 구조적 한계다
+진짜 굴절을 구현하려면 굴절된 방향의 Scene Color가 이미 계산되어 있어야 하는데, 
+Forward Shading 경로에서 투명 재질이 렌더링될 시점에는 
+불투명 표면의 색만 존재하고, 다른 투명 표면을 통과한 색은 존재하지 않는다
+
+---
+
+Model A
+재질의 물리적 속성을 기술하면 조명 시스템이 나머지를 처리한다는 선언적 모델
+
+Model B
+명령형(imperative) 성격
+재질의 물리적 속성을 서술하는 것이 아니라, 
+렌더링 파이프라인의 특정 단계에서 실행될 코드&파라미터를 지정
+
+Model C
+렌더링 경로의 선택 
+GPU 블렌딩 스테이트를 제어
+
+렌더러 입장에서 하나의 드로우콜에 하나의 Material이 바인딩되고, 
+그 Material이 파이프라인 전체에 걸쳐 영향을 미친다
+
+아티스트가 보기에는 "재질 설정"이라는 단일 개념이지만, 
+파이프라인이 보기에는 여러 단계에 각기 다른 인자를 제공하는 다중 계약이다. 
+Main Material Node는 이 다중 계약의 집합점이다
+
+Main Material Node는 단일 서술문이 아니라 
+파이프라인 전역에 흩어진 인자들의 접수창구다.
+
+핀들은 같은 평면에 나란히 놓여 있지만
+실제로는 서로 다른 시간, 서로 다른 스테이지, 서로 다른 버퍼 체계에 꽂히는 인자들
+
+평면화된 다중성
+다른 계층의 입력들이 하나의 그래프 UI 위에 평면적으로 배열되어 있는 상태
+
+허위의 동위성
+UI에서는 동등해 보이지만, 실제 구현 비용과 위치는 전혀 동등하지 않은 상태
+
+---
+
+Material
+아티스트가 편집하는 것, 
+디스크에 저장되는 것, 
+C++에서 참조하는 것, 
+렌더러가 실행하는 것
+
+각각 다른 형태를 요구
+
+레이어로 분화
+
+---
+
+Layer 1 — Asset / Identity Layer
+
+UMaterialInterface
+렌더러와 게임 코드가 구체 타입을 알 필요 없이 Material을 다룰 수 있는 
+다형성 계약
+
+GetRenderProxy(), GetMaterial(), GetTextureExpressions() 
+
+Static Mesh Component는 자신이 UMaterial을 쓰는지 UMaterialInstance를 쓰는지 알 필요가 없다. 
+둘 다 UMaterialInterface이므로 동일하게 바인딩된다.
+
+UMaterial
+에셋
+세 가지를 소유
+TArray<UMaterialExpression*> Expressions; 에디터에서 연결한 모든 노드
+TArray<TObjectPtr<UMaterialExpression>> FunctionExpressions; 루트 표현식
+FMaterialResource; 컴파일된 셰이더 표현
+
+UMaterialInstance / UMaterialInstanceDynamic
+실제 그래프를 소유하지 않고 부모를 참조한다
+오버라이드 값들을 별도로 저장한다
+
+UMaterialInstanceDynamic은 런타임에 
+Set Scalar, Vector, Texture ParameterValue()를 허용
+FStaticParameterSet의 내용이 달라지면 다른 셰이더 퍼뮤테이션이 필요하므로, 
+이것은 런타임에 변경 불가능한 컴파일 키다.
+
+---
+
+Layer 2 — Expression / Graph Layer
+
+UMaterialExpression
+Material Editor의 모든 노드가 이 클래스의 서브클래스다
+각 Expression은 입력 핀과 출력 핀을 가진다.
+
+// 출력: 컴파일 시 HLSL 코드 청크를 생성
+virtual int32 Compile(FMaterialCompiler* Compiler, int32 OutputIndex);
+
+구조적 특징은 **UMaterialExpression들이 UObject이고 UMaterial에 소유된다는 것**이다. 
+에디터에서 노드를 추가할 때 실제로 UMaterialExpression 인스턴스가 생성되어 UMaterial의 Outer로 저장된다. 
+Material 에셋이 저장될 때 이 모든 Expression 오브젝트가 함께 직렬화된다.
+
+UMaterialFunction
+`FunctionInput`과 `FunctionOutput` 노드를 경계로 가진다
+Insight: 함수는 경계를 공유소유 한다고 생각할 수 있다
+즉, 들어오는 경계 (파라미터 리스트의 경계 - 마치 Port들이 늘어서 있는 것 같다)
+그리고 나가는 경계 (Return Value)
+이 경계는 가시적이고 이 경계 너머는 비가시적이다.
+
+---
+
+Layer 3 — Compilation Layer
+변환 담당
+
+UMaterialExpression 그래프를 순회하며 HLSL 코드를 생성
+
+Permutation 시스템
+
+다음의 조합이 각각 독립적인 셰이더 바이너리 (HLSL 파일)를 만든다
+ShaderType × VertexFactoryType × FeatureLevel × QualityLevel × StaticParameterSet
+
+ShaderType은 이 Material에서 어떤 셰이더 단계를 쓸지다(VS, PS, CS 등)
+
+Vertex Factory는 정점 데이터를 가져오는 방법을 정의 
+이 Material이 Static Mesh에 적용되는지, Skeletal Mesh인지, Landscape인지, Particle인지에 따라
+
+StaticParameterSet는 Static Switch의 조합
+Switch가 n개 있으면 최대 2^n개의 퍼뮤테이션
+이 퍼뮤테이션 폭발이 Material 컴파일이 느린 이유이며,
+Static Switch를 남용하면 안 되는 이유다.
+
+---
+
+Layer 4 — Render Thread Layer
+게임 스레드와 렌더 스레드의 분리
+
+UMaterial은 게임 스레드의 오브젝트이고, 렌더러가 직접 접근할 수 없다.
+
+FMaterialRenderProxy
+렌더 스레드에서 Material을 나타내는 객체. 
+UMaterialInterface가 GetRenderProxy()를 통해 이것을 반환한다. 
+렌더러는 UMaterial이나 UMaterialInstance를 직접 보지 않고 
+오직 FMaterialRenderProxy만 본다.
+
+FMaterial
+컴파일된 Material의 렌더 스레드 표현이다. 
+GetShader<>()를 통해 특정 퍼뮤테이션의 셰이더를 꺼낼 수 있다.
+
+FMaterialResource는 FMaterial을 구현
+UMaterial이 소유
+
+---
+
+Layer 5 — Parameter Layer
+Material의 값이 어떻게 오버라이드되는지를 추적하는 레이어
+Insight:
+Keep track of 는 non-Immediacy (시간적 분리) 에서 동일성을 유지할 필요성을 암시한다
+저장은 그 필요성의 한 충족방식이다.
+
+---
+
+Layer 6 — Editor Layer
+
+UMaterialGraph / UMaterialGraphNode
+에디터의 그래프 표현.
+UEdGraph를 상속
+
+UMaterialExpression과 UMaterialGraphNode는 일대일 대응하지만 별개의 오브젝트다. 
+UMaterialExpression이 "실제 컴파일 대상"이고,
+UMaterialGraphNode는 "에디터에서 시각적으로 보이는 표현"이다
+
+---
+
+이 세 형태 사이의 변환(편집 → 컴파일, 컴파일 → 실행)이 각각 비용이 크고 단방향이다. 
+편집에서 실행으로 가는 경로는 있지만, 
+실행 중인 셰이더에서 원본 그래프를 복원하는 경로는 없다. 
+Material 인프라 전체는 이 단방향 변환 파이프라인을 지탱한다.
+
+UMaterialInterface라는 추상 경계는 이 세 형태 중 게임 코드가 
+"첫 번째 형태(편집 가능한 형태)의 어느 구체 구현이냐"를 알지 못하도록 차단하면서, 
+세 번째 형태(실행 가능한 형태)로 가는 경로(GetRenderProxy())만을 열어두는 설계다
+
+---
+
+단어와 정보압축
+단어는 그 단어를 가능하게 만드는 전제 구조 전체를 함께 운반한다.
+
+"Interface"
+다형성 계약 구조
+누가 보는가? - 관찰자, Caller
+누가 이 이름(자리)을 수행하는가? - Implementer
+
+---
+
+Interface는 누구를 위한 창문인가를 결정한다.
+특정 관찰자의 관점을 특권화한다
+
+UMaterialInterface가 GetRenderProxy()를 열어두고 Material Graph를 닫아두는 것은, 
+"이 경계 너머의 소비자는 렌더러다"라는 설계 결정이 
+이름과 메서드 목록으로 굳은 것이다
+
+---
+
+바이너리에는 원래 그래프의 의미론적 구조가 없다. 
+바이너리는 행동만 보존하고 의도는 버린다.
+
+"표현의 변환"은 항상 어떤 정보를 보존하고 어떤 정보를 버릴지를 선택한다
+무엇이 보존되느냐, 무엇이 선택되느냐 가 변환의 Primitive 이다
+
+---
+
+함수의 경계는 공동 소유물이다
+당연히 호출자만의 것이 아니지만 그렇다고 완전히 구현자만의 것도 아니다
+Interfacae는 이 경계를 기존 함수 선언/정의/호출 구조에서 더 깔끔하게 추상화한 구조라고 할 수 있다.
+즉, 기존 구조에서는 마치 경계가 선언/정의부의 소유처럼 보이지만
+Interface는 그 경계가 공동 소유물인 것을 더 직접적으로 표현한다.
+
+FunctionInput은 함수 내부에서는 "그냥 사용할 수 있는 값"이지만, 
+함수 외부에서는 "무언가를 연결해야 하는 포트"다
+
+가시성의 경계는 변경 영향의 경계다
+내부를 볼 수 없기 때문에 내부 구현을 바꿔도 외부 계약이 유지되면 호환된다
+compatibility, substitutability
+
+---
+
+선언형 모델과 명령형 모델
+
+Leaf는 명령형으로, Internal Node는 선언형으로,
+그리고 그 연결, 순회, Resolve 를 인프라로 배치하라
+
+선언은 Target Domain 을 Practical Requirement 에 따라 Classification 하고
+적절한 수준의 Parameterization (즉 Combinatorics) 을 통해 Variety 를 Achieve한다
+그러나 Pre-Tailored Lines 외에도 최적의 형태 (Customization) 를 위한 Escape Hatch 를 Provide 해야 한다.
+
+---
+
+렌더러
+이게 UMaterial인지 UMaterialInstance인지에 관심이 없어요
+중요한 것은 renderable contract, 렌더 가능한 표현으로 갈 수 있어야 해요
+머티리얼 인스턴스가 부모 머티리얼을 기반으로 파라미터만 바꾸는 구조
+같은 종류의 렌더링 개체처럼 다뤄진다
+
+게임 코드
+그냥 슬롯에 바인딩 가능한 것
+
+아티스트
+그래프 편집기
+node graph
+
+Interface는 내부를 숨기는 벽이 아니라, 
+외부를 위해 조각된 단면이다
+
+---
+
+인터페이스는 파이프라인의 지도를 숨기지 못한다
+GPU pipeline stage의 흔적
+
+---
+
+“특정 판정자만 속이는 거짓말”
+Normal map은 조명 판정자를 속임
+PDO는 depth 판정자를 속임
+Refraction 근사는 screen sampling을 속임
+Translucency sort priority는 정렬 판정자를 수동 보정함
+
+---
+
+파라미터 분류기
+“이것은 속성인가, 경로 선택자인가?”
+“이 입력은 어느 판정자를 속이는가?”  (자동 파이프라인에 인위적인 개입/조작)
+“이 파라미터는 값을 바꾸는가, 프로그램을 바꾸는가?”
+
+---
+
+수많은 파라미터들이 Flat하게 주어지는 시스템에서는
+각 파라미터들의 귀결, 각 파라미터가 대응하는 Infrastructure 의 개념을
+사용자가 인지해야 한다. 
+
+e.g. 이 파라미터 그룹은 렌더링 경로를 고르는 스위치
+질료 속성(property)과 경로 속성(route property)의 구분
+
+---
+
+이름에 관하여
+
+구현 이름: 실제 내부가 뭔지 말함
+물리 이름: 사용자가 기대하는 현상을 말함
+은유 이름: 이해를 돕기 위한 비유를 말함
+
+약속 과잉 명명
+이름이 구현보다 더 큰 물리적/개념적 완전성을 암시하는 현상
+
+이름과 실재의 간극
+이름 너머의 실재를 봐야 한다
+그러나 이름은 어쨌든 실재를 표현한다
+그 표현하는 방식에 여러 가지가 있다는 것을 체득한다.
+(정보가 변환되는 여러 방식 = 정보가 손실되는 여러 방식 = 정보가 표현되는 여러 방식)
+
+---
+
+Keep track of 에 대하여
+
+하나의 순간 - 예를 들어 하나의 문장 혹은 하나의 함수호출
+을 넘어서 동일성이 유지되어야 할 때
+
+하나의 순간에서 다음의 순간으로 - 공간적 점유의 단절
+
+---
+
+침묵의 주장
+공간적 배치(평면)가 개념의 동위성을 주장한다
+두 물건이 같은 선반 위에 나란히 놓이면, 그 배치 자체가 "이 둘은 같은 종류다"라고 말한다
+
+공간적 동위성의 암시
+
+평탄화(flattening)는 표현의 단순성을 위해 하부의 이질성, (Irrational한) Ratio 를 은폐한다. 
+그리고 이 은폐는 요약과 복잡성의 경계 - 지식의 형태가 된다.
+
+Attention 의 Architecture - Distribution
+이것이 무엇을 잊으라고 요구하는가
+
+"구현을 잊으라"고 말한다. 믿으라고 말한다
+"구체 타입을 잊으라"고 말한다. 너머에 있는 구체적인 것의 메모리 관리를 맡기라고 한다.
+이름은 그 이름의 내부세계는 잊으라고 말한다
+
+레이어 구조는 아래 레이어를 잊으라는 연쇄 지시이다
+
+이해는 잊으라고 요구된 것들을 복원하는 능력이다
+Recongnizer는 잊으라고 요구된 것들을 선택적으로 기억하는 사람이다.
+망각이 위험한 상황에서는 망각을 해제한다
+
+---
+
+조명 판정자는 "이 픽셀에 빛이 얼마나 닿는가?"를 묻는다
+그는 Normal 벡터만 본다
+
+깊이 판정자는 "이 픽셀이 다른 픽셀보다 얼마나 가까운가?"를 묻는다
+PDO가 깊이값을 조작해도
+깊이 판정자는 Depth Buffer만 본다
+
+국소적 진실의 허용이 최적화와 근사의 공간을 만들어낸다
+
+---
+
+시스템 이해란 다중 단면들의 집합을 마음속에서 통합하는 능력이다
+
+---
+
+침묵의 주장은 명시적 주장보다 강하다. 
+명시적 주장은 반박될 수 있다. 
+침묵의 주장은 인식의 배경 조건으로 작동하기 때문에 
+의식의 검열을 통과한다
+
+명시적 주장은 반박될 수 있다
+부정하려면 먼저 그 주장이 존재한다는 것을 인식해야 하는데, 
+침묵하기 때문에 인식되지 않는다.
+
+---
+
+표현 작업의 인지 부하
+평탄화는 인지 부하 관리의 기술
+
+평탄화된 표면 아래의 이질성
+시스템이 예측 불가능하게 느껴진다.
+
+인터페이스의 설계는 항상 두 집단을 상정한다
+평탄화가 성립하는 범위에서 작업하는 사람들과, 
+그 범위 밖으로 나가야 하는 사람들
+
+전자에게 평탄화는 이득이다
+후자에게 평탄화는 장애물이다
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---

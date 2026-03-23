@@ -1,0 +1,1044 @@
+실시간 렌더링
+3D 이미지 생성과 사용자 반응이 빠른 루프를 이루는 것이 핵심
+
+사용자의 입력과 화면 변화가 빠르게 연결
+그래픽스 하드웨어
+하드웨어 가속
+
+렌더링 프리미티브는 보통 점, 선, 삼각형
+기하 엔티티의 집합을 model/object
+렌더링할 전체를 scene
+
+시각적 외형이라는 뜻의 셰이딩
+GPU의 프로그래머블 단계(shader) 라는 뜻의 셰이더
+
+---
+
+가상 세계의 물체·카메라·빛 정보를 
+어떻게 2D 화면 이미지로 바꾸는가
+
+Application -> Geometry Processing -> Rasterization -> Pixel Processing
+
+The Application Stage는 CPU 쪽 세계
+충돌 판정, 애니메이션, 물리, 입력 처리, 컬링
+이번 프레임에 실제로 보낼 렌더링 프리미티브들을 준비
+“무엇을 그릴지”를 정리
+points, lines, triangles 같은 렌더링 프리미티브
+
+Geometry Processing
+GPU가 본격적으로 기하를 다루는 구간이에요
+
+각 vertex의 위치와 필요한 데이터를 계산하고, 
+모델을 model space -> world space -> view space로 옮긴 뒤, 
+다시 투영해서 화면에 보일 수 있는 형태로 바꿔요. 
+
+“물체를 화면에 그릴 수 있게 좌표계를 계속 바꿔 가는 과정”
+
+또한 vertex shader는 예전처럼 단순히 색만 계산하는 장치가 아니라, 
+오늘날에는 각 vertex에 붙은 데이터를 세팅하는 더 일반적인 단계
+
+projection에서는 orthographic 또는 perspective projection으로 view volume을 canonical cube로 바꿔요
+이어서 optional stages로
+tessellation, geometry shader, stream output이 들어갈 수 있어요
+tessellation은 가까운 곳에서는 더 많은 삼각형, 먼 곳에서는 더 적은 삼각형을 만들어 
+품질과 비용을 조절하고, 
+geometry shader는 primitive를 받아 새 vertex를 만들어낼 수 있으며,
+stream output은 처리된 기하를 다시 배열로 뽑아 다음 패스에 활용하게 해줘요
+
+clipping
+카메라 시야 밖의 primitive를 버리고
+일부만 걸친 primitive는 잘라서 시야 안 부분만 남겨요
+
+screen mapping
+정규화된 좌표를 실제 윈도우 좌표로 옮겨 rasterizer가 다룰 준비를 끝내요
+
+geometry stage의 끝에서는 
+“3D 세계의 물체”가 “화면 위 어느 영역에 나타날 후보인가”로 바뀌어요.
+
+---
+
+Rasterization
+
+기하를 픽셀 후보들로 바꾸는 단계
+
+변환된 삼각형이 들어오면, 
+triangle setup에서 보간과 판정을 위한 데이터를 만들고,
+triangle traversal에서 실제로 어떤 픽셀 또는 샘플이 삼각형 내부에 들어가는지 찾아 
+fragment를 생성해요
+
+geometry와 pixel processing 사이의 일종의 동기화 지점
+“삼각형”이 “픽셀들의 집합”으로 번역되기 시작
+
+---
+
+Pixel Processing
+
+pixel shading
+보간된 데이터를 바탕으로 각 픽셀의 색을 계산
+텍스처링
+
+merging
+그 색을 기존 color buffer와 합치고,
+z-buffer로 가시성을 판정
+@ 왜 가시성 판정을 이전 단계가 아니라 여기서 하지? (Geometry Processing 단계가 적합해 보이는데)
+
+alpha, stencil, blending 같은 연산도 수행
+이 픽셀이 정말 최종 화면에 남을 자격이 있는가
+
+double buffering
+
+---
+
+수많은 작은 작업을 동시에 처리하는 대규모 병렬 장치
+vertex/pixel/compute shader
+
+CPU는 다양한 코드와 복잡한 제어 흐름을 처리하도록 설계된 범용 프로세서
+GPU는 비슷한 형태의 일을 엄청나게 많이 처리하도록 설계된 throughput 중심 장치
+
+캐시와 복잡한 제어보다는, 
+많은 수의 shader core와 대규모 병렬성에 더 많은 자원을 투자해요
+@ GPU 에는 단순히 CPU 의 분기예측이 없어서 더 단순하다는 말?
+
+다른 작업으로 재빨리 갈아타는 방식
+thread, occupancy, divergence
+warp/wavefront: thread의 묶음
+어떤 warp가 텍스처 fetch 같은 느린 메모리 접근 때문에 멈추면,
+GPU는 놀지 않고 다른 warp로 즉시 전환해요
+이렇게 해서 메모리 접근 latency를 숨겨요
+
+얼마나 잘 병렬 상태를 유지하느냐
+
+register를 너무 많이 쓰거나, 분기문 때문에 thread마다 다른 경로를 타면 
+occupancy가 낮아지거나 divergence가 생겨 효율이 떨어져요
+@ Register 너무 많이 쓰는 게 왜 문제?
+
+통합된 셰이더 코어
+셰이더는 일종의 virtual machine 모델
+입력 레지스터, 상수 레지스터, 임시 레지스터, 텍스처, 출력 레지스터 같은 자원을 사용해 계산을 수행
+shading language는 덧셈, 곱셈 같은 기본 연산뿐 아니라 
+normalize, reflect, cross, sqrt, log 같은 그래픽스 연산을 제공해요
+
+---
+
+programmable vertex shader,
+pixel shader, 
+geometry shader, tessellation, 
+compute shader
+
+DirectX의 Shader Model 계열
+
+Vertex Shader
+각 vertex를 독립적으로 처리하면서 보통 model space에서 clip space 쪽으로 옮기고,
+색·법선·텍스처 좌표 같은 데이터를 준비
+@ 프로그래머가 Model Space -> Clip Space 좌표변환에 개입할 수 있어? (e.g. 비유클리드 공간)
+
+삼각형 전체를 아는 것이 아니라
+vertex 단위로만 움직인다
+병렬화가 잘 되지만...
+@ 뭐가 Trade-Off 된 거야?
+
+Tessellation Stage
+화면 기여도에 따라 기하 복잡도를 조절하는 LOD 장치
+
+Geometry Shader
+primitive 단위로 동작하면서 
+추가적인 기하를 만들어내거나 변형할 수 있는 단계예요
+
+Pixel Shader
+rasterization 이후 생성된 fragment를 받아
+최종 색, 불투명도, 경우에 따라 depth까지 계산
+텍스처링
+MRT를 통해 여러 render target에 동시에 값을 기록
+
+@Render Target이 뭐야?
+
+Merging Stage
+pixel shader가 계산한 결과를 framebuffer와 합치는 곳
+z-buffer, stencil, blending, early-z 같은 개념들이 등장
+
+early-z는 가려질 픽셀을 미리 버려서 비싼 pixel shader 실행을 줄인다
+
+Compute Shader
+같은 GPU 코어 풀을 사용하면서도 보다 일반적인 병렬 계산을 수행
+렌더링과 범용 병렬 연산이 만나는 플랫폼
+
+---
+---
+---
+
+삼각형 A와 B가 화면에서 겹칠 때, 겹치는 픽셀마다 누가 더 앞인가?
+삼각형 하나 안에서도 깊이는 보간되는데, 픽셀별 깊이값이 정확히 얼마인가?
+MSAA가 있으면 같은 픽셀 안 샘플마다 누가 앞인가?
+
+Rasterization 이후
+삼각형이 fragment들로 풀리고, 깊이도 픽셀 위치에서 보간
+
+Geometry 단계
+“이 삼각형이 화면에 나올 후보인가?”
+Rasterization
+“이 삼각형이 실제로 어떤 픽셀/샘플들을 덮는가?”
+Depth test / Z test
+“그 픽셀 자리에서는 지금까지 나온 후보들 중 누가 제일 앞인가?”
+
+앞쪽에서도 미리 많이 쳐내요.
+frustum culling
+clipping
+backface culling
+
+GPU는 분기 때문에 막히면 “미래를 맞혀서 달린다”기보다, 
+다른 warp를 돌려서 빈 시간을 메우는 방식을 더 선호해요.
+
+CPU는
+예측해서 앞으로 돌진하고,
+
+GPU는
+딴 일 하면서 기다림을 숨긴다
+
+SM/CU(실행 유닛 묶음) 안의 레지스터 총량은 고정되어 있어요.
+어떤 SM에 레지스터가 총 65,536개 있다고 해볼게요.
+thread 하나가 32개씩 쓰면
+더 많은 thread를 동시에 resident 상태로 둘 수 있어요.
+thread 하나가 128개씩 쓰면
+훨씬 적은 thread만 올려 둘 수 있어요.
+
+텍스처 fetch나 메모리 접근 때문에 어떤 warp가 멈췄을 때
+바로 갈아탈 다른 warp 수가 줄어요.
+latency hiding 능력 감소
+
+한 상담원이 책상 너무 넓게 쓰고 자료를 너무 많이 펼쳐 놓으면
+같은 방에 앉을 수 있는 상담원 수가 줄어드는 거예요.
+
+register spilling
+레지스터가 부족하면 일부 값을 레지스터에 못 두고
+더 느린 메모리(local memory 쪽)로 밀어내는 일이 생겨요.
+
+vertex shader
+fish-eye 왜곡
+curved world
+화면 흔들림
+물결 변형
+스킨닝
+procedural deformation
+
+뒤쪽 rasterizer가 유클리드-ish 삼각형 보간 세계를 가정
+
+vertex 단위로만 움직인다
+trade-off
+높은 병렬성
+이웃 정보와 primitive 전체 문맥에 대한 접근 능력
+
+Render Target
+그리기 결과를 써 넣는 목적지 이미지/버퍼
+화면에 보이는 최종 컬러 버퍼
+pixel shader가 계산한 색 기록되는 대상
+
+deferred shading의 G-buffer
+post-process 중간 버퍼
+reflection용 offscreen texture
+SSAO 결과 버퍼
+bloom downsample buffer
+
+이번 패스의 출력 캔버스
+어떤 패스는 shadow map depth texture에 그리고
+어떤 패스는 G-buffer에 그리고
+마지막 패스는 back buffer에 그려요
+
+---
+---
+---
+
+affine transform
+점은 (x,y,z,1), 방향벡터는 (x,y,z,0)로 두는 homogeneous coordinates를 도입
+평행성은 보존하지만 길이와 각은 반드시 보존되지는 않는다
+
+translation은 점만 옮기고 방향벡터는 옮기지 않아요. 
+rotation은 강체적 성질을 유지하고, 
+scaling은 축 방향 크기를 바꾸며, 
+reflection은 handedness를 뒤집을 수 있어서 
+백페이스 컬링과 조명에 문제를 일으킬 수 있어요.
+@ 구체적으로 어떤 메커니즘을 통해 Reflection이 Backface Culling과 조명의 일관성을 깨트린다는 거지?
+
+shearing은 형상을 기울이지만 부피를 보존할 수 있어요
+
+rigid-body transform
+@ 왜 "rigid-body"라는 이름을 가져다 붙인 걸까?
+
+normal transform이
+원 행렬이 아니라 inverse-transpose, 더 정확히는 adjoint 기반 변환을 써야 한다
+@ 보충 설명
+
+역행렬도 “매번 일반해법”으로 가지 말고, 단순 변환의 역이나 orthogonal matrix의 transpose를 활용하라
+@ 보충 설명
+
+---
+
+Euler transform
+head(yaw), pitch, roll
+gimbal lock 때문에 자유도 하나가 사라질 수 있어요
+
+matrix decomposition
+각도를 추출할 때 비유일성 문제
+행렬만 주어진 상황에서 translation, reflection 여부, rotation, scale, shear를 
+다시 뽑아내는 문제
+
+quaternion
+이를 Euler보다 더 안정적이고, 
+행렬보다 더 간결하며,
+보간에 특히 강한 표현
+행렬↔quaternion 변환
+
+slerp
+두 unit quaternion 사이를 
+구면 위의 great arc를 따라 
+고정된 축, 일정한 속도로 보간해요
+여러 Euler angle을 따로따로 보간할 때 생기는 어색함을 피할 수 있어요
+회전은 단지 각도 세 개가 아니라, 매끄럽게 움직여야 하는 대상
+
+@ 보간의 핵심 아이디어. 
+---
+
+vertex blending
+스켈레톤의 여러 bone transform을 가중합
+하나의 vertex를 움직임
+rigid-body 조각을 따로 붙였을 때 생기는 어색한 관절 문제
+@ rigid-body 의 구성. rigid-body 의 구조
+
+정적 vertex buffer는 유지하고 
+매 프레임 bone matrix만 바꿔 
+vertex shader에서 skinning
+
+linear blend skinning은 접히거나 꼬이는 아티팩트를 낳을 수 있어서 
+dual quaternion skinning, center-of-rotation skinning 같은 개선책
+
+morphing은 두 모델 사이의 vertex correspondence가 주어졌을 때 
+per-vertex interpolation으로 중간 형상을 만들고, 
+@ 보충 설명
+morph targets/blend shapes는 
+neutral shape 위에 difference shape를 더하는 방식으로 더 직관적인 제어를 제공해요
+@ 보충 설명
+
+geometry cache playback은 
+수학적 모델로 표현하기 어려운 고품질 애니메이션을 위해, 
+프레임별 형상을 저장하되 
+quantization과 spatial/temporal prediction으로 
+스트리밍 가능한 수준까지 압축하는 접근
+
+---
+
+투영이 왜 특별한 변환인가
+
+bottom row가 달라지고, 
+결과적으로 homogenization, 즉 w로 나누는 과정이 필요
+perspective projection에서는 멀수록 작아지고, 
+평행선도 vanishing point 쪽으로 모일 수 있어요
+평행선이 평행으로 남지 않아요
+
+렌더링에서 공간을 표현하고 조작하는 거의 모든 핵심 도구
+행렬, Euler angles, quaternions, skinning, morphing, projection
+
+---
+
+reflection의 선형 부분 행렬 determinant가 음수
+@ 행렬 Determinant 의 핵심 아이디어. 이 Determinant 가 주는 정보 / 기능 / 구조
+
+보통 회전은 공간의 방향감, 즉 handedness를 보존
+오른손좌표계를 왼손좌표계로 바꿀 수 있어요
+
+백페이스 컬링은 보통 삼각형의 정점 순서(winding order)로
+앞면/뒷면을 판단해요
+시계 반대 방향이면 front face
+시계 방향이면 back face
+처럼 정해두죠
+
+reflection을 적용하면 
+삼각형의 기하가 뒤집히면서
+정점 순서의 패리티가 뒤집혀요
+@ 정점 순서의 "패리티" 가 뭐야?
+
+front로 간주되던 삼각형이
+reflection 뒤에는 
+screen space에서 back으로 취급되어 버릴 수 있어요.
+
+조명은 보통 표면의 법선 N 을 기준으로 계산해요.
+max(0, N · L)
+reflection은 단순히 위치만 뒤집는 게 아니라
+표면의 방향감 자체도 뒤집어요.
+그래서 법선을 제대로 갱신하지 않으면
+
+빛을 받아야 할 면이 어둡게 나오고
+어두워야 할 면이 밝게 나오고
+normal map이 좌우 반전되어 울퉁불퉁 방향이 거꾸로 보여요
+
+특히 tangent, bitangent, normal 관계는 보통
+T × B = N
+같은 방향성을 기대하는데, reflection이 들어가면 이 방향성이 깨질 수 있어요.
+@ Tangent, BiTangent 가 뭐야?
+
+rigid-body
+물체 내부의 어떤 두 점 사이 거리도 변하지 않는 물체
+늘어나지 않고
+찌그러지지 않고
+비틀려 모양이 바뀌지 않는다
+길이, 각도, 거리, 상대배치가 보존
+translation, rotation만이 이것을 보존하면서 변환한다
+
+법선
+표면에 접하는 모든 접선 벡터에 수직인 벡터
+법선 n 은 어떤 접선 t 에 대해서도
+n · t = 0
+
+표면 자체는 선형 부분 행렬 A 에 의해 변형된다고 해봅시다
+그러면 접선 벡터는
+t' = A t
+로 변해요.
+
+새로운 법선 n' 은 변형된 접선들에도 여전히 수직이어야 하니
+n' · t' = 0
+이어야 해요.
+
+즉
+n'^T A t = 0
+@ 이 식이 이해가 안 돼.
+@ 새로운 법선의 Transpose 를 행렬 A랑 벡터 t에다가 왜 곱하는 거지? 
+
+이걸 만족시키려면
+n' = A^{-T} n
+이어야 해요.
+@ 이 식이 이해가 안 돼.
+@ A^(-T) 이게 뭐야? 행렬 A의 역행렬을 Transpose 한 거야?
+
+rotation의 역은 transpose다
+회전행렬 R 은 orthogonal matrix예요
+축들이 서로 직교하고 길이가 1
+@ Orthogonal Matrix가 뭐야?
+
+0 ≤ t ≤ 1 에 대해 중간 상태를 자연스럽게 만드는 규칙이 보간
+선형 보간 lerp
+“직선으로 간다”
+
+회전 보간 slerp
+구면 위에서 가장 자연스러운 경로를 따라가자
+시작 회전과 끝 회전을 잇는
+구면 위의 가장 짧은 곡선(great arc)
+일정한 각속도로 이동한다
+
+회전 상태 공간 위를 매끄럽게 여행
+
+3D Rendering 에서 rigid-body의 구성
+@ Rigid-body는 어떤 구조를 가져?
+@ Skeleton은 어떤 구조를 가져?
+@ Bone은 어떤 구조를 가져?
+@ 강체 조각이 뭐야? 
+
+vertex correspondence
+모델 A의 137번 정점과
+모델 B의 137번 정점이
+“같은 부위”를 나타내야 해요.
+
+같은 “의미 자리”를 가진 점들
+
+왼쪽 입꼬리의 점
+코끝의 점
+눈꺼풀의 점
+
+correspondence가 없으면 무슨 일이 생기나
+A의 코끝 점이
+B에서는 귀 근처 점과 대응되어 있으면
+중간형에서 얼굴이 엉망으로 찢어지듯 움직여요.
+
+---
+
+2D에서 단위 정사각형을 어떤 행렬 A로 보내면
+그 정사각형은 보통 평행사변형이 돼요.
+그 평행사변형의 부호 있는 면적이 det(A)예요.
+
+3D에서는 단위 정육면체가 평행육면체로 가고,
+그 부호 있는 부피가 det(A)예요.
+
+|det(A)| = 2 이면 면적/부피가 2배
+|det(A)| = 0.5 이면 절반
+|det(A)| = 0 이면 납작하게 찌그러져 차원이 무너짐
+
+det(A) > 0
+방향성 유지
+오른손좌표계면 여전히 오른손좌표계
+
+det(A) < 0
+방향성 뒤집힘
+오른손좌표계가 왼손좌표계로 바뀔 수 있음
+
+N: surface normal
+표면에서 수직으로 튀어나오는 방향
+T: tangent
+표면 위에서 한 축 방향으로 가는 접선
+B: bitangent
+표면 위에서 T와 직교하는 다른 접선
+
+셋이 합쳐서 그 점의 작은 로컬 좌표계를 만들어요
+
+U 방향으로 조금 움직일 때 표면 위에서 어느 방향으로 가는가 → T
+V 방향으로 조금 움직일 때 어느 방향으로 가는가 → B
+
+tangent/bitangent는
+텍스처 공간(UV 공간)의 축을 실제 3D 표면 위 방향으로 옮긴 것
+
+dot product를 행렬형으로 쓰면
+x · y = x^T y
+
+n' · t' = 0
+n'^T t' = 0
+t' = A t 를 대입
+n'^T (A t) = 0
+
+열벡터끼리는 그냥 곱할 수 없으니
+왼쪽 벡터를 transpose 해서 행벡터로 만든 뒤 곱하는 거예요
+
+n' 는 열벡터
+n'^T 는 행벡터
+A t 는 열벡터
+
+A^{-T}
+역행렬 구하고
+transpose 한다
+
+non-uniform scaling이나 shear가 들어가면
+접평면이 찌그러져요
+변형된 접평면에 계속 수직인 벡터여야 하므로 특별 규칙이 필요
+
+Orthogonal matrix
+행렬의 열벡터들을 축이라고 보면,
+서로 내적이 0
+각 벡터 길이가 1
+열벡터들이 정규직교(orthonormal)
+
+transpose만 하면 역행렬이 돼요.
+
+피부 vertex는 그 중 하나에만 딱 붙지 않고
+여러 조각의 영향이 섞여요
+
+---
+---
+---
+
+표면 방향, 시선 방향, 조명 방향에 따라 
+색이 어떻게 달라질지를 정하는 셰이딩 모델
+
+셰이딩 모델에는
+사용자가 조절하는 속성들이 따라붙고, 
+이런 속성 설정이 재질 authoring의 포인트
+
+조명이 한 점에서 보면 한 방향에서만 들어오는 빛으로 근사된다
+방향광은 장면 전체에서 방향과 색이 일정한 추상화이며, 
+점광과 스포트라이트는 위치와 감쇠, 방향 함수가 추가된 형태
+
+IES 프로파일 같은 실제 조명 패턴, 
+캡슐 라이트 같은 변형, 
+@ 보충 설명
+
+punctual/directional light가 area light의 실용적 근사
+
+어떤 값은 draw call 전체에서 일정하므로 CPU나 uniform으로 처리할 수 있고, 
+어떤 값은 vertex마다, 
+어떤 값은 pixel마다 계산해야 해요.
+
+현대 렌더링에서 대부분의 중요한 셰이딩 계산이 per-pixel로 가는 경향 
+vertex와 pixel 사이에 무엇을 넘겨야 하는지,
+어떤 계산을 어느 단계로 올리거나 내릴 수 있는지
+
+보간된 normal은 길이가 변하므로 pixel shader에서 다시 normalize해야 한다
+
+view vector나 punctual light vector는 보간보다 
+pixel 단계에서 다시 계산하는 편이 보통 더 낫다
+@ 애초에 view vector 를 왜 보간해야 하지?
+
+렌더링을 본질적으로 sampling 문제로 보고
+한 픽셀에 샘플 하나만 두면 가장자리, 가는 선, 하이라이트, 그림자 경계에서 
+jaggies와 crawlies가 생긴다
+
+MSAA 같은 다중 샘플링, 시간축을 활용하는 TAA, 형태를 찾아 보정하는 MLAA/FXAA/SMAA 같은 후처리 기반 방법
+
+aliasing은 단순한 가장자리 문제라기보다, 
+장면을 이산 샘플로 읽는 과정 전체에서 생기는 구조적 문제
+
+---
+
+Transparency, Alpha, and Compositing
+“반투명한 것”을 어떻게 겹쳐 그릴 것인가
+합성 규칙의 문제
+
+투명 물체는 그리는 순서에 민감
+depth peeling 같은 order-independent transparency 계열 기법
+@ 보충 설명
+
+Porter-Duff의 over와 under 연산
+@ 보충 설명
+
+Display Encoding
+셰이딩 계산은 선형(linear) 값에서
+디스플레이와 많은 색 텍스처는 보통 sRGB 같은 비선형 인코딩을 사용
+
+gamma correction
+@ Gamma Correction의 기원, 어떤 하부구조에서 발생하는 문제인지
+
+조명 합산이 틀어지고, 
+어두운 톤이 뭉개지고, 
+antialiased edge가 로프처럼 뒤틀려 보이는 roping artifact가 생긴다
+
+---
+
+셰이딩, 알파, 감마
+
+연속적인 빛/형상을
+이산적인 화면 샘플과 디스플레이 장치 위에
+어떻게 그럴듯하고 일관되게 올릴 것인가
+
+Illuminating Engineering Society
+standardized digital file format (.ies)
+조명기구가 방향마다 얼마나 다른 세기로 빛을 내는지 기록한 데이터
+
+이 전등은 그냥 모든 방향으로 똑같이 빛난다
+아래쪽으로 강하게 비추는지
+옆으로 얼마나 퍼지는지
+특정 각도에서 세기가 줄어드는지
+비대칭 패턴을 가지는지
+
+천장 매입등
+벽등
+가로등
+자동차 헤드라이트
+
+빛 분포가 달라요.
+실제 조명기구 특유의 빛 패턴
+
+실제 등기구가 만든 방향별 빛 세기 지도
+
+캡슐 라이트
+조금 길쭉한 발광체를 흉내
+
+형광등
+튜브 조명
+긴 라이트 바
+캐릭터 주변의 부드러운 근접광
+
+point light보다 더 길쭉한 성질을 주고
+area light보다는 더 싸게
+
+팔이나 몸통처럼 길쭉한 부위에 대해
+point light 하나보다 더 부드럽고 긴 하이라이트를 만들고 싶을 때
+
+카메라 위치는 이미 아는데, 왜 굳이 vertex에서 view vector를 계산해서 pixel까지 넘기나
+어떤 표면점 P 에서 카메라 위치 C 를 향하는 방향
+V = normalize(C - P)
+
+왜 보간하나
+pixel마다 이런 벡터를 다 계산하는 비용도 아끼고 싶었어요
+그래서 vertex shader에서 각 정점의 view vector를 계산해 두고
+삼각형 내부에서 보간해서 pixel shader에 넘겼어요
+
+문제는 V = normalize(C - P) 가
+공간적으로 선형 함수처럼 보간되지 않는다는 점이에요.
+
+특히
+삼각형이 크거나
+카메라가 가까이 있거나
+specular highlight가 예민한 경우
+
+현대 렌더링에서는 보통
+position만 받아서 pixel shader에서 view vector를 다시 계산하는 편이 더 정확해요
+
+depth peeling, OIT Order-Independent Transparency
+투명체는 어려워요.
+왜냐하면 불투명체처럼 “맨 앞 하나만 남긴다”로 끝나지 않기 때문이에요.
+유리는 앞면도 보이고, 뒤의 유리도 비치고, 그 뒤 배경도 비쳐야 하죠.
+즉 여러 겹의 기여를 순서대로 합성해야 해요
+
+그리는 순서에 덜 의존하거나, 아예 의존하지 않도록 투명 합성을 처리하는 계열이에요.
+즉 “정렬을 완벽히 못 해도 그럴듯한 결과를 내자”는 방향이에요.
+
+첫 번째 패스: 가장 앞의 투명 레이어를 잡는다
+두 번째 패스: 그보다 뒤에 있는 다음 레이어를 잡는다
+세 번째 패스: 그다음 레이어…
+이렇게 여러 겹을 peel(껍질 벗기듯) 벗겨낸다
+마지막에 앞뒤 순서를 지켜 합성한다
+
+패스 수가 많아 비쌈
+
+Porter-Duff의 over / under 연산
+결과 = A + (A가 가리지 못한 만큼의 B)
+“이 이미지를 기존 것 뒤쪽에 깐다”
+라는 합성 감각이에요.
+
+Porter-Duff는 그걸
+형식적으로 정리한 기본 합성 연산 체계
+앞뒤 레이어 관계를 계산 규칙으로 만든 것
+
+빛의 세기와, 저장된 숫자값과, 인간이 느끼는 밝기는 서로 선형이 아니다
+
+조명 계산은 물리적으로 대체로 선형 공간에서 해야 해요
+예를 들어 빛 두 개를 합치면
+에너지는 그냥 더해져야 하죠.
+빛 A, 빛 B가 있으면 총빛 = A + B
+처럼 가야 해요.
+이건 선형 공간 이야기예요.
+
+CRT는 입력 전압과 화면 밝기 사이 관계가
+선형이 아니라 대략 거듭제곱 형태였어요.
+
+그래서 이미지 시스템 쪽에서는
+처음부터 이 비선형 특성을 고려해
+저장/전송 쪽 값을 감마 인코딩하게 됐어요.
+
+나중에 LCD 시대가 와도
+이미 산업 전체가 그 관습 위에 올라가 있었고,
+또 인간 시각 자체도 어두운 영역에서 더 민감해서
+비선형 인코딩이 저장 효율 면에서도 유리했어요.
+
+gamma correction이란
+
+텍스처/입력값이 sRGB면
+먼저 linear로 decode
+조명, 블렌딩, 필터링, 보간을
+linear space에서 수행
+최종 화면 출력 직전에
+다시 display space로 encode
+
+선형 계산 공간과 디스플레이 공간을 올바르게 오간다
+
+---
+---
+---
+
+텍스처링
+셰이딩 식에 들어가는 값을 표면 위치에 따라 바꾸는 과정
+
+object space의 한 위치에서 시작해서, 
+projector function이 texture coordinates를 만들고, 
+corresponder function이 그것을 실제 texture-space location으로 바꾸고, 
+거기서 값을 읽은 뒤 
+필요하면 value transform을 거쳐 
+최종 셰이딩 입력으로 넘겨요
+
+위치 -> 좌표화 -> 주소화 -> 값 읽기 -> 값 변환의 연쇄
+
+@ 텍스쳐의 좌표가 3D 표면에 맵핑되는 메커니즘 의 핵심 아이디어
+@ 그 둘을 잘 대응시키는 아티스트 작업의 개요
+
+텍스처는 벽돌 색을 붙이는 일뿐 아니라 
+roughness, normal, alpha, height 같은 값도 똑같이 공급할 수 있어요.
+표면을 변화시키는 신호의 공급원
+표면 위치를 입력으로 받아 외형 관련 값을 돌려주는 시스템
+
+Image Texturing
+magnification
+nearest neighbor와 bilinear interpolation
+
+minification
+한 픽셀에 많은 texel이 걸치기 때문에 aliasing이 문제가 되고,
+이를 줄이기 위해 texture antialiasing 기법이 필요해져요
+
+mipmapping
+원본 텍스처에 더해 반복적으로 축소한 하위 이미지들을 미리 만들어 두고
+픽셀이 덮는 영역 크기에 맞는 레벨을 골라 샘플링
+실제 접근에서는 두 mip level에서 bilinear로 샘플한 뒤 
+그 결과를 다시 선형 보간하는 trilinear interpolation
+
+volume texture, cube map, texture atlas, texture array, bindless texture
+
+어떻게 주소화하고, 어떻게 메모리와 대역폭 안에 넣을까
+
+texture array가 바인딩 비용을 줄이는 현대적 방식
+texture compression은 메모리 사용량과 대역폭을 동시에 줄이는 수단
+BC 계열, ETC, ASTC 같은 포맷들
+
+텍스처가 셰이딩 식의 상수들을 공간적으로 변화하는 함수로 바꿔 준다
+Material Mapping은 표면 색뿐 아니라 재질의 다른 속성들도 텍스처로
+Alpha Mapping - decal, cutout, foliage
+roughness texture와 bump texture
+
+Bump Mapping
+텍스처가 표면의 실제 기하를 늘리는 것이 아니라, 
+셰이딩에 쓰이는 법선 방향을 바꿔서 더 복잡한 표면처럼 보이게 만든다
+
+bu/bv 같은 편차값으로 normal을 비틀 수도 있고, 
+heightfield에서 기울기를 유도해 normal을 만들 수도 있다
+@ 보충 설명
+
+bump mapping은 법선만 바꿀 뿐이라서, 
+시점이 변해도 요철의 위치가 실제로 옮겨 보이지 않고, 
+돌출부가 서로를 가리거나 그림자를 만드는 효과도 없어요
+그래서 Parallax Mapping이 등장해요
+
+기본 패럴랙스 매핑은 빠르지만 얕은 각도에서 무너질 수 있고, 
+이를 보완한 offset limiting이나, 
+더 나아가 ray marching으로 첫 교차점을 찾는 parallax occlusion mapping/relief mapping 계열이 소개돼요
+법선만 바꾸는 환영에서, 보이는 위치 자체를 바꾸는 환영으로 넘어가는 부분이에요
+@ 보충 설명
+
+절차적 텍스처링
+
+미리 저장된 이미지를 읽는 대신 함수 계산으로 값을 만들고
+texture animation은 시간에 따라 텍스처를 변하게 해요
+
+Textured Lights
+고보(gobo)나 쿠키(cookie) 라이트
+cube map이나 volume texture를 써서 더 복잡한 조명 패턴
+
+**“텍스처를 색 이미지에서 출발시켜,
+좌표화·샘플링·필터링·압축·재질 입력·법선 조작·시차 효과·광원 제어까지 확장하면서,
+실시간 렌더링에서 텍스처가 
+외형 정보를 담고 전달하는 보편적 메커니즘임을 보여 주는 장”**
+
+---
+
+texture mapping
+
+3D 표면 위의 점 하나를,
+텍스처 공간의 주소 하나로 대응시킨다.
+
+3D 표면의 한 점
+텍스처의 2D 위치 (u, v)
+를 연결
+
+projector function
+어떤 좌표계
+평면 투영
+박스 투영
+구면 투영
+
+UV 작업 혹은 UV unwrapping
+3D 표면을 종이 공예처럼 적당히 잘라서
+2D 종이 위에 펼친다.
+
+어디를 seam으로 자를지
+어떤 부분을 한 조각(island)으로 펼칠지
+어디서 왜곡을 감수할지
+어디는 더 큰 texel density를 줄지
+
+seam이 덜 티 나는 위치
+캐릭터 옆구리 안쪽
+팔 안쪽
+머리 뒤쪽
+옷 솔기
+보이지 않는 곳
+
+unwrap
+잘린 조각들을 2D 평면에 펼쳐요.
+
+relax / minimize distortion
+너무 늘어나거나 찌그러진 부분을 다듬어요.
+
+pack
+여러 UV island를 0~1 텍스처 영역 안에 효율적으로 배치해요.
+
+texel density 조절
+중요한 부위는 더 크게, 덜 중요한 부위는 더 작게 줘요
+
+베이크 및 페인팅
+그 UV 위에
+base color
+normal map
+AO Ambient Occlusion
+roughness
+metallic
+mask
+등을 굽거나 칠해요.
+
+bump mapping
+bu / bv로 normal을 비튼다
+실제 기하를 바꾸지 않아요
+“이 점의 표면 방향(normal)이 살짝 이렇게 기울어져 있다고 치자”
+실제 메시의 점 위치는 그대로인데,
+셰이딩에 쓰는 법선만 바꿔요.
+
+bu, bv 는 대충
+u 방향으로 얼마나 기울일지, v 방향으로 얼마나 기울일지
+를 나타내는 편차값이에요.
+
+원래 법선 N 에
+tangent 방향 기울기
+bitangent 방향 기울기
+를 섞어서 새 법선을 만드는 거예요
+
+“표면이 살짝 오른쪽으로 기울고, 위로도 조금 기운 것처럼 보이게 하자”
+
+height map
+각 UV 위치에 대해
+“얼마나 튀어나왔는지/들어갔는지” 높이값만 저장해요.
+중요한 건
+주변과 비교했을 때 얼마나 가파르게 변하느냐예요.
+
+u 방향으로 높이가 얼마나 변하는가
+v 방향으로 높이가 얼마나 변하는가
+
+를 보면
+표면의 기울기를 알 수 있어요.
+
+이 기울기 두 개로부터
+“이 점은 어느 방향으로 기울어져 있나”를 계산하면
+새 법선을 만들 수 있어요.
+
+즉 normal map은 사실상
+높이의 미분 정보를 직접 저장한 것
+처럼 볼 수 있어요.
+
+Parallax Mapping
+여기서 환영의 수준이 한 단계 올라가거든요
+
+normal map은 조명만 속여요.
+실제 표면 위치는 안 바뀌었으니까
+벽돌 틈의 위치가 시점에 따라 옆으로 밀려 보이거나
+깊은 홈 안쪽이 더 드러나거나
+돌출부가 앞의 것을 가리지는 않아요
+
+parallax mapping
+시점에 따라 텍스처를 읽는 위치 자체를 조금 옮겨요
+조금 밀린 저 위치를 읽는 게 더 맞다
+시점이 비스듬해질수록
+보이는 위치의 환영
+
+offset limiting
+값싼 parallax가 폭주하지 않도록 안전장치를 다는 거예요
+시점이 너무 비스듬하더라도
+UV 오프셋이 과도하게 날아가지 않게 제한
+
+parallax occlusion mapping / relief mapping
+heightfield 안으로 시선을 따라 작은 ray marching을 해요
+시선 광선이 이 가짜 높이장과 처음 만나는 지점을 찾자
+
+계층적으로 보면
+
+bump/normal mapping
+법선만 바꿈
+조명만 속임
+basic parallax mapping
+UV를 조금 밀어 위치를 속임
+parallax occlusion / relief mapping
+높이장 안에서 시선 교차점을 찾음
+
+빛의 환영 -> 위치의 환영 -> 깊이 구조의 환영
+
+---
+
+그림자
+장면의 공간 구조를 드러내는 정보
+
+그림자를 만드는 물체는 occluder, 
+그림자를 받는 표면은 receiver예요. 
+
+점광원처럼 면적이 없는 빛은 보통 hard shadow를 만들고, 
+면적광처럼 넓이를 가진 빛은 umbra와 penumbra를 가진 soft shadow를 만들어요. 
+
+올바른 soft shadow는 단순히 hard shadow의 가장자리를 blur한 것과 같지 않다는 거예요. 
+접촉부 근처는 더 날카롭고, occluder와 receiver가 멀어질수록 가장자리가 부드러워져야 해요.
+
+planar shadows와 projective shadows
+shadow volumes와 shadow maps
+shadow map을 개선하는 방향으로 
+PCF, PCSS, filtered shadow maps, volumetric shadow techniques, irregular z-buffer shadows
+
+정확도, 비용, 안정성, softness 표현력 사이의 설계 공간
+
+---
+
+planar/projective shadows
+물체를 바닥 같은 특정 평면에 투영
+빛의 시점에서 만든 shadow texture를 receiver에 다시 투사하는 방식
+
+어떤 물체가 occluder인지, 어떤 표면이 receiver인지 애플리케이션이 알아야 함
+self-shadowing 처리 못함
+
+정확한 일반해라기보다
+drop shadow나 특정 바닥 그림자 같은 제한된 상황용 해법
+
+shadow volumes
+stencil buffer를 이용
+광원에서 본 occluder의 실루엣을 무한히 밀어낸 부피를 만들고
+어떤 점이 그 부피 안에 들어가면 그림자라고 판정해요
+@ 보충 설명
+
+이미지 기반 샘플링이 아니라 기하적으로 판정하므로, 
+해상도 때문에 깨지는 aliasing 없이 정확한 hard shadow를 만들 수 있어요
+비용이 장면과 시점에 따라 들쭉날쭉하고 예측이 어렵기 때문에, 오늘날에는 드물게 쓰인다
+
+shadow maps
+빛의 시점에서 장면을 렌더링해서 깊이 맵을 저장하고
+카메라에서 표면을 그릴 때 그 점이 빛에서 보았을 때 저장된 가장 가까운 깊이보다 멀면 그림자라고 보는 거예요
+@ 보충 설명
+
+그림자 품질이 shadow map 해상도와 depth precision에 강하게 의존하고, 
+shadow acne, perspective aliasing, projective aliasing 같은 문제가 쉽게 생겨요
+
+shadow map과 bias
+bias가 너무 작으면 표면이 자기 자신을 가리는 surface acne가 생기고, 
+너무 크면 접촉 그림자가 떠 버리는 light leak 또는 Peter Panning이 생겨요
+
+constant bias, slope-scale bias, normal offset bias, receiver-plane bias 같은 여러 보정법이 등장해요
+
+정밀도와 기하학의 불일치를 길들이는 기술
+
+해상도 문제
+@ 보충 설명
+light의 projection을 왜곡해서 가까운 곳에 texel을 더 몰아주는 PSM, TSM, LiSPSM 같은 
+perspective warping 계열
+warping이 특정 상황에서는 도움이 되지만, 
+시점 변화에 민감하고 불안정한 경우도 있어서 한계가 있다
+
+여러 장의 shadow map을 겹쳐 쓰는 nested/cascaded 접근
+
+shadow quality의 문제
+샘플을 어디에 얼마나 배치할 것인가
+
+PCF(Percentage-Closer Filtering)
+@ 보충 설명. 이 기법의 어떤 부분이 Percentage 개념하고 연결되는지.
+
+여러 texel에 대해 각각 “빛인가 그림자인가”를 판정한 뒤 그 결과를 섞어요
+톱니처럼 깨지는 hard edge를 완화해 주고, pseudo-soft shadow를 만들어 줘요
+
+다만 이것은 물리적으로 정확한 면적광 샘플링은 아니고, penumbra 폭도 대체로 일정하게 나와요
+
+PCF는 접촉부에서 날카롭고 멀수록 퍼지는 진짜 soft shadow는 아니다라는 위치에 있어요.
+
+그 한계를 넘으려는 것이 PCSS(Percentage-Closer Soft Shadows) 예요
+blocker들의 평균 깊이를 찾고
+receiver와 blocker의 거리 관계로부터 샘플 영역 폭을 정해요
+물체가 바닥에 닿는 부분은 날카롭고, 떨어질수록 penumbra가 넓어지는 
+contact hardening 효과를 흉내 낼 수 있어요
+대신 blocker search 자체가 비싸고, 샘플 부족 시 노이즈가 생기기 쉬워요
+
+filtered shadow maps는 아주 다른 아이디어를 보여줘요
+VSM(Variance Shadow Maps) 는 깊이와 깊이 제곱, 즉 moments를 저장해서 
+shadow map을 일반 texture처럼 blur, mipmap, summed-area table 같은 
+필터링 대상으로 다뤄요
+
+그 결과 PCF처럼 샘플을 많이 뿌리지 않아도, 
+한 번의 필터된 샘플로 부드러운 penumbra를 얻을 수 있어요
+
+ESM/EVSM, moment shadow mapping 같은 기법들이 등장하는데, 
+이들은 light bleeding이나 ringing 같은 문제를 줄이거나 품질을 높이기 위한 발전형이에요
+
+다만 filtered map 계열도 대체로 constant-width softness 쪽이고,
+variable-width penumbra가 필요하면 PCSS와 결합되곤 해요.
+
+---
+
+volumetric shadow techniques
+
+머리카락, 연기, 구름, 반투명체처럼 “한 겹의 표면 깊이”로는 부족한 경우
+texel마다 깊이에 따른 투과/불투명도 변화를 저장하는 
+deep shadow maps, opacity shadow maps, adaptive volumetric shadow maps 같은 기법이 필요
+그림자가 더 이상 “보이느냐/안 보이느냐”의 이진 문제가 아니라
+빛이 매질을 지나며 점점 약해지는 함수의 문제가 되는 지점을 보여줘요.
+
+---
+
+
+---
+
+
+---
+
+
+---
+
+
+---

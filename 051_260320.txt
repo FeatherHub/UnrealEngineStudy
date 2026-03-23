@@ -1,0 +1,701 @@
+Slate는 UE의 실제 UI 렌더링 엔진
+완전한 retained-mode UI 시스템
+레이아웃 패스, 렌더링, 입력 처리를 모두 담당
+
+그런데 Slate는 UObject와 무관하다
+SWidget은 TSharedPtr로 관리되고, 
+리플렉션 시스템이 모르며, GC가 추적하지 않는다. 
+Blueprint는 SWidget을 건드릴 수 없다
+
+여기서 UMG의 존재 이유가 결정된다
+Blueprint와 Designer가 UI를 다루려면,
+Slate 위에 UObject-compatible mirror가 있어야 한다. 
+UMG는 그 mirror다
+
+---
+
+UWidget ↔ SWidget
+UWidget은 UObject 계층에 산다
+Blueprint에서 참조 가능하다
+
+SWidget은 Slate 계층에 산다
+TSharedPtr로 관리되고, 
+실제 레이아웃과 렌더링을 수행한다.
+
+---
+
+class UWidget : public UVisual {
+protected:
+    TSharedPtr<SWidget> MyWidget; 
+    virtual TSharedRef<SWidget> RebuildWidget(); // 서브클래스가 SWidget 생성
+    
+public:
+    TSharedRef<SWidget> TakeWidget(); // SWidget 요청, 없으면 생성
+};
+
+UWidget이 SWidget을 소유하는 게 아니라, 
+UWidget이 SWidget의 생성 레시피를 보유한다. 
+실제 존재는 Slate 쪽이고, UMG 쪽은 그 존재를 기술하는 명세다.
+
+---
+
+UWidgetTree: UObject 측 그래프
+class UWidgetTree : public UObject {
+    UWidget* RootWidget; // 트리의 루트
+    // 모든 자식 UWidget들을 UObject로 보유 → GC가 추적 가능
+};
+
+UMG 트리는 에디터에서도 살아있고, GC 대상이고, Serialize 가능하다. 
+Slate 트리는 게임 실행 중에만 존재하고, 뷰포트가 닫히면 소멸한다.
+
+---
+
+Slate의 레이아웃 모델에서 "자식을 어떻게 배치할 것인가"는 부모가 결정하지 않는다. 
+Slot이 결정한다.
+
+UPanelWidget(Canvas, Overlay, HorizontalBox 등)은 
+자식을 UPanelSlot을 통해 보유한다. 
+Slot은 부모 패널 타입에 따라 다른 속성을 가진다. 
+Canvas의 Slot은 Position과 Size를 가지고, 
+HorizontalBox의 Slot은 Fill과 Padding을 가진다.
+
+레이아웃 규칙은 부모 패널의 종류에 따라 달라지므로, 
+규칙을 자식에 넣을 수도, 부모에 넣을 수도 없다. 
+관계에 넣어야 한다. 
+Slot은 그 관계를 객체로 승격시킨 것이다.
+
+---
+
+Invalidation: 변경이 전파되는 방식
+레이아웃 관련 변경(크기, 가시성)은 부모까지 전파되어야 한다
+페인트 관련 변경(색상, 텍스처)은 자신만 다시 그리면 된다.
+이 둘을 구분하지 않으면 매 프레임 전체 레이아웃을 재계산해야 한다
+
+---
+
+좌표 모델: 절대 vs 흐름
+
+절대 배치 (Canvas Panel)
+Canvas Panel Slot은 Position, Size, Anchors, Alignment를 가진다
+자식들은 서로를 모르고, 부모 공간 안에서 독립적으로 위치한다
+자식이 추가되거나 크기가 변해도 다른 자식이 반응하지 않는다
+
+흐름 배치 (Horizontal Box, Vertical Box, Grid Panel)
+각 자식의 Slot은 "나는 얼마나 차지할 것인가"만 기술하고, 실제 위치는 Slate가 런타임에 계산한다.
+
+
+---
+
+Anchor 시스템: Canvas Panel의 핵심
+
+Anchor가 Position의 기준점을 결정한다
+부모 패널 공간에서 0~1로 표현되는 상대적 점이다
+Anchor를 (0.5, 0)으로 설정하면 Position은 부모의 수평 중앙 상단을 기준으로 계산된다
+(1, 1)로 설정하면 부모의 오른쪽 하단이 기준이다.
+
+Min과 Max가 같은 점이면 고정 크기 위젯이 한 점에 고정된다.
+Min과 Max가 다른 점이면 위젯이 부모의 영역 비율을 차지한다
+부모 크기에 반응한다
+
+Alignment(Pivot)는 별도의 개념이다
+
+---
+
+Size Rule: Fill / Auto / Fixed
+흐름 배치 컨테이너(HBox, VBox, Grid)에서 Slot의 크기를
+
+Fill(1)과 Fill(2) 두 자식이 있으면, 남은 공간을 1:2로 나눈다
+
+이 세 규칙이 Slate의 레이아웃 패스에서 작동하는 순서
+Auto 자식들이 먼저 크기를 요청하고,
+Fixed 자식들이 고정 크기를 확보한 후, 
+남은 공간을 Fill 자식들이 가중치에 따라 나눈다.
+
+---
+
+패널 유형마다 Slot이 제어할 수 있는 레이아웃 차원이 다르다.
+
+
+
+---
+
+Slate 레이아웃 패스
+
+Prepass(하향식으로 공간 배분)
+ArrangeChildren(각 자식의 최종 위치·크기 결정)
+
+Blueprint 레이아웃의 모든 속성은 
+Slate 레이아웃 패스의 입력 파라미터다. 
+
+Blueprint로 보이는 것은 파라미터 설정 인터페이스이고, 
+실제 레이아웃 알고리즘은 여전히 Slate 내부에 있다.
+
+---
+
+Given a set of visual elements and a finite space, 
+how do you determine where each element goes and how large it is?
+
+Size negotiation: How does an element determine its size?
+Position assignment: Given sizes, how do elements get placed?
+
+bottom-up, where elements declare what space they need based on their content, 
+and top-down, where containers dictate how much space is available
+
+This tension between intrinsic and extrinsic sizing
+
+constraint model
+layout is fundamentally about satisfying constraints
+
+Each element has minimum and maximum bounds
+layout engine resolves these constraints to find valid positions and sizes.
+
+Axes of independence let us decompose layout problems
+width and height decisions can often be made separately
+HorizontalBox only controls horizontal distribution and defers vertical layout to other mechanisms
+
+content pushing outward or the container pulling inward
+
+a protocol for negotiating size between parent and children
+who initiates
+how many rounds of communication happen
+what information gets passed back and forth
+who has the final say
+
+---
+
+A widget's size depends on its neighbors, which depend on their neighbors.
+Space is inherently non-local - everything relates to everything. 
+But computation must be local
+How do you make a non-local problem tractable for local reasoning?
+
+The constraint vs. imperative distinction
+I can describe space as constraints (relative positioning, proportional sizing) 
+or as a sequence of operations (place this, then that). 
+These represent fundamentally different ways of thinking about space.
+
+The reference frame problem
+Position only makes sense relative to something else
+
+whether space is the medium that holds objects, 
+or whether space itself is just the web of relationships between them.
+
+---
+
+composability challenge is how to take local spatial rules and combine them into something globally coherent
+each widget only understands its immediate context
+
+Constraint propagation through a two-pass system works  
+most layout constraints form a tree structure without cycles
+but if you introduce circular dependencies, you need iterative solving or to forbid them entirely
+
+
+---
+
+assign a rectangle to every element
+rectangles constrain each other
+constraint propagate through a tree of elements
+
+top-down constraints
+bottom-up constraints
+
+translating local specifications into globally consistent spatial assignments
+
+two passes
+gather and then distribute
+
+every spatial element is simultaneously a requester (needing space) 
+and a responder (fitting into available space)
+
+---
+
+분할은 합의를 요구한다. 합의는 통신을 요구한다. 통신은 프로토콜을 요구한다.
+
+두 종류의 메시지
+요청(request)
+할당(allocation)
+
+두 패스 구조는 최적화가 아니라 이 프로토콜의 최소 구현이다
+
+요청이 모두 수집되기 전에 할당을 시작할 수 없다. 
+요청 수집(측정 패스)과 할당 배분(배치 패스)의 분리는 
+프로토콜의 메시지 순서로부터 강제된다.
+
+---
+
+"모든 조상이 자신의 공간 결정을 완료했다는 조건 하에, 나는 여기 있다."
+루트까지 이 연쇄가 이어진다
+
+의존성
+Invalidation의 구조
+
+Anchor는 프레임 간 약속의 참조점을 명시한다
+Anchor (0.5, 0)은 "내 약속의 조건은 부모 프레임의 수평 중앙 상단이다"라는 선언이다. 
+부모가 크기를 바꿔도, 수평 중앙이라는 참조점은 유지된다.
+좌표의 절대값은 변하지만 프레임 내 관계는 보존된다.
+
+Anchor Min과 Max가 분리될 때는 의미가 한 단계 올라간다. 
+이때 위젯은 하나의 점이 아니라 프레임의 비율 구간에 약속을 건다.
+부모 크기에 따라 절대 크기가 달라지는 대신, 
+비율 관계를 불변으로 유지한다
+
+HorizontalBox
+좌표 약속이 아예 존재하지 않는다
+대신 순서 관계를 약속한다.
+좌표는 계산의 결과로만 출현한다. 약속의 대상이 되지 않는다.
+
+구조의 보존
+
+---
+
+information compression
+you're not specifying all pixel positions
+you're specifying a generative rule
+
+---
+
+1세대: 절대 좌표. 역문제를 완전히 사용자에게 위임한다. 원하는 결과가 있으면 직접 좌표를 계산하라.
+
+2세대: 제약 기반, 흐름 기반. 역문제의 일부를 시스템이 흡수한다. 
+"나머지를 채워라", "순서대로 배치하라" 같은 
+부분적 미명시(underspecification)를 허용한다.
+
+3세대: 예시 기반 추론. 
+Figma의 Auto Layout 감지, 그리고 "이 화면과 저 화면에서 이렇게 보여야 한다"는 예시로부터 제약을 역추론하는 시스템들. 
+역문제를 명시적으로 풀기 시작한다.
+
+4세대: 역문제와 순방향 문제의 경계가 소멸한다. 
+기하 명세가 아니라 지각적 의도(perceptual intent) 를 명세한다. 
+"이 버튼은 즉각 발견 가능해야 한다", "이 두 요소는 그룹으로 인식되어야 한다", "이 정보는 저것보다 먼저 읽혀야 한다."
+시스템이 시선 이동 연구, 게슈탈트 원리, 문화적 읽기 패턴으로부터 기하를 도출한다.
+
+---
+
+공간 안에서의 배치를 통해 관계, 위계, 순서, 강조를 전달하는 것이다.
+수사학(rhetoric) 문제
+기하 문제
+
+시각적 원소들을 공간 안에 어떻게 배열하여 의도한 인지적 효과를 사용자에게 전달할 것인가.
+
+레이아웃 시스템은 기하를 원시 언어(primitive language)로 사용
+인간이 레이아웃을 지각할 때, 관계, 위계, 리듬, 긴장과 해소
+좌표는 이 지각적 사실들을 생성하기 위한 수단이지, 목적이 아니다
+
+기하는 레이아웃의 구현 세부사항이다. 
+그런데 우리는 구현 세부사항으로 레이아웃을 기술해왔다
+
+---
+
+제약 아래에서의 조합 가능성(constrained combinatorics)
+
+조합 가능성의 공간 안에 이미 내재된 구조를 찾아내는 것이다.
+
+임의적인 기호 조합의 공간은 너무 크다.
+그 공간의 대부분은 인간 인지가 처리할 수 없거나, 
+의미를 보존하면서 전달될 수 없거나, 
+시간이 지나도 일관성을 유지할 수 없다
+
+문법의 발명의 이면은 배경으로 작동하는 제거이다.
+
+e.g. 직각 (독립성 & Derivable from one each other)
+
+---
+
+미적분을 이해하기 전에 극한을 이해해야 한다는 것은 
+커리큘럼의 관습이 아니다. 
+개념들 사이의 의존성 구조, 즉 문법이다
+
+---
+
+그 문법이 왜 그 형태를 가지는지
+어떤 제약들이 그것을 필연적으로 만드는지
+를 이해하는 것이다. 
+규칙을 아는 것과 그 규칙의 발굴 지점을 아는 것은 다른 인지 구조다.
+
+---
+
+경계를 넘어 구조를 전달하는 모든 시스템은 이 수학적 형태를 취한다
+화자와 청자 사이의 경계. 
+설계자와 건물 사이의 경계. 
+물리 법칙과 현상 사이의 경계. 
+한 세대의 신체와 다음 세대의 신체 사이의 경계
+가르치는 자와 배우는 자 사이의 경계
+
+---
+
+세계의 한 층위가 지각 가능해지는 것이다
+그 층위는 이전에도 거기 있었지만, 보이지 않았다.
+
+---
+
+abductive
+결론이 이미 있고, 그 결론을 생성하는 전제를 찾는다
+
+이 시스템의 불가능성 지형
+그 도메인에서 무엇이 불가능한가
+
+불가능성은 분해로는 배울 수 없다. 
+존재하는 것을 쪼개는 것으로는 존재할 수 없는 것의 형태를 알 수 없다.
+
+순환 안으로 진입하는 것
+어느 지점에서든 진입하고, 한 바퀴 돌면 진입점이 다르게 보인다. 
+각 회전마다 부분과 전체의 해상도가 높아진다
+
+---
+
+1 값을 변경했다.
+2 알릴까?
+    Broadcast할까?
+
+나는 저 값을 추적하고 싶다
+그런데 저 값은 내가 들고 있는 것이 아니다
+저 값에 나를 붙여야 한다
+저 값이 변경될 때마다 내가 호출되는 관계를 통해 나는 간접적으로 저 값을 추적한다.
+
+---
+
+X라는 추상화 계층은 a라는 값을 관리한다
+어떤 방식으로 관리하나?
+  이 값에 붙고 싶은 Entitiy들을 Accept한다
+  이 값이 변경되었을 때 그 Entity들에게 알린다
+  
+---
+
+Broadcast는 말하자면:
+“이 변화는 나만의 일이 아니라,
+이 값에 기대어 사는 다른 존재들에게도 중요한 사건이다.”
+라는 선언이에요
+
+---
+
+Observer 
+
+Subject가 Observer 목록을 직접 들고 있고,
+Subject가 Observer를 직접 호출한다
+
+Subject와 Observer는 서로를 안다
+Subject는 Observer 인터페이스를, Observer는 Subject를
+
+관계가 명시적이고 구조적이다
+
+---
+
+Pub/Sub
+채널
+중간 계층(Event Bus, Message Broker, Topic)
+Publisher는 Subscriber를 모른다
+Subscriber도 Publisher를 모른다
+둘 다 채널만 안다
+
+Observer에 비해 결합도가 한 단계 더 낮다
+
+"무엇에 대한 메시지인가"(토픽/채널)가 핵심 질문.
+
+---
+
+Event 
+"사건이 발생했다"는 시제적 사실
+Event는 이름이 붙은 과거의 일어난 일
+
+Subject는 "Event Source"가 되고 
+Observer는 "Event Handler"가 된다
+
+관계보다 사건 자체를 명사화하는 것이 특징
+OnClicked, OnHealthChanged
+
+
+---
+
+Listener
+누군가가 말하고(emit), 누군가가 듣는다(listen)
+Java와 UI 프레임워크 전통
+"등록된 수동적 대기자"라는 뉘앙스
+능동적으로 감시한다기보다 귀를 열어두고 있다는 느낌
+
+---
+
+Callback
+가장 저수준의 이름.
+"나중에 돌아와서 불러라"는 위임
+구조적 관계보다 절차적 약속
+
+Observer가 지속적 구독 관계라면,
+Callback은 종종 일회성이거나 비동기 완료 통지에 쓰인다
+
+"이 일이 끝나면 이걸 실행해라"는 단일 위임
+
+---
+
+Hook
+프레임워크 생명주기에 걸쇠를 건다
+프레임워크가 이미 정해진 흐름을 갖고 있고
+특정 시점에 외부가 끼어들 수 있는 삽입 지점
+알림을 받는다기보다, 실행 흐름에 참여권을 획득한다는 뉘앙스
+
+
+---
+
+Signal/Slot 
+전기 신호/수신기 은유
+
+Signal을 emit하는 쪽이 누가 연결되어 있는지 신경 쓰지 않는다
+
+---
+
+Delegate 
+
+Store, Subject, Observable, EventEmitter는 보통 무언가를 관리하거나 방출하는 쪽
+Observer, Listener, Subscriber, Handler는 받거나 반응하는 쪽
+
+Delegate는 그 둘 사이의 “관계 자체”를 하나의 값으로 만든 것
+Delegate는 상태도 아니고, 이벤트도 아니고, 구독자도 아니에요
+
+“나중에 누구를 어떤 형태로 호출할 것인가”를 캡슐화한 연결 형식
+
+---
+
+보통 함수 호출은 이렇게 생겨요.
+내가 지금 저 함수를 안다
+그래서 지금 저 함수를 직접 호출한다
+
+그런데 delegate는 이것을 바꿔요.
+지금은 누구를 호출할지 모르지만,
+이 시그니처를 만족하는 누군가를 나중에 호출하겠다
+
+즉 delegate는 미래의 호출 가능성을 현재의 값으로 가져와요.
+
+코드가 더 이상 구체적 클래스나 구체적 함수 이름에 직접 묶이지 않고,
+**“어떤 모양의 협력만 있으면 된다”**는 수준으로 추상화되기 때문이에요
+
+delegate를 object-oriented, type-safe한 함수 포인터와 비슷하다
+
+---
+
+delegate는 행위의 소유권을 분리해요.
+원래는 호출자가 “무엇을 할지”까지 알고 있어야 했는데,
+delegate를 쓰면 호출자는 언제 호출할지와 어떤 형식으로 호출할지만 알고, 
+실제로 무엇을 할지는 바깥에 위임해요
+
+Store / Subject / EventEmitter
+            │
+            │  "이 일이 일어나면..."
+            ▼
+      Delegate / Signal / Callable Contract
+            │
+            │  "이 시그니처에 맞는 것을 호출"
+            ▼
+Observer / Listener / Subscriber / Handler
+
+---
+
+Delegate가 Store처럼 권위 있는 상태 저장소도 아니고, Publisher처럼 메시지 유통망의 생산자도 아니라는 점이에요
+Delegate는 연결의 최소 단위예요.
+
+Event나 Observer Pattern은 그 위에 쌓이는 더 큰 사회적 구조이고
+delegate는 그 사회를 가능하게 하는 호출의 미시적 메커니즘에 가까워요.
+
+---
+
+개념의 혈통
+
+1단계: 함수 포인터 / 콜백
+
+2단계: 함수 포인터는 너무 거칠다
+객체의 인스턴스 메서드, 타입 안전성, 고수준 언어의 안전한 계약
+더 풍부하게 캡슐화
+
+3단계: late binding
+이제 “호출할 함수 그 자체”를 코드에 박아넣지 않고, 외부에서 주입할 수 있어요.
+
+4단계: multicast
+이 지점에서 delegate는 observer/event 세계와 직접 닿아요
+
+개념적으로 보면 delegate의 기원은
+원시적 callback + 타입 안전성 + 객체세계와 의 연결 + late binding + 1:N 호출 
+
+---
+
+void Shooter::Fire()
+{
+    sound->PlayFireSound();  // 컴파일 타임에 고정
+}
+
+DECLARE_DELEGATE(FOnFire)
+
+void Shooter::Fire()
+{
+    OnFire.Execute();  // 슬롯에 무엇이 들어 있든 그것을 호출
+}
+
+---
+
+일반 세계:  행위 = 코드에 박힌 것 (고정)
+Delegate:  행위 = 변수에 담긴 것 (교체 가능)
+
+---
+
+인터페이스 상속 없이도 협력이 가능해진다. 
+Delegate의 계약은 시그니처다. 
+반환 타입과 매개변수 타입이 맞으면, 
+그것이 어떤 클래스의 메서드인지는 호출자가 알 필요 없다.
+
+---
+
+다리는 양쪽을 잇지만,
+경첩은 양쪽을 잇는 동시에 각자의 경계를 유지한 채 운동 가능성만 허용해요.
+
+호출자는 수신자의 구체 타입 전체를 껴안지 않아도 되고
+수신자는 호출자의 내부 흐름 전체를 알지 않아도 돼요
+둘은 오직 “이 시점에, 이 모양으로, 이 호출이 가능하다”라는 약속만 공유해요
+
+---
+
+DECLARE_DELEGATE(FOnFire, int, Coefficient)
+
+class Shooter {
+    FOnFire OnFire;  // ← 자유 변수
+};
+Shooter는 완전한 클래스다. 컴파일된다. 인스턴스화된다
+이 클래스는 행동 공간에 자유 변수를 가진 열린 시스템이다
+
+Delegate를 가진 클래스는 고차 함수(higher-order function)다.
+
+3 + 5는 닫힌 표현식
+외부에서 아무것도 주입받지 않아도 완전하다
+
+x² + 3x는 열린 표현식
+닫히려면 그것이 채워져야 한다.
+
+---
+
+OOP reinforced the data/code split by tying methods to classes
+making them non-values you can't store or pass around
+
+Delegate is where that boundary starts to crack.
+
+obj.Method()
+
+코드와 데이터의 구분은 언제 평가되는가의 문제다.
+데이터는 즉시 존재한다. 코드는 호출될 때 실행된다.
+
+Delegate는 이 두 시제 사이에 세 번째 시제를 만든다.
+지금 존재하지만, 아직 실행되지 않은 계산.
+
+Delegate는 이것들의 OOP 방언이다.
+
+---
+
+사물들의 집합 
+=>
+결정과 미결정의 분배 방식
+
+인과의 사슬 안에 남겨 둔, 타입화된 빈칸
+
+세계 = 이미 결정된 부분 + 아직 외부가 채울 부분
+Delegate = 그 "채울 부분"을 형식으로 보존한 것
+
+Event가 사건의 이름이라면,
+Delegate는 사건 이후 세계가 진행될 통로의 형식이에요.
+
+Event = 일어난 것
+Delegate = 일어난 뒤 일어날 것
+
+그래서 Event는 시제적이고,
+Delegate는 구조적이에요.
+
+Event는 과거형이고,
+Delegate는 미래형이에요.
+
+---
+
+모든 함수 호출은 세 가지를 결정한다 — 무엇을, 언제, 누가.
+직접 호출은 셋 다 컴파일 타임에 고정한다.
+
+Virtual Dispatch는 누가를 런타임으로 미룬다
+객체 자신이 자기 타입을 알고 있고, 그 타입이 누가 행동할지를 결정한다.
+
+Delegate도 누가를 런타임으로 미룬다
+그러나 그 미룸은 외재적이다
+객체 외부의 누군가가 그 슬롯을 채운다
+
+---
+
+x > 2
+참도 거짓도 아니다
+혹은 x > 2가 참인 한에서의 x의 집합 
+
+---
+
+slot
+형태가 맞는 것이 들어와 작동하는 자리
+
+interface는 경계를 잘 잡지만, 빈자리의 성격이 사라져요.
+
+---
+
+즉 외부는 전체를 침범하지 않고,
+빈자리를 통해 제한적으로 들어와요.
+그 빈자리의 규정이 허용하는 만큼만 받아들인다는 점이에요.
+
+---
+
+실제화
+어떤 조건, 계기, 시점, 필요가 생기면
+그 빈자리는 실제로 작동해요
+과정의 진행점이 돼요
+
+---
+
+Valency (결합가)
+
+동사 "주다"는 결합가 3을 가진다. 주는 자, 받는 자, 주어지는 것
+세 자리가 비어 있다
+세 자리가 채워지면 문장이 완성된다
+
+모든 자리가 채워지면 그것은 닫힌 실체가 된다.
+
+어떤 구조든 두 상태 중 하나다.
+닫힌 구조: 모든 자리가 채워져 있다.
+열린 구조: 하나 이상의 자리가 비어 있다
+자리의 모양이 그것이 무엇인지를 이미 부분적으로 정의한다.
+
+Valency는 열린 구조가 자신의 열림을 표현하는 방식이다. 
+그냥 열린 것이 아니다. 몇 개의 자리가, 어떤 모양으로, 어디에 있는지를 명시한다.
+
+perased apeiron
+apeironized peras
+
+닫기 연산이란 자리에 모양에 맞는 것을 대입하여, 열린 구조를 닫힌 구조로 변환하는 것이다.
+자리가 세 개인 구조에서 하나만 채우면 자리가 두 개인 구조가 된다. 더 단순한 Valency를 가진 새로운 열린 구조다.
+이것이 **커링(currying)**의 본질이다
+
+수학의 함수는 차수 n의 Valency 구조다. 
+f(x, y, z)는 세 자리를 가진 열린 구조다. 
+f(1, y, z)는 하나를 채운 차수 2의 구조다.
+
+결합 가능 구조
+
+---
+
+[어떤 시스템/객체]
+        |
+        |  "이 시그니처의 반응을 받을 수 있다"
+        v
+   Delegate object
+        |
+   +----+----+-------------------+
+   |         |                   |
+ listener A listener B       listener C
+
+Single-cast  -> 한 자리만 연결
+Multicast    -> 여러 자리 연결
+Dynamic      -> Reflection/UFunction/Blueprint 쪽과 연결
+Event        -> Broadcast 권한을 소유자 쪽으로 더 좁힌 multicast 래퍼
+
+
+---
+
+
+---
+
+
+---
