@@ -1,0 +1,290 @@
+게임 스레드 도메인 — AnimInstance
+캐릭터의 애니메이션 "두뇌"
+NativeUpdateAnimation() 이 게임 스레드에서 매 틱 실행
+
+워커 스레드 도메인 — AnimGraph 평가
+AnimInstance 의 프로퍼티를 읽되 쓰지 않는다
+읽기 전용 계산 그래프
+
+평가의 두 패스
+Update 패스
+각 노드가 자신의 가중치와 상태를 계산한다. 
+어떤 애니메이션이 얼마나 영향을 미칠지를 결정하는 단계다
+
+Evaluate 패스
+Update 패스에서 결정된 정보를 바탕으로 실제 본 트랜스폼을 계산한다
+
+블렌딩
+두 포즈를 혼합하려면 먼저 각각의 포즈가 얼마나 기여할지를 알아야 한다.
+
+UAnimSequence 
+키프레임 데이터
+time → BoneTransforms[] 의 함수
+
+UBlendSpace 는 여러 AnimSequence 에 대한 보간 스키마다
+1D/2D 파라미터 공간을 정의하고, 파라미터 값에 따라 
+시퀀스들을 삼각형 또는 선분 가중치로 혼합한다
+
+UAnimMontage 는 런타임 제어를 위해 설계된 시퀀스다
+Section 으로 나뉘어 있고, Slot 을 통해 AnimGraph 에 주입된다
+
+UPoseAsset 
+이름 있는 포즈들의 컬렉션
+페이셜 애니메이션에 사용
+
+기반 AnimGraph 는 Montage 의 존재를 모른다.
+Montage 는 Slot 이름만 알면 된다. 
+커플링이 Slot 이름이라는 문자열 하나로 축소된다
+
+State Machine 은 각 State 가 미니 AnimGraph
+State 가 활성화되면 그 AnimGraph 가 평가되어 포즈를 생산
+
+Root Motion 비활성화 시: 
+캐릭터 이동은 Movement Component 가 완전히 제어한다. 
+루트 본의 애니메이션 변위는 월드에 적용되지 않고 버려진다.
+
+Root Motion 활성화 시: 
+AnimInstance 가 루트 본의 델타를 추출하고 Movement Component 에 전달한다. 
+Movement Component 는 이 입력을 받아 캐릭터를 실제로 이동시킨다 (여전히 충돌 등을 처리하면서).
+
+키프레임 데이터 레벨 (AnimSequence, Sequencer)
+아티스트가 모든 것을 수동으로 키잉한다. 
+가장 높은 제어, 가장 높은 노동.
+
+블렌딩 로직 레벨 (AnimBP, StateMachine, BlendSpace)
+
+애니메이션 클립과 전환 조건을 정의하고, 
+런타임에 게임 상태에 따라 클립들이 혼합된다
+
+절차적 레벨 (Control Rig, IK Rig)
+
+발이 지형에 닿도록 IK 를 적용하거나, 손이 오브젝트를 잡도록 절차적으로 조정한다.
+키프레임 데이터를 런타임에 수정하는 레이어다
+
+데이터 기반 선택 레벨 (Motion Matching, Pose Search)
+
+애니메이션 데이터베이스를 구축하고 
+알고리즘이 현재 캐릭터 상태와 미래 궤적에 가장 잘 맞는 포즈를 검색한다
+
+Skeletal Mesh / Skeleton / Animation Sequence
+
+Animation Blueprint
+Event Graph와 Anim Graph
+
+locomotion처럼 “연속적인 상태”는 Blend Space와 State Machine으로
+공격·재장전·피격처럼 “명령형으로 끼어드는 동작”은 Montage로
+
+이 Anim Graph 안에서 핵심적인 구조화 수단이 State Machine, Blend Space, Montage
+
+언제 무엇이 일어나는지와 여러 애니메이션의 시간축을 어떻게 맞출지까지 포함해 구조화돼요
+Notifies는 특정 시점에 발소리, 이펙트, 공격 판정 같은 이벤트를 animation timeline에 묶어 보내는 장치예요
+Sync Groups는 길이가 다른 walk/run 같은 cycle animation들을 위상 맞춰 함께 블렌딩하게 해줘요
+
+---
+---
+---
+
+어떤 사고방식(Conceptual Framework)과 어떤 조작 체계(Operational Framework)로 다루게 만드는가
+
+결과보다 생성 규칙이 1급 객체
+
+Base locomotion
++ upper body aim
++ recoil
++ hit reaction
++ IK correction
+= Final Pose
+
+additive
+masked blend (상체만)
+procedural override (IK)
+
+Blend Space → 연속적인 변수 공간 (R², R¹)
+State Machine → 이산 상태 공간
+Montage → 외부에서 주입되는 명령형 이벤트
+
+Sync Group → 서로 다른 clip들의 “위상”을 맞춤
+Montage → 특정 구간만 재생 / 끼워넣기
+Notify → 시간 위에 이벤트 삽입
+
+출발점은 clip이 아니라 이거예요:
+내 캐릭터는 어떤 상태를 가지는가?
+Idle / Walk / Run
+Jump / Fall
+Attack / Reload
+
+이걸 정의하면 자연스럽게
+State Machine 구조가 생겨요
+
+Animation authoring이 아니라 
+state modeling이 먼저
+
+[State Model]
+    ↓
+[Continuous Parameter Space]
+    ↓
+[Base Pose Generation]
+    ↓
+[Layered Composition]
+    ↓
+[Event Injection (Montage)]
+    ↓
+[Procedural Correction]
+    ↓
+[Final Pose + Gameplay Events]
+
+---
+---
+---
+
+Conceptual Framework — the mental models UE gives you to think about animation
+
+
+Operational Framework — the actual workflow loop UE provides
+
+authoring animation data through tools like AnimSequence and BlendSpace
+connecting them in AnimBP
+driving them at runtime based on state and parameters
+debugging the results through Sequencer and Control Rig
+
+given runtime signals like speed, direction, and state flags, produce a pose
+
+layered authority—no single system has to answer all of a character's motion
+
+애니메이션 작업의 원재료는 AnimSequence
+본 트랜스폼 배열
+
+속도가 0에서 600까지 변할 때, 그 사이의 모든 값에 대해 어떤 포즈를 줘야 하는가
+이 질문에 BlendSpace 가 답한다
+
+지금 이 순간, 어떤 포즈를 써야 하는가
+
+StateMachine 은 캐릭터의 행동 맥락을 이산적 상태로 나눈다
+Idle, Walk, Run, Jump, Fall — 각각의 상태는 미니 AnimGraph 를 가지며, 해당 맥락에서의 포즈를 생산한다. 
+전환 조건이 충족되면 StateMachine 이 두 상태의 포즈를 크로스페이드하면서 부드럽게 이행한다
+
+AnimBP 의 코드 레이어
+NativeUpdateAnimation()
+속도를 읽고, 방향을 계산하고, 불리언 플래그를 업데이트
+AnimGraph 가 소비할 변수들을 공급
+게임 상태를 Animation Signal 로 번역하는 모듈
+
+Montage 의 영역
+Slot 이라는 명명된 주입점을 통해 
+AnimGraph 안으로 포즈를 밀어넣는다
+그 포즈가 기반 포즈를 대체하거나 혼합한다
+
+---
+
+애니메이션이 제작될 때 존재하지 않았던 상황들
+지형의 경사, 물건의 실제 위치, 카메라 방향.
+
+이 간극을 메우는 것이 절차적 레이어
+
+IK 시스템 (Two Bone IK, FABRIK, Full Body IK) 
+목표 위치로부터 역방향으로 본 체인을 풀어낸다
+발이 어디에 있어야 하는지를 지정하면, 시스템이 무릎과 허리를 거꾸로 계산한다
+
+Control Rig
+본 계층 위에서 동작하는 프로그래머블 리그
+
+Motion Matching
+캐릭터의 속도, 방향, 미래 예측 궤적을 피처 벡터로 인코딩하고, 
+애니메이션 데이터베이스 전체에서 가장 유사한 포즈 위치를 검색하여 재생한다.
+
+---
+---
+---
+
+Vertex
+position 
+  모델의 “형태”를 결정
+normal 
+  표면의 방향
+  같은 위치라도 normal이 다르면 빛이 다르게 보임
+uv 
+  “이 점에 어떤 텍스처의 어떤 픽셀을 붙일지”
+
+
+Mesh
+Vertex 배열 + Index 배열
+GPU는 항상 triangle만 그림
+Triangle = (v0, v1, v2)
+Index buffer: [0,1,2] [2,3,0]
+왜 Index를 쓰는가? Vertex 공유 가능
+
+Topology
+단순 점 집합이 아니라
+Edge, Face, Connectivity를 가진 구조
+
+manifold vs non-manifold
+edge loop
+vertex valence
+
+Mesh는 단순 기하가 아니라
+연속적인 표면을 근사하는 구조
+smooth shading vs flat shading
+normal interpolation
+
+Mesh =
+  Submesh1 (Material A)
+  Submesh2 (Material B)
+
+Bone = Transform node
+Transform =
+  Translation
+  Rotation (Quaternion)
+  Scale
+
+Root
+ └─ Spine
+     └─ Arm
+         └─ Hand
+부모가 움직이면 자식도 따라감
+상대적인 움직임
+
+Skeleton
+Bone hierarchy
+
+Skinning
+Vertex는 여러 Bone의 영향을 받는다
+
+Linear Blend Skinning
+v' = Σ (wi * (Ti * v))
+volume loss (팔이 납작해짐)
+candy-wrapper effect (비틀림 문제)
+
+개선된 방식: Dual Quaternion Skinning (DQS)
+
+Skeletal Mesh
+Mesh + Skeleton + Skinning
+
+Rig
+
+Animation
+
+Animation Composition
+
+Procedural Layer
+
+---
+
+Pose = f(game_state)
+시작점: 게임 상태 (Game Thread)
+
+speed = 320
+isInAir = false
+isAttacking = true
+aimDirection = (yaw=30, pitch=-10)
+
+AnimInstance NativeUpdateAnimation()가 하는 일
+speed = Character->Velocity.length()
+isInAir = MovementComponent->IsFalling()
+
+게임 세계 → 애니메이션 신호로 번역
+
+이 값이 워커 스레드로 넘어감
+
+Pose = AnimGraph(parameters)
+Update 패스
+Evaluate 패스
