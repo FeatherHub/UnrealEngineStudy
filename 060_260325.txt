@@ -1,0 +1,57 @@
+dispatch table pattern
+
+switch (MovementMode)
+{
+case MOVE_Walking:    PhysWalking(deltaTime, Iterations);    break;
+case MOVE_NavWalking: PhysNavWalking(deltaTime, Iterations); break;
+case MOVE_Falling:    PhysFalling(deltaTime, Iterations);    break;
+case MOVE_Flying:     PhysFlying(deltaTime, Iterations);     break;
+case MOVE_Swimming:   PhysSwimming(deltaTime, Iterations);   break;
+case MOVE_Custom:     PhysCustom(deltaTime, Iterations);     break;
+}
+
+
+`MovementMode`는 `uint8`로 pack되어 네트워크로 전송되고, 
+`FSavedMove_Character`에 `StartPackedMovementMode / EndPackedMovementMode`로 저장되며, 
+서버가 클라이언트를 교정할 때 `UnpackNetworkMovementMode()`를 통해 복원됩니다.
+
+`MOVE_NavWalking`
+ground truth를 NavMesh에서 가져옵니다
+AI가 제어하는 캐릭터가 navmesh 위를 걸을 때 
+geometry 충돌 대신 nav surface에 projection하는 모드
+같은 물리 모드지만 floor의 소스가 다릅니다.
+
+`Iterations` 카운터
+`MaxSimulationIterations`를 초과하면 재귀를 중단
+충돌 코너나 계단 처리 중 발생하는 substep들이 무한 루프로 빠지지 않게 막는 안전망
+시뮬레이션 횟수가 명시적으로 관리
+
+---
+
+`FindFloor()`
+먼저 캡슐 전체 반경으로 sweep을 내려보내고
+그것이 실패하거나 불확실하면 선을 쏩니다
+
+`WalkableFloorAngle`은 `WalkableFloorZ`로 변환되어 저장됩니다
+법선 Z 성분이 임계값보다 작은 표면은 걸을 수 없는 경사면으로 분류
+
+`ComputePerchResult()`
+캐릭터가 플랫폼 가장자리에 걸쳐 있을 때
+캡슐의 절반 반경(perch radius)으로 더 좁은 sweep을 수행
+그 가장자리가 "버틸 수 있는" 곳인지 판단
+
+`StepUp()`
+`MaxStepHeight`까지의 장애물을 올라갑니다
+먼저 위로 이동, 그다음 앞으로 이동, 그다음 아래로 내려와서 floor를 다시 확인합니다. 
+이 3단계 중 하나라도 실패하면 step을 완전히 취소하고 원래 위치로 돌아갑니다
+
+---
+
+1. 클라이언트: ControlledCharacterMove() → PerformMovement() 로컬 예측 실행
+2. 클라이언트: ReplicateMoveToServer() → FSavedMove에 상태 저장 → ServerMovePacked RPC 전송
+3. 서버: ServerMove_Implementation() 수신 → 동일한 PerformMovement() 실행
+4. 서버: ServerCheckClientError() → 오차가 허용치 초과이면 ClientAdjustPosition RPC 전송
+5. 클라이언트: ClientAdjustPosition_Implementation() → bUpdatePosition = true
+6. 클라이언트: 다음 틱에서 ClientUpdatePositionAfterServerUpdate() → SavedMoves에서 미확인 이동들 모두 재실행
+
+6단계의 "재실행"이 단순한 위치 덮어쓰기가 아니다
