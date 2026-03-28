@@ -1,0 +1,393 @@
+층위형 시스템
+
+가장 바닥에는 그냥 바이트의 흐름이 있어요
+
+---
+
+version container
+
+바이트를 어떤 엔진 버전 규칙, 어떤 프로젝트 버전 규칙으로 해석해야 하는지가
+아카이브 문맥 안에 들어갑니다
+
+---
+
+핵심 엔진
+
+void UStruct::SerializeTaggedProperties(
+    FArchive& Ar, 
+    uint8* Data, 
+    UStruct* DefaultsStruct, 
+    uint8* Defaults)
+{
+    if (Ar.IsSaving())
+    {
+        // --- 저장 경로 ---
+        for (FProperty* Prop : ForEachProperty(this))
+        {
+            // 1. 기본값과 동일하면 생략 (delta serialization)
+            if (Prop->Identical(Data, Defaults))
+                continue;
+
+            // 2. FPropertyTag 작성: 프로퍼티 메타데이터
+            FPropertyTag Tag;
+            Tag.Name = Prop->GetFName();     // "Score", "PlayerName"
+            Tag.Type = Prop->GetID();        // "IntProperty", "StrProperty"
+            Tag.Size = /* 직렬화될 바이트 수 */;
+            Ar << Tag;  // 태그를 아카이브에 씀
+
+            // 3. 실제 프로퍼티 값 직렬화
+            Prop->SerializeItem(
+                FStructuredArchive::FSlot(Ar), 
+                Data + Prop->GetOffset_ForInternal()
+            );
+        }
+
+        // 끝 마커
+        FName NoneProp = NAME_None;
+        Ar << NoneProp;
+    }
+}
+
+---
+
+공격 표면의 위치
+클라이언트가 서버로 보내는 모든 RPC
+복제된 프로퍼티의 클라이언트 측 수신
+
+NetSerialize를 통과
+
+---
+
+struct Player {
+    int Score;
+    std::string Name;
+};
+
+A. 파일에 저장한다
+B. 파일에서 불러온다
+C. 네트워크로 보낸다
+D. 메모리 사용량을 계산한다
+E. 다른 인스턴스로 복사한다
+F. JSON으로 변환한다
+
+void SaveToFile(Player& p, File& f) {
+    f.write(p.Score);
+    f.write(p.Name);
+}
+
+void LoadFromFile(Player& p, File& f) {
+    f.read(p.Score);
+    f.read(p.Name);
+}
+
+void SendOverNetwork(Player& p, Socket& s) {
+    s.send(p.Score);
+    s.send(p.Name);
+}
+
+...
+
+문제: Player에 필드를 하나 추가할 때마다 6개 함수를 전부 수정해야 한다
+
+---
+
+해결책의 씨앗 — 구조 서술을 분리한다
+
+// "Player가 어떻게 생겼는가"를 딱 한 번만 서술한다
+void Describe(Player& p, Handler& h) {
+    h.field(p.Score);
+    h.field(p.Name);
+}
+
+Describe는 아무것도 하지 않는다. 
+그냥 "Score가 있고, Name이 있다"고 말할 뿐이다. 
+무엇을 할지는 Handler가 결정한다.
+
+struct SaveHandler {
+    File& f;
+    template<typename T>
+    void field(T& value) { f.write(value); }  // 저장
+};
+
+struct LoadHandler {
+    File& f;
+    template<typename T>
+    void field(T& value) { f.read(value); }   // 로딩
+};
+
+struct MemoryCountHandler {
+    size_t total = 0;
+    template<typename T>
+    void field(T& value) { total += sizeof(value); }  // 계산
+};
+
+필드를 추가하면 Describe만 수정한다
+
+---
+
+void UPlayer::Serialize(FArchive& Ar)  // Ar == Handler
+{
+    Ar << Score;   // h.field(Score)
+    Ar << Name;    // h.field(Name)
+}
+
+// FLinkerSave == SaveHandler
+// FLinkerLoad == LoadHandler
+// FArchiveCountMem == MemoryCountHandler
+// FReferenceCollector == GCHandler
+
+---
+
+FStructuredArchive: field(value) 대신 field("Score", value)
+이름이 있으면 순서가 달라져도 괜찮고, JSON으로 출력할 수도 있다.
+
+FPropertyTag + SerializeTaggedProperties
+이름을 붙이는 것을 리플렉션이 자동으로 해준다
+UPROPERTY가 붙은 필드는 Describe를 직접 쓸 필요조차 없다
+
+FLinkerSave/Load
+수백 개의 오브젝트가 서로를 참조하는 그래프 전체를 Describe한다
+포인터를 인덱스로 바꾸는 것, NameMap으로 문자열을 압축하는 것
+
+버전 관리
+Describe가 시간에 따라 바뀐다는 사실
+
+---
+
+하나의 서술
+교체 가능한 해석자
+
+서술은 해석자를 모른다
+해석자는 서술을 바꾸지 않는다
+
+---
+
+하나의 실체 (Substantia) — 신 또는 자연
+    ↓
+무한히 많은 속성(Attributa)을 통해 표현된다
+우리가 아는 두 속성: 사유(Cogitatio)와 연장(Extensio)
+
+동일한 실체가 사유 속성을 통해 해석되면 관념(idea)이 되고, 
+연장 속성을 통해 해석되면 물체(corpus)가 된다
+
+실체 자체는 어느 속성도 아니다
+속성이 실체를 "읽는 방식"이다
+
+Substantia::Describe(Attributum& A) {
+    A << mode_1;
+    A << mode_2;
+    ...
+}
+
+---
+
+사유의 질서와 연결은 사물의 질서와 연결과 동일하다
+Ordo et connexio idearum idem est ac ordo et connexio rerum.
+
+FLinkerSave와 FReferenceCollector가 동일한 Serialize를 통과한다는 것과 구조적으로 동형이다. 
+산출되는 결과는 완전히 다르지만, 서술은 하나다.
+
+---
+
+동일한 텍스트 (성경 구절)
+    ↓
+문자적 의미 (Sensus Litteralis)    — 사건이 실제로 일어난 것
+알레고리적 의미 (Sensus Allegoricus) — 신앙의 교리를 가리키는 것
+도덕적 의미 (Sensus Tropologicus)   — 행동 지침
+종말론적 의미 (Sensus Anagogicus)   — 내세/구원을 가리키는 것
+
+LitteralisArchive  → 역사적 사실들
+AllegoricusArchive → 교회론적 명제들
+TropologicusArchive → 윤리적 명령들
+AnagogicusArchive  → 종말론적 약속들
+
+텍스트는 어떻게 읽힐지 지정하지 않는다.
+"서술은 해석자를 모른다"
+
+---
+
+"하나인 것이 어떻게 여럿으로 나타나는가" 라는 문제에 대한 답의 패턴
+
+단일 서술이 다수의 해석을 허용하기 위해서는, 해석자들이 서로에 대해 불투명해야 한다. 
+이 불투명성이 패턴의 대가다.
+
+---
+
+"단일 코드 경로"라고 했지만 실제로는 플래그 조합에 따라 수십 가지 실행 경로가 존재한다. 
+플래그가 많아질수록 SerializeTaggedProperties는 암묵적 조건 분기의 미로가 된다.
+
+패턴의 통합성을 유지하는 비용이 플래그의 증식으로 지불된다.
+
+---
+
+Ar << MyValue라고 썼을 때 실제로 무슨 일이 일어나는가
+
+1. 전역 함수로 디스패치된다
+2. 가변 길이, 구조체 원소들을 재귀 분해
+2. Serialize()로 Delegate된다
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---
+
+
+
+---

@@ -1,0 +1,2713 @@
+---
+---
+1st Iteration with Claude
+---
+---
+
+Windows NT 로더 (ntdll.dll)가 
+PE(Portable Executable) 헤더를 파싱하고, 
+Import Address Table(IAT)을 순회하며 
+의존 DLL들을 메모리에 매핑한다
+
+Phase 1 — CRT 초기화 & C++ Static Initializers
+CRTStartup 계열 함수가 실행되면서
+
+전역 변수들의 기본 초기화 (zero-initialization)
+C++ 전역 객체 생성자 (global constructors) 순차 실행
+
+---
+
+*.gen.cpp 
+static TClassCompiledInDefer<UMyActor> AutoInitializeUMyActor(TEXT("UMyActor"), ...);
+
+---
+
+Phase 2 — WinMain
+Runtime/Launch/Private/Windows/LaunchWindows.cpp
+
+int32 WINAPI WinMain(HINSTANCE, HINSTANCE, char*, int32)
+{
+    // 기본 Windows 메시지 처리 설정
+    // SEH(Structured Exception Handling) 최외곽 설치
+    return GuardedMain(GetCommandLineW());
+}
+
+---
+
+Phase 3 — GuardedMain
+Runtime/Launch/Private/Launch.cpp
+
+int32 GuardedMain(const TCHAR* CmdLine)
+{
+    GEngineLoop.PreInit(CmdLine);  // ← 엔진의 대부분이 여기서
+    GEngineLoop.Init();
+    
+    while (!GIsRequestingExit)
+        GEngineLoop.Tick();        
+    
+    GEngineLoop.Exit();
+}
+
+---
+
+Phase 4 — FEngineLoop::PreInit
+
+PreInitPreStartupScreen
+GMalloc이 플랫폼별 구현체로 세팅된다
+이 시점 이전엔 FMemory::Malloc을 쓸 수 없다.
+
+FCommandLine::Set(CmdLine) 
+이후 엔진 전역 어디서든 FCommandLine::Get()으로 접근 가능
+
+GGameThreadId = FPlatformTLS::GetCurrentThreadId()
+이후 IsInGameThread() 체크가 이 값을 기준으로 동작
+
+FName의 전역 Pool(이름 → 인덱스 해시맵)이 초기화
+
+FTaskGraphInterface::Startup(FPlatformMisc::NumberOfCores());
+ENamedThreads::GameThread, RenderThread, RHIThread
+
+GLog (전역 로그 출력 장치)가 세팅된다. 
+이 시점 이전 로그는 버퍼에 쌓였다가 지금 flush된다.
+
+FModuleManager::Get().LoadModule(TEXT("CoreUObject"));
+
+---
+
+UObject 시스템 초기화
+
+ProcessNewlyLoadedUObjects()가 호출되면서 
+Phase 1에서 대기열에 쌓아놨던 UClass 등록 요청들이 처리된다.
+
+CDO(Class Default Object) 생성
+모든 UObject 파생 클래스의 기본 인스턴스가 이 시점에 힙에 올라간다. 
+즉, 게임 코드의 기본 생성자(C++ Constructor)가 여기서 최초로 실행된다
+
+---
+
+GConfig가 생성되고 .ini 파일들이 로드된다
+
+BaseEngine.ini → DefaultEngine.ini → WindowsEngine.ini → [ProjectName]Engine.ini 순으로
+
+LoadingPhase가 PreDefault 이하인 플러그인들이 이 시점에 로드된다
+
+각 모듈이 로드될 때마다 ProcessNewlyLoadedUObjects()가 다시 호출되어 새로운 UClass들이 등록된다
+
+---
+
+RHIInit(bHasEditorToken);
+D3D12 Device 생성
+RHI 스레드 시작
+Render 스레드 시작
+
+---
+
+PreInitPostStartupScreen
+
+패키징된 .pak 파일들이 가상 파일시스템에 마운트된다
+이 시점 이후 Content/ 경로 접근이 실제 파일 대신 Pak에서 서빙된다
+
+IAssetRegistry 모듈이 로드되고, 에셋 인덱스가 구축된다
+Shipping 빌드에서는 미리 구워진 Asset Registry 데이터를 읽는다
+
+---
+
+FEngineLoop::Init
+
+UGameEngine을 NewObject로 생성하고 
+GEngine에 배정한다.
+
+UGameEngine::Init
+
+DefaultGameInstanceClass (DefaultGame.ini에서 읽음)을 NewObjec로 생성
+GameInstance->Init() 호출
+
+UGameInstance::Init() 
+ULocalPlayer 생성
+UGameInstanceSubsystem 파생 클래스들을 모두 탐색하며 생성
+UGameViewportClient 생성
+
+---
+
+Phase 6 
+
+GEngine->Start()
+
+UGameInstance::StartGameInstance()
+    → UEngine::Browse(DefaultURL)    
+        → UEngine::LoadMap(...)
+
+UEngine::LoadMap
+
+맵 파일 .umap ( Pak 내 패키지)을 LoadPackage()로 로드
+패키지 내 직렬화된 모든 오브젝트(ULevel, UWorld, AActor 인스턴스들)가 역직렬화
+
+UWorld::InitWorld(InitParams)
+Physics scene 초기화
+Navigation system 초기화
+Audio system 연결
+
+---
+
+Phase 7 — Actor 초기화 시퀀스
+
+- `AActor::PostSpawnInitialize()` 호출
+- `AActor::PreInitializeComponents()` 호출
+- 컴포넌트 등록 (`RegisterAllComponents`)
+- `AActor::PostInitializeComponents()` 호출
+
+---
+
+World->SpawnActor<AGameModeBase>(GameModeClass)
+DefaultGame.ini의 `GlobalDefaultGameMode`, 
+혹은 맵 WorldSettings의 `DefaultGameMode` 설정값으로부터 클래스 결정
+
+AGameModeBase::InitGame
+
+GameMode->Login(NewPlayer)          // APlayerController 생성 및 반환
+    → GameMode->PostLogin(PC)       // PC 완전 초기화
+        → GameMode->SpawnDefaultPawnFor(PC, StartSpot)  // Pawn 생성
+            → PC->Possess(Pawn)    // Controller ↔ Pawn 연결
+
+---
+
+UWorld::BeginPlay()
+    → AGameModeBase::StartPlay()
+        → AGameStateBase::HandleBeginPlay()
+            → UWorld::bBegunPlay = true  ← 이 플래그가 세워짐
+        → for each AActor in Level:
+            AActor::DispatchBeginPlay()
+                → AActor::BeginPlay()           ← 여기!
+                    → for each UActorComponent:
+                        UActorComponent::BeginPlay()
+
+- `GameMode`가 가장 먼저
+- `GameState` 다음
+- 나머지 Actor들은 레벨 직렬화 순서(= 에디터에서 배치된 순서)
+- 단, `bNetStartup` 등의 플래그로 일부 Actor는 다른 타이밍에 BeginPlay가 오기도 한다
+
+---
+---
+2nd Iteration with Claude
+---
+---
+
+GuardedMain
+BootTimingPoint("Main");  // 부팅 타이밍 측정 시작
+GEngineLoop.PreInit(CmdLine)
+GEngineLoop.Init()
+
+while (!GIsRequestingExit)
+    GEngineLoop.Tick()
+
+GEngineLoop.Exit()
+
+---
+
+FEngineLoop::PreInit
+PreInitPreStartupScreen(CmdLine)
+PreInitPostStartupScreen(CmdLine)
+
+두 서브페이즈 사이에 스타트업 무비(로딩 스크린)가 재생될 수 있다
+PreStartupScreen이 끝나는 시점에 렌더 스레드가 살아있기 때문
+
+---
+
+PreInitPreStartupScreen(CmdLine)
+
+GMalloc
+가장 먼저 초기화되어야 한다
+UE는 전역 operator new를 GMalloc으로 라우팅하도록 오버라이드
+플랫폼 + 커맨드라인 인자를 기반으로 할당자를 선택
+FMallocBinned2, FMallocBinned3, Intel TBB Malloc
+
+---
+
+PreInitPreStartupScreen(CmdLine)
+
+FPlatformMisc::PlatformPreInit()
+타이머 해상도 설정(timeBeginPeriod), DPI awareness 설정, 프로세스 우선순위 등
+
+---
+
+PreInitPreStartupScreen(CmdLine)
+
+FCommandLine::Set(CmdLine);
+이후 어디서든 FCommandLine::Get()으로 접근
+많은 후속 초기화 결정들이 이 값에 의존
+
+---
+
+PreInitPreStartupScreen(CmdLine)
+
+GGameThreadId = FPlatformTLS::GetCurrentThreadId()
+GIsGameThreadIdInitialized = true
+
+이 두 줄이 세팅된 이후부터 IsInGameThread() 체크가 의미를 갖는다
+UE의 스레드 안전성 보장 메커니즘 대부분이 이 체크에 의존한다.
+
+---
+
+PreInitPreStartupScreen(CmdLine)
+
+FName은 UE 전역에서 식별자로 쓰이는 인터닝(interning) 시스템
+전역 이름 풀: FNamePool (문자열 → FNameEntryId 해시맵)
+인덱스 테이블: 모든 고유 문자열이 여기 한 번씩만 저장됨
+
+FName 초기화가 이곳에 있는 이유 (초기화 단계의 앞부분)
+FName을 써야 하는 곳
+로깅, 커맨드라인 파싱 등
+
+---
+
+PreInitPreStartupScreen(CmdLine)
+
+FTaskGraphInterface::Startup(FPlatformMisc::NumberOfCores())
+
+워커 스레드 풀 생성
+FTaskGraphThread들이 생성되고 
+각자 루프 대기 상태로 진입
+
+Named Thread 슬롯 배정
+GameThread, RenderThread, RHIThread, AudioThread
+각각 특정 인덱스에 배정
+슬롯만 바인딩된 것이고, 실제 스레드 실행은 나중에 시작된다
+현재 스레드(Main)는 GameThread 슬롯에 등록
+
+---
+
+PreInitPreStartupScreen(CmdLine)
+
+GLog는 복합 출력 장치 (multiplexer)
+
+GLog = new FOutputDeviceRedirector();
+GLog->AddOutputDevice(new FOutputDeviceFile(...));  // 로그 파일
+GLog->AddOutputDevice(new FOutputDeviceDebug());    // VS Output 창
+GWarn = ...;  // 경고용 별도 장치
+
+이 시점 이전에 발생한 로그들은 
+내부 임시 버퍼(TArray<FDeferredLog>)에 쌓여 있다가, 
+GLog가 준비되는 순간 한꺼번에 flush된다.
+
+---
+
+PreInitPreStartupScreen(CmdLine)
+
+FModuleManager::Get().LoadModule(TEXT("CoreUObject"));
+
+DLL/정적 링크 모듈에서 FCoreUObjectModule::StartupModule() 호출
+내부에서 InitUObject() 호출
+
+GUObjectArray 초기화
+GUObjectArray.AllocateObjectPool(InitialUObjectArraySize)
+UE의 **전역 오브젝트 레지스트리**
+모든 `UObject`는 생성 즉시 이 배열에 등록되고, 
+인덱스(ObjectIndex)를 부여받는다.
+GC는 이 배열을 기반으로 도달 가능성 분석을 한다
+
+FUObjectHashTables 초기화
+오브젝트를 이름으로 빠르게 찾기 위한 해시맵들
+`FindObject<T>(Outer, Name)` 같은 API가 이 테이블을 쓴다.
+
+GC 인프라 초기화
+FGarbageCollector, 루트셋 관리, `FGCObject::GGCObjectReferencer`
+
+ProcessNewlyLoadedUObjects()
+
+CRT static init에서 쌓아놓은 대기열을 처리
+
+UClassRegisterAllCompiledInClasses()
+각 항목에 대해 UClass 오브젝트(껍데기)를 생성
+
+UObjectProcessRegistrants()
+각 UClass에 대해 Z_Construct_UClass_XXX() 호출
+이 함수가 UClass에 UProperty, UFunction, 메타데이터를 모두 채움
+부모 클래스와의 계층 연결
+
+CDO 생성 
+각 UClass에 대해 NewObject<UClass>() 로 CDO를 힙에 생성
+CDO는 GUObjectArray의 루트셋에 고정 (GC 대상 아님)
+이 시점에 게임 코드의 C++ 생성자가 처음으로 실행됨
+
+CDO는 UClass 완성 이후에만 생성 가능하다
+즉 Z_Construct_UClass_XXX()로 UClass가 완전히 채워진 뒤에야 CDO를 만들 수 있다
+
+---
+
+PreInitPreStartupScreen(CmdLine)
+
+GConfig
+
+FConfigCacheIni::InitializeConfigSystem();
+
+GConfig는 키-값 저장소들의 집합이며, 
+각 .ini 파일이 하나의 FConfigFile에 대응된다
+
+나중 레이어가 이전 레이어를 오버라이드
+
+엔진 ini: BaseEngine.ini → DefaultEngine.ini → Windows/WindowsEngine.ini → [Project]Engine.ini
+게임 ini: BaseGame.ini → DefaultGame.ini → [Project]Game.ini
+인풋 ini: BaseInput.ini → DefaultInput.ini 
+
+각 ini 파일은 섹션([/Script/Engine.Engine])과 키-값 쌍으로 구성된다
+
+이 시점에 GameEngineClass, DefaultGameInstanceClass, GlobalDefaultGameMode 같은 
+중요한 클래스명들이 메모리에 로드된다.
+
+전역 편의 변수들도 세팅
+GEngineIni = GConfig->GetFilename(EConfigDir::Engine);
+GGameIni   = GConfig->GetFilename(EConfigDir::Game);
+GInputIni  = GConfig->GetFilename(EConfigDir::Input);
+
+---
+
+PreInitPreStartupScreen(CmdLine)
+
+플러그인 시스템이 [ProjectName].uproject와 엔진 플러그인 manifest를 파싱하고, 
+각 플러그인의 LoadingPhase에 따라 단계적으로 로드한다
+
+EarlierPreDefault / PreDefault 단계의 플러그인은 이 시점에 로드
+게임 모듈([ProjectName])도 이 단계에서 로드
+각 모듈의 IModuleInterface::StartupModule()이 호출
+
+---
+
+PreInitPreStartupScreen(CmdLine)
+
+RHIInit()
+
+D3D12RHI 모듈 로드
+
+IDXGIFactory::CreateDXGIFactory()     // DXGI 초기화
+→ 어댑터 열거 및 선택 (GPU 선택)
+→ D3D12CreateDevice()                 // D3D12 Device 생성
+→ Command Queue 생성 (Direct, Copy, Compute)
+→ Descriptor Heap 생성
+→ GDynamicRHI = new FD3D12DynamicRHI(...)
+
+StartRenderingThread();
+`FRenderingThread`가 생성
+자체 이벤트 루프를 돌기 시작
+
+D3D12 사용 시 별도 `FRHIThread`도 시작된다
+렌더 스레드가 렌더링 명령어를 생성하면, 
+RHI 스레드가 그것을 실제 D3D12 API 호출로 변환하고 GPU에 제출한다
+
+GameThread → [RenderCommand Queue] → RenderThread → [RHICommand Queue] → RHIThread → GPU
+
+---
+
+PreInitPostStartupScreen
+
+UE의 파일 시스템은 `IPlatformFile` 인터페이스의 체인으로 구성된다
+FPakPlatformFile → FPhysicalPlatformFile (실제 OS 파일 접근)
+
+마운팅 시 검증도 수행된다: 암호화된 pak의 경우 키 검증, SHA256 해시 확인 등.
+
+언리얼의 FPakPlatformFile은 일종의 가상 파일 시스템입니다
+.pak 파일 하나 안에는 수만 개의 에셋이 들어있지만, 
+OS 입장에서는 그냥 커다란 파일 하나일 뿐입니다.
+
+이를 '마운트'하면, 엔진은 이 거대한 파일을 뒤져서 
+내부의 파일 경로 목록(Index)만 메모리에 올립니다.
+
+그 결과, 실제로는 존재하지 않는 Content/Characters/Hero.uasset 같은 경로가 
+시스템 상에서 유효한 경로로 인식되기 시작합니다.
+
+10GB짜리 .pak 파일을 마운트한다고 해서 
+10GB를 전부 메모리에 올리는(Load) 것은 아닙니다
+
+Tip
+마운트는 논리적인 경로(가상화된 주소)를 
+실제 데이터(물리적 저장소)에 연결하여 
+시스템의 일부로 편입시키는 행위"
+
+시스템에 새로운 **'경로(Path)'**가 생김
+
+"이곳을 통해 데이터를 찾을 수 있게 한다"
+
+---
+
+PreInitPostStartupScreen
+
+FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
+
+Shipping 빌드에서는 패키징 시 생성된 
+AssetRegistry.bin을 읽어서 에셋 인덱스를 즉시 구성
+
+이 레지스트리가 있어야 나중에 에셋 경로로 클래스를 찾거나 
+"FSoftClassPath → 실제 UClass 로드"가 가능하다.
+
+---
+
+PreInitPostStartupScreen
+
+LoadingPhase == Default인 플러그인들이 로드
+
+---
+
+GuardedMain
+GEngineLoop.PreInit(CmdLine)
+GEngineLoop.Init()
+GEngineLoop.Tick()+
+GEngineLoop.Exit()
+
+---
+
+Phase 3 — FEngineLoop::Init
+
+UGameEngine 생성
+
+GConfig->GetString(TEXT("/Script/Engine.Engine"), TEXT("GameEngineClass"), GameEngineClassName, GEngineIni);
+
+LoadClass<UGameEngine>(nullptr, *GameEngineClassName)
+
+GEngine = NewObject<UGameEngine>(GetTransientPackage(), GameEngineClass)
+
+---
+
+FEngineLoop::Init
+UEngine::Init
+
+FTimerManager 생성
+스트림 가능 텍스처 시스템: IStreamingManager
+Audio Device 생성: FAudioDeviceManager::CreateAudioDevice() → XAudio2 기반 장치 초기화
+온라인 서브시스템 초기화
+콘솔 매니저: 콘솔 변수(TAutoConsoleVariable) 등록
+
+---
+
+FEngineLoop::Init
+UEngine::Init
+
+GConfig->GetString(TEXT("/Script/Engine.Engine"), TEXT("GameViewportClientClass"), ...);
+
+GameViewport = NewObject<UGameViewportClient>(...)
+
+---
+
+FEngineLoop::Init
+UEngine::Init
+
+SNew(SWindow)
+    .Title(FText::FromString(GameTitle))
+    .ClientSize(FVector2D(ResX, ResY));
+
+FSlateApplication::Get().AddWindow(Window)
+
+Win32 HWND가 이 시점에 생성되고, 
+DXGI SwapChain이 이 창에 바인딩된다
+
+---
+
+FEngineLoop::Init
+UEngine::Init
+
+GEngine->CreateLocalPlayer(0, Error, false)
+
+ULocalPlayer는 실제 입력 장치(게임패드, 키보드)와 화면 영역을 대표
+
+---
+
+FEngineLoop::Init
+UEngine::Init
+
+GConfig->GetString(TEXT("/Script/EngineSettings.GeneralProjectSettings"), TEXT("GameInstanceClass"), ...)
+
+NewObject<UGameInstance>(GEngine, GameInstanceClass)
+
+UGameInstance::Init()
+
+---
+
+FEngineLoop::Init
+UEngine::Init
+UGameInstance::Init
+
+UGameInstanceSubsystem 파생 클래스들을 CDO에서 탐색, 복제, Initialize(this) 호출
+온라인 세션 인터페이스 초기화
+각종 델리게이트 바인딩
+
+UGameInstanceSubsystem은 USubsystem 파생 클래스 중 UGameInstance가 Outer인 것들
+
+---
+
+FEngineLoop::Init
+GEngine->Start()
+
+GameInstance->StartGameInstance()
+
+---
+
+Phase 4 — LoadMap (심층)
+
+FWorldContext
+월드 하나의 문맥 정보 컨테이너
+
+struct FWorldContext
+{
+    UWorld*         World;          // 현재 월드
+    UGameInstance*  OwningGameInstance;
+    TArray<FNamedNetDriver> ActiveNetDrivers;
+    FURL            LastURL;        // 현재/이전 URL
+    FURL            PendingURL;     // 전환 예정 URL
+    // ...
+};
+
+UEngine::Browse(WorldContext, URL, Error)
+UEngine::LoadMap(WorldContext, URL, ...)
+
+---
+
+UEngine::LoadMap() 세부
+
+LoadPackage(nullptr, *URL.Map, LOAD_None)
+
+Pak의 가상 파일시스템에서 .umap 파일 스트림을 연다
+FLinkerLoad(역직렬화 엔진)가 패키지 헤더를 파싱
+Import 테이블: 이 패키지가 참조하는 외부 오브젝트 목록을 재귀적으로 로드
+
+Actor 역직렬화
+중요한 개념 구분
+Runtime Spawn (SpawnActor<T>()) → C++ 생성자 실행 → CDO로부터 프로퍼티 복사 → PostSpawnInitialize
+Level Load (Deserialization) → C++ 생성자 실행 → 직렬화된 바이너리 데이터(에디터에서 세팅한 값)로 프로퍼티 덮어씀
+
+UWorld* NewWorld = UWorld::FindWorldInPackage(WorldPackage)
+GWorld = NewWorld
+WorldContext.World = NewWorld
+NewWorld->WorldType = EWorldType::Game
+
+NewWorld->InitWorld(UWorld::InitializationValues()
+    .AllowAudioPlayback(true)
+    .CreatePhysicsScene(true)
+    .CreateNavigation(true)
+    // ...
+
+이 시점에 물리 씬이 존재하게 되므로, 
+이후 컴포넌트 등록 시 물리 프록시를 이 씬에 추가할 수 있다
+
+UWorldSubsystem 초기화
+UWorldSubsystem 파생 클래스들이 CDO 탐색으로 자동 발견되어 모두 인스턴스화된다
+Outer가 UWorld다.
+
+---
+
+Phase 5 
+Runtime/Engine/Private/World.cpp
+
+void UWorld::InitializeActorsForPlay(const FURL& InURL, bool bResetTime, FRegisterComponentContext* Context)
+
+GameMode 생성
+
+// GameMode 클래스 결정 우선순위
+// 1. URL 옵션 (?game=ClassName)
+// 2. WorldSettings::DefaultGameMode
+// 3. DefaultGame.ini GlobalDefaultGameMode
+// 4. AGameModeBase (폴백)
+
+World->SpawnActor<AGameModeBase>(GameModeClass, SpawnInfo)
+AuthorityGameMode = NewGM
+
+SpawnActor<AGameModeBase>()
+    → UObject 메모리 할당
+    → C++ 생성자 호출 (CDO에서 프로퍼티 복사)
+    → AActor::PostSpawnInitialize()
+        → AActor::PreInitializeComponents()   ← 가상, 오버라이드 가능
+        → AActor::InitializeComponents()
+            → 각 컴포넌트: UActorComponent::InitializeComponent()
+        → AActor::PostInitializeComponents()  ← 가상, 오버라이드 가능
+    → AActor::OnActorSpawned 델리게이트 브로드캐스트
+
+---
+
+UWorld::InitializeActorsForPlay
+UpdateWorldComponents()
+
+레벨에 직렬화되어 있던 Actor들의 "컴포넌트"들이 World에 등록
+
+AActor::RegisterAllComponents()
+  for (UActorComponent* Component : OwnedComponents)
+    if (!Component->IsRegistered())
+      Component->RegisterComponent();
+
+---
+
+void UActorComponent::RegisterComponent()
+{
+    World->AddComponent(this);
+    bRegistered = true;
+    OnRegister();   // ← 서브클래스 오버라이드 포인트
+}
+
+`UPrimitiveComponent::OnRegister()`:
+- **렌더 프록시 생성:** 
+  `CreateRenderState_Concurrent()`가 
+  렌더 스레드에 커맨드를 보내어 `FPrimitiveSceneProxy`를 생성한다. 
+  이 프록시가 렌더 스레드에서 실제로 그려지는 표현체다.
+- **물리 프록시 생성:** 
+  `CreatePhysicsState()`가 Chaos Physics 씬에 물리 바디를 등록한다
+
+**Registration vs Initialization 구분:**
+
+RegisterComponent() → OnRegister()
+    = "이 컴포넌트가 World에 존재함을 World에게 알림"
+    = 렌더/물리 씬에 존재 등록
+    = 아직 게임 로직 초기화 아님
+
+InitializeComponent()
+    = "게임 로직 초기화"
+    = 타이머 설정, 다른 컴포넌트 참조 캐싱 등
+    = 반드시 RegisterComponent() 이후에 호출됨
+
+---
+
+void AActor::RouteActorInitialize()
+{
+    PreInitializeComponents();
+
+    const bool bHasComponents = OwnedComponents.Num() > 0;
+    if (bHasComponents)
+        InitializeComponents();     // → 각 컴포넌트의 InitializeComponent()
+
+    PostInitializeComponents();
+
+    bActorInitialized = true;
+}
+
+컴포넌트가 bAutoActivate이면 여기서 Activate()가 호출된다
+UInputComponent라면 여기서 입력 바인딩을 준비한다
+
+---
+
+이 시점까지 완료된 것: 모든 Actor가 Register되고, Initialize되었다. 아직 "살아있지" 않다
+BeginPlay는 아직 안 불렸다.
+
+---
+
+GameMode->Login(NewPlayer)
+
+APlayerController* AGameModeBase::Login(UPlayer* NewPlayer, ...)
+
+  // 1. PlayerController 클래스 결정
+  TSubclassOf<APlayerController> PCClass = GetPlayerControllerClassForSettings();
+
+  // 2. PlayerController SpawnActor
+  APlayerController* NewPC = SpawnActor<APlayerController>(PCClass, ...);
+
+  // 3. PlayerState 생성 (PostInitializeComponents에서 생성됨)
+
+  // 4. ULocalPlayer와 연결
+  NewPC->SetPlayer(NewPlayer);
+
+GameMode->PostLogin(PC)
+
+PostLogin()
+
+  InitPlayerState() — PlayerState에 플레이어 이름, ID 등 세팅
+
+  SetupInputComponent() 준비
+
+  RestartPlayer(PC) 호출 → SpawnDefaultPawnFor(PC, StartSpot) 호출
+
+APawn* Pawn = SpawnActor<APawn>(PawnClass, SpawnTransform, SpawnParams);
+PC->Possess(Pawn);
+
+---
+
+Phase 6 — UWorld::BeginPlay 진입 직전
+
+이 시점의 상태
+  모든 Actor: 메모리에 존재, 컴포넌트 등록 완료, Pre/Init/PostInitializeComponents 완료
+  GameMode, GameState, PlayerController, PlayerState, Pawn: 생성 및 초기화 완료
+  물리/렌더 프록시: 모두 생성되어 씬에 등록됨
+  UWorld::bBegunPlay = false 아직
+
+---
+
+void UWorld::BeginPlay()
+{
+  GameMode->StartPlay();      // ← 여기서 도미노가 시작됨
+}
+
+void AGameModeBase::StartPlay()
+{
+    GameState->HandleBeginPlay();   // GameState를 통해 전파
+}
+
+void AGameStateBase::HandleBeginPlay()
+{
+    GetWorld()->bBegunPlay = true;  // ← 플래그 세팅
+
+    // GetActorListToConsiderForBeginPlay() 로 순서 결정
+    // GameMode → GameState → 나머지 Actor 순
+
+    for (AActor* Actor : ActorList)
+        Actor->DispatchBeginPlay();
+}
+
+void AActor::DispatchBeginPlay()
+{
+    BeginPlay();    // ← 블루프린트/C++ 오버라이드 포인트
+    
+    for (UActorComponent* Component : Components)
+        Component->BeginPlay();
+}
+
+---
+---
+---
+3rd Iteration with Claude
+---
+---
+---
+
+GuardedMain
+플랫폼 크래시 핸들러 설치
+WinMain의 SEH는 C++ 예외를 못 잡는 경우가 있어서
+플랫폼 레벨 핸들러를 따로 설치
+
+FPlatformMisc::SetCrashHandler(nullptr)
+
+GEngineLoop.PreInit(CmdLine)
+
+{
+  SCOPED_BOOT_TIMING("GEngineLoop.Init");
+  GEngineLoop.Init()
+}
+
+while (!GIsRequestingExit)
+{
+    GEngineLoop.Tick();
+
+    // 기아 방지: 렌더 스레드가 게임 스레드를 너무 오래 기다리면
+    // FThreadManager::Get().Tick()이 여기서 명시적으로 스레드들을 깨운다
+}
+
+GEngineLoop.Exit()
+
+성능계측 매크로 데이터는 -utiming 커맨드라인 옵션으로 파일에 출력 가능
+Shipping 빌드에서는 이 매크로들이 no-op으로 컴파일된다
+
+GIsRequestingExit 플래그
+volatile 선언된 전역 플래그
+크래시, 사용자의 창 닫기, FPlatformMisc::RequestExitWithStatus() 호출
+렌더 스레드, RHI 스레드 등 다양한 경로로 세팅
+
+---
+
+FEngineLoop::PreInit
+PreInitPreStartupScreen(CmdLine)
+PreInitPostStartupScreen(CmdLine)
+
+이 두 호출 사이에 StartupMovie가 재생 가능
+
+---
+
+FEngineLoop::PreInit
+PreInitPreStartupScreen(CmdLine)
+
+첫 번째 작업 FMemory::GCreateMalloc
+
+UE는 전역 operator new / operator delete를 오버라이드
+모든 힙 할당을 GMalloc으로 라우팅
+
+void* operator new(size_t Size)
+{
+    return FMemory::Malloc(Size);
+}
+
+즉 GMalloc이 세팅되기 전에는 프로그램 어디서도 동적 메모리 할당을 할 수 없다
+
+FMallocBinned3 내부 구조
+Small 할당 (≤ 64KB): 크기 구간별 Bin으로 관리. 각 Bin은 고정 크기 슬롯들의 Pool. 내부 단편화를 최소화
+Large 할당 (> 64KB): OS의 VirtualAlloc()으로 직접 처리. 2MB 정렬
+메타데이터 분리: 할당 블록과 메타데이터(어떤 Bin인지, 사용 여부)를 분리된 메모리 영역에 저장. Cache coherency 향상.
+
+---
+
+FEngineLoop::PreInit
+PreInitPreStartupScreen(CmdLine)
+FPlatformMisc::PlatformPreInit
+FWindowsPlatformMisc::PlatformPreInit
+
+// 타이머 해상도를 1ms로 요청
+// 기본 Windows 타이머 해상도는 15.6ms — 게임 루프에 부적합
+// 이것이 없으면 `Sleep(1)`이 실제로 15ms를 잘 수도 있어 게임 루프 타이밍이 엉망이 된다
+// 게임 종료 시 `timeEndPeriod(1)`로 반드시 복구해야 한다
+timeBeginPeriod(1);
+
+// DPI 인식 설정 (고해상도 모니터 대응)
+SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+
+// COM 초기화 (일부 Windows API가 COM 기반)
+CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+
+// 프로세스 우선순위 (게임은 보통 NORMAL 또는 HIGH)
+SetPriorityClass(GetCurrentProcess(), NORMAL_PRIORITY_CLASS);
+
+Tip
+리소스 관리의 원칙: Begin이 있으면 End가 있는 것이 시스템 프로그래밍의 기본 원칙(RAII)입니다.
+중첩 호출(Nesting): timeBeginPeriod는 내부적으로 참조 카운트를 가집니다. 
+호출한 횟수만큼 timeEndPeriod를 호출해야 정확히 해상도가 복구됩니다
+
+Windows 시스템 전체에는 오직 하나의 타이머 해상도 값만 존재할 수 있습니다. 
+여러 프로세스가 각자 다른 해상도를 요구할 때, 
+커널은 그중 **가장 낮은 값(가장 정밀한 값)**을 선택합니다.
+
+---
+
+FEngineLoop::PreInit
+PreInitPreStartupScreen(CmdLine)
+FCommandLine 
+
+네트워크 게임에서는 커맨드라인이 훨씬 중요해진다
+Game.exe MyMap?Listen -port=7777 -netspeed=10000 -maxplayers=16
+
+-port=7777: 서버가 바인딩할 UDP 포트
+-netspeed=10000: 클라이언트 연결당 최대 대역폭 (bps 단위)
+-maxplayers=16: AGameModeBase::MaxPlayers 오버라이드
+
+FParse::Value(FCommandLine::Get(), TEXT("port="), Port) 같은 방식으로 
+후속 코드들이 이 값들을 읽는다.
+
+---
+
+FEngineLoop::PreInit
+PreInitPreStartupScreen(CmdLine)
+스레드 안전성의 기준점
+GGameThreadId = FPlatformTLS::GetCurrentThreadId();
+GIsGameThreadIdInitialized = true;
+
+이후 check(IsInGameThread()) 사용
+
+UObject 조작은 반드시 게임 스레드에서만 일어나야 한다
+
+---
+
+FEngineLoop::PreInit
+PreInitPreStartupScreen(CmdLine)
+FName 시스템
+
+FNamePool
+├─ Entries (FNameEntry들의 연속 메모리 블록, 크게 할당하고 bump pointer로 관리)
+│   ├─ FNameEntry #0: "None" (FName::None = 0)
+│   ├─ FNameEntry #1: "ByteProperty"
+│   ├─ FNameEntry #2: "Actor"
+│   └─ ... (수만 개)
+└─ HashTable (문자열 해시 → FNameEntryId 매핑)
+    └─ Bucket 방식, 충돌은 체이닝
+
+`FName`을 생성하는 것은 이 테이블에서 **조회** (있으면 기존 ID 반환) 또는 **삽입** (없으면 새 Entry 추가)이다.
+
+UE는 네트워크에서 `UPackageMap`을 통해 FName 인덱스를 전송하는 방식을 쓴다
+
+---
+
+FEngineLoop::PreInit
+PreInitPreStartupScreen(CmdLine)
+FTaskGraphInterface::Startup(NumCores)
+
+**워커 스레드 풀 구성:**
+
+Named Threads (특수 용도):
+├─ GameThread      ← 현재 메인 스레드가 차지
+├─ RenderThread    ← StartRenderingThread() 이후 실제 스레드가 배정
+├─ RHIThread       ← D3D12 사용 시 별도 스레드
+└─ AudioThread     ← FAudioThread::RunCommandOnAudioThread() 용
+
+Worker Threads (N개, 코어 수에 비례):
+├─ WorkerThread_0
+├─ WorkerThread_1
+└─ ... (보통 코어 수 - 2개)
+
+각 워커 스레드는 FTaskGraphThread::Run() 루프에서 대기한다
+while (!bAttached)
+{
+    FBaseGraphTask* Task = Queue.Dequeue_Block(); // 블로킹 대기
+    Task->Execute(NewTasks, CurrentThread);
+}
+
+수신된 패킷 처리, Actor의 비동기 로드, Level Streaming
+FRepLayout의 직렬화/역직렬화 작업 일부
+
+---
+
+FEngineLoop::PreInit
+PreInitPreStartupScreen(CmdLine)
+
+GLog = new FOutputDeviceRedirector(); // 멀티플렉서
+
+// 각 출력 장치를 체인에 추가
+GLog->AddOutputDevice(new FOutputDeviceFile(LogFilePath));  // 파일
+GLog->AddOutputDevice(new FOutputDeviceDebugString());      // VS Output / OutputDebugString
+GLog->AddOutputDevice(new FOutputDeviceConsole());          // 콘솔 창
+
+내부적으로 뮤텍스로 보호되며, 비게임스레드의 로그는 버퍼링되어 게임 스레드 Tick에서 flush된다.
+GLog 초기화 이전의 로그들은 TArray<FDeferredLog> 구조에 쌓인다
+
+---
+
+FEngineLoop::PreInit
+PreInitPreStartupScreen(CmdLine)
+첫번째 모듈 로드
+FModuleManager::Get().LoadModule(TEXT("CoreUObject"));
+
+FModuleManager의 모듈 로드의 메커니즘
+DLL 로드 (LoadLibraryW()) → InitializeModule() 함수 포인터 획득 → 호출
+링크 타임에 이미 바이너리에 포함. FModuleManager에 사전 등록된 팩토리 함수를 호출.
+
+FCoreUObjectModule::StartupModule() → InitUObject() 호출
+
+GUObjectArray — 전역 오브젝트 레지스트리
+
+GUObjectArray.AllocateObjectPool(
+    InitialUObjectArraySize,         // ~360,000 슬롯 (기본)
+    MaxObjectsNotConsideredByGC,     // GC가 무시할 첫 N개 (엔진 코어 오브젝트들)
+    OpenForDisableDisregardForGC     // GC 최적화 플래그
+);
+
+FUObjectArray
+├─ ObjObjects: TStaticIndirectArrayThreadSafeRead<FUObjectItem>
+│   각 슬롯 (FUObjectItem):
+│   ├─ Object: UObject*         ← 실제 오브젝트 포인터
+│   ├─ Flags: int32             ← EInternalObjectFlags (IsRootSet, PendingKill 등)
+│   ├─ ClusterRootIndex: int32  ← GC Clustering 관련
+│   └─ SerialNumber: int32      ← TWeakObjectPtr 유효성 검증용
+└─ ObjFirstGCIndex: int32       ← 이 인덱스 이전 오브젝트는 GC 대상 아님
+
+---
+FEngineLoop::PreInit
+PreInitPreStartupScreen(CmdLine)
+
+struct FUObjectHashTables
+{
+    // (FName, UObject* Outer) → UObject*
+    // FindObject<T>(Outer, NAME) 에 사용
+    TMultiMap<FName, FUObjectItem*> ObjectNameToObjectPtr;
+
+    // UClass* → TSet<UObject*>
+    // GetObjectsOfClass() 등에 사용
+    TMap<UClass*, TSet<UObject*>*> ClassToObjectListMap;
+};
+
+---
+
+FEngineLoop::PreInit
+PreInitPreStartupScreen(CmdLine)
+ProcessNewlyLoadedUObjects()
+
+1단계: UClassRegisterAllCompiledInClasses()
+CRT static init 때 TClassCompiledInDefer<T> 생성자가 전역 배열에 쌓아놓은 항목들을 처리한다
+UClass 오브젝트의 메모리를 할당 (껍데기)
+
+2단계: UObjectProcessRegistrants()
+각 UClass의 Z_Construct_UClass_XXX() 함수를 호출
+StaticClass()->GetDefaultObject() 등에 사용
+
+3단계: CDO 생성 
+T* UClass::GetDefaultObject(bool bCreateIfNeeded)
+
+// CDO를 루트셋에 고정 (GC 대상에서 영원히 제외)
+ClassDefaultObject->AddToRoot();
+
+**CDO 생성 시 실행되는 것들:**
+UClass::GetDefaultObject()
+    → StaticAllocateObject()        ← 메모리 할당 + GUObjectArray 등록
+    → FObjectInitializer 생성        ← RAII 스타일 초기화 중재자
+    → AMyActor::AMyActor() 호출     ← 게임 코드 C++ 생성자!
+      (이 안에서 CreateDefaultSubobject<T>()로 기본 컴포넌트들 생성)
+    → FObjectInitializer 소멸자      ← 컴포넌트 계층 연결, ini 기반 기본값 적용
+
+ProcessNewlyLoadedUObjects()는 모듈이 로드될 때마다 반복 실행된다
+  CoreUObject 모듈 로드 직후 (엔진 핵심 UClass들)
+  Engine 모듈 로드 직후 (AActor, UActorComponent 등)
+  각 플러그인 모듈 로드 직후
+  게임 모듈 로드 직후 (프로젝트의 게임 클래스들)
+  런타임 중 동적 모듈 로드 시에도
+
+---
+
+FEngineLoop::PreInit
+PreInitPreStartupScreen(CmdLine)
+GConfig — ini 레이어 시스템
+
+FConfigCacheIni::InitializeConfigSystem()
+
+---
+
+FEngineLoop::PreInit
+PreInitPreStartupScreen(CmdLine)
+
+FModuleManager::Get().LoadModule(TEXT("Sockets"));
+// → FSocketSubsystemModule::StartupModule()
+//   → FSocketSubsystemWindows::Get() 초기화
+//     → WSAStartup(MAKEWORD(2,2), &WsaData)  ← WinSock 2.2 초기화!
+
+FModuleManager::Get().LoadModule(TEXT("OnlineSubsystem"));
+// → FOnlineSubsystemModule::StartupModule()
+//   → ini에서 DefaultPlatformService 읽기
+//   → 해당 OSS 서브모듈 로드 및 초기화
+
+FModuleManager::Get().LoadModule(TEXT("OnlineSubsystemUtils"));
+// UIpNetDriver, UIpConnection 등이 이 모듈에 포함
+
+---
+
+FEngineLoop::PreInit
+PreInitPreStartupScreen(CmdLine)
+
+RHIInit(bHasEditorToken);
+
+D3D12RHI 모듈 로드
+│
+├─ IDXGIFactory7::CreateFactory()         ← DXGI 팩토리 생성
+│
+├─ EnumAdapters() / EnumAdaptersByGpuPreference()
+│   └─ 어댑터 목록 열거 (DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE로 dGPU 우선)
+│
+├─ D3D12CreateDevice(Adapter, D3D_FEATURE_LEVEL_11_0, ...)
+│   └─ GPU 드라이버와 통신 채널 수립, ID3D12Device 객체 생성
+│
+├─ ID3D12Device::CreateCommandQueue()
+│   ├─ Direct Queue (렌더링, 컴퓨트, 복사 모두)
+│   ├─ Compute Queue (비동기 컴퓨트)
+│   └─ Copy Queue (텍스처/버퍼 업로드)
+│
+├─ Descriptor Heap 생성
+│   ├─ RTV Heap (Render Target View)
+│   ├─ DSV Heap (Depth Stencil View)
+│   ├─ CBV/SRV/UAV Heap (셰이더 리소스)
+│   └─ Sampler Heap
+│
+└─ GDynamicRHI = new FD3D12DynamicRHI(Adapter)
+
+이 시점에 SwapChain은 생성되지 않는다. 
+SwapChain은 FEngineLoop::Init()에서 OS 창(HWND)이 생성된 이후에 생성된다
+
+---
+
+FEngineLoop::PreInit
+PreInitPreStartupScreen(CmdLine)
+StartRenderingThread()
+
+FRenderingThread::Run()
+
+FTaskGraphInterface::Get().ProcessThreadUntilIdle(ENamedThreads::RenderThread);
+// ENQUEUE_RENDER_COMMAND로 제출된 커맨드들 처리
+// 처리 완료 후 다시 대기
+
+---
+
+GameThread      렌더 커맨드를 FRenderCommandFence로 동기화
+    ↓
+RenderThread    FRHICommandList에 RHI 커맨드 생성
+    ↓
+RHIThread       ID3D12CommandList 생성 → ExecuteCommandLists()
+    ↓
+GPU            실제 실행
+
+이 3단계 파이프라인이 D3D12의 핵심 성능 이점이다. 
+각 스테이지가 병렬로 실행된다.
+
+---
+
+FEngineLoop::PreInit
+PreInitPostStartupScreen(CmdLine)
+
+UE의 가상 파일 시스템은 Decorator 패턴으로 구성된다
+
+FPakPlatformFile               ← 가상 파일시스템 레이어 (Pak 내부 경로 처리)
+    └─ FEncryptedPakPlatformFile   ← 암호화된 Pak 처리 (있을 경우)
+        └─ FPhysicalPlatformFile   ← 실제 OS 파일 I/O (Win32 API)
+
+**Pak 파일 내부 구조:**
+```
+[Pak 파일 바이너리]
+├─ [파일 데이터 1]   ← 실제 압축/암호화된 에셋 데이터
+├─ [파일 데이터 2]
+├─ ...
+├─ [Pak Index]      ← 파일 경로 → 오프셋/크기 매핑 테이블
+│   ├─ FPakEntry { Filename, Offset, Size, Hash }
+│   ├─ FPakEntry { ... }
+│   └─ ...
+└─ [Footer]         ← 매직 넘버, 버전, Index 위치, 암호화 정보
+
+---
+
+IPlatformFile::GetPlatformPhysical().OpenRead("Game/Content/Paks/MyGame-WindowsNoEditor.pak")
+→ FPakFile::FPakFile(Reader)
+    → Footer 파싱 (파일 끝부터 읽음)
+    → Index 위치와 크기 확인
+    → Index만 메모리에 로드 (전체 데이터는 아님!)
+    → FPakEntry 배열 구성
+→ FPakPlatformFile::Mount(PakFile, MountPoint, EncryptionKeyGuid)
+    → MountedPaks 배열에 추가
+    → "/Game/Content/" → PakFile 매핑 등록
+
+마운팅 이후 FPakPlatformFile::OpenRead("Game/Content/Characters/Hero_Texture.uasset") 호출 시 시나리오
+  등록된 Pak들을 우선순위 순으로 순회
+  파일 이름을 해시하여 FPakEntry 조회 (O(1))
+  Pak 파일 내 Offset 위치로 Seek
+  Size 만큼 읽어서 (필요 시 압축 해제, 복호화) 반환
+
+---
+
+FEngineLoop::PreInit
+PreInitPostStartupScreen(CmdLine)
+
+AssetRegistry.LoadFile(TEXT("AssetRegistry.bin"));
+  모든 에셋의 경로, 타입, 태그 정보
+  에셋 간 의존성 그래프
+
+이 데이터가 있어야 TSoftObjectPtr<T> / TSoftClassPtr<T>의 LoadSynchronous() 
+또는 FStreamableManager::RequestAsyncLoad()가 
+올바른 Pak 위치를 찾아 로드할 수 있다.
+
+---
+
+FEngineLoop::PreInit
+PreInitPostStartupScreen(CmdLine)
+
+FOnlineSubsystemModule::StartupModule()
+
+GConfig->GetString(TEXT("OnlineSubsystem"), TEXT("DefaultPlatformService"), DefaultOSSName, GEngineIni);
+해당 OSS 서브모듈 로드
+
+---
+
+LoadingPhase == Default 인 나머지 플러그인들이 모두 로드된다
+네트워크 관련 플러그인들 (ReplicationGraph, OnlineSubsystemUtils) 이 여기서 완료된다
+
+---
+
+Phase 3 — FEngineLoop::Init
+
+UGameEngine 생성
+
+GConfig->GetString(TEXT("/Script/Engine.Engine"), TEXT("GameEngineClass"), GameEngineClassName, GEngineIni);
+UClass* GameEngineClass = LoadClass<UGameEngine>(nullptr, *GameEngineClassName);
+GEngine = NewObject<UGameEngine>(GetTransientPackage(), GameEngineClass);
+
+GEngine은 특정 맵/레벨에 속하지 않는 전역 객체다. 
+TransientPackage는 GC되지 않는 전역 패키지 역할을 한다.
+
+---
+
+UEngine::Init() // Super
+
+FTimerManager
+내부적으로 FTimerHandle → FTimerData의 해시맵과 
+우선순위 큐(최소 힙)로 구현된다
+매 Tick에 FTimerManager::Tick(DeltaTime)이 호출되어 
+만료된 타이머의 콜백을 실행한다
+
+FAudioDeviceManager
+AudioDeviceManager->CreateAudioDevice
+Windows에서는 FXAudio2Device가 생성된다. 
+XAudio2는 DirectX 기반 저레이턴시 오디오 API
+다중 로컬 플레이어 환경에서도 오디오 장치는 일반적으로 하나지만, 
+각 플레이어의 ULocalPlayer가 오디오 리스너 위치를 독립적으로 설정할 수 있다.
+
+// OSS를 엔진 수준에서 참조
+IOnlineSubsystem* OSS = IOnlineSubsystem::Get();
+
+// ini에서 네트워크 관련 설정 로드
+GameNetworkManager = NewObject<AGameNetworkManager>();
+GameNetworkManager->InitNetworkManager();
+// 대역폭, 패킷 손실 시뮬레이션, 레이턴시 등 글로벌 네트워크 파라미터 관리
+
+---
+
+UEngine::Init()
+
+NewObject<UGameViewportClient>(...)
+GameViewport = ViewportClient
+
+// MaxSplitscreenPlayers=4  ← 최대 몇 명까지 split-screen 허용
+ViewportClient->MaxSplitscreenPlayers = MaxSplitscreenPlayers; // ini에서 읽음
+
+// 각 플레이어의 뷰포트 영역 (0.0 ~ 1.0 정규화 좌표)
+struct FSplitscreenData
+  TArray<FPerPlayerSplitscreenData> PlayerData;
+
+// 예: 2명 수평 분할
+// Player 0: Origin=(0.0, 0.0), Size=(1.0, 0.5)
+// Player 1: Origin=(0.0, 0.5), Size=(1.0, 0.5)
+
+// 예: 4명 분할 (2x2)
+// Player 0: Origin=(0.0, 0.0), Size=(0.5, 0.5)
+// Player 1: Origin=(0.5, 0.0), Size=(0.5, 0.5)
+// Player 2: Origin=(0.0, 0.5), Size=(0.5, 0.5)
+// Player 3: Origin=(0.5, 0.5), Size=(0.5, 0.5)
+
+---
+
+UEngine::Init()
+
+// Slate 윈도우 생성
+SNew(SWindow)
+    .Title(FText::FromString(WindowTitle))
+    .ClientSize(FVector2D(ResX, ResY))
+    .HasCloseButton(true)
+    .IsTopmostWindow(false);
+
+FSlateApplication::Get().AddWindow(Window);
+
+FSlateApplication::AddWindow() 내부
+// CreateWindowExW(WS_EX_APPWINDOW, L"UnrealWindow", ...) 호출
+// HWND 획득
+
+HWND가 생겼으므로 이제 SwapChain 생성 가능
+DXGI_SWAP_CHAIN_DESC1 SwapChainDesc
+DXGIFactory->CreateSwapChainForHwnd(
+    CommandQueue,   // Direct Command Queue
+    HWND,           // 방금 만든 Win32 창
+);
+
+---
+
+GEngineLoop::Init()
+UEngine::Init()
+
+GEngine->CreateLocalPlayer(0, Error, false);
+
+UGameEngine::CreateLocalPlayer(int32 ControllerId, bool bSpawnActor) 
+
+ULocalPlayer* NewPlayer = NewObject<ULocalPlayer>(this, LocalPlayerClass);
+
+// 0 = 첫 번째 게임패드 (또는 키보드+마우스)
+// 1 = 두 번째 게임패드
+NewPlayer->SetControllerId(ControllerId);
+
+GameInstance->AddLocalPlayer(NewPlayer, ControllerId)
+
+// 뷰포트 레이아웃 재계산
+GameViewport->UpdateActiveSplitscreenType()
+
+// bSpawnActor = true면 즉시 PlayerController도 스폰
+// (LoadMap이 완료된 이후에만 가능)
+
+---
+
+ULocalPlayer
+├─ ControllerId: int32          ← 어떤 물리 입력 장치인지
+├─ PlayerController: APlayerController*  ← 연결된 PC
+├─ ViewportClient: UGameViewportClient* ← 공유 뷰포트
+├─ Origin: FVector2D            ← 화면상 뷰포트 시작점 (정규화)
+├─ Size: FVector2D              ← 화면상 뷰포트 크기 (정규화)
+└─ CalcSceneView()              ← 자신의 FSceneView 계산 (렌더링용)
+
+FSlateApplication이 OS로부터 입력 이벤트 수신
+    → FSlateApplication::ProcessKeyDownEvent(FKeyEvent&)
+        FKeyEvent에는 ControllerId 필드가 있음
+    → UGameViewportClient::InputKey()
+        → ControllerId로 올바른 ULocalPlayer 찾기
+        → LocalPlayer->GetPlayerController()->InputKey()
+
+---
+
+void UGameInstance::Init()
+
+1. UGameInstanceSubsystem들 초기화
+2. Online Session 초기화 (네트워크 게임)
+    세션 관련 델리게이트 바인딩
+    OnCreateSessionComplete, OnJoinSessionComplete 등
+3. 다중 로컬 플레이어 관련 델리게이트 바인딩
+
+---
+
+Phase 4 — LoadMap
+
+struct FWorldContext
+{
+    UWorld*               World;
+    UGameInstance*        OwningGameInstance;
+    TArray<ULocalPlayer*> LocalPlayers;         // N명 전부 여기 참조
+    TArray<FNamedNetDriver> ActiveNetDrivers; 
+    FURL                  LastURL;
+    FURL                  PendingURL;
+    EWorldType::Type      WorldType;
+    FOnWorldTickStart     OnWorldTickStart;
+    // ...
+};
+
+struct FNamedNetDriver
+{
+    UNetDriver* NetDriver;
+    FNetDriverDefinition* NetDriverDef;
+};
+
+// 네트워크 게임에서 ActiveNetDrivers의 구성 예:
+// [0] { NetDriver: UIpNetDriver*, DefName: "GameNetDriver" }    ← 메인 게임 드라이버
+// [1] { NetDriver: UDemoNetDriver*, DefName: "DemoNetDriver" }  ← 리플레이 (있을 경우)
+
+---
+
+UEngine::LoadMap(FWorldContext& WorldContext, FURL URL, ...)
+
+1. 현재 World Cleanup
+2. 맵 패키지 로드
+3. UWorld 설정
+UWorld::FindWorldInPackage(WorldPackage)
+GWorld = NewWorld
+WorldContext.SetCurrentWorld(NewWorld)
+NewWorld->WorldType = EWorldType::Game
+
+4. UWorld::InitWorld()
+5. UWorld::Listen()
+6. InitializeActorsForPlay
+7. BeginPlay
+
+---
+
+UWorld::Listen()
+1. NetDriver 클래스 결정
+2. NetDriver 인스턴스 생성
+LoadClass<UNetDriver>(Definition->DriverClassName);
+NewObject<UIpNetDriver>(GetTransientPackage(), NetDriverClass);
+
+3. UIpNetDriver::InitListen()
+
+4. NetDriver를 WorldContext에 등록
+5. NetDriver와 World 상호 참조 설정
+
+---
+
+Phase 5 — InitializeActorsForPlay
+
+SpawnActor<AGameModeBase>()
+
+UObject 메모리 할당 (GUObjectAllocator)
+GUObjectArray에 등록 (인덱스 배정)
+C++ 생성자 호출
+AActor::PostSpawnInitialize
+AActor::InitializeRootComponent
+AActor::PreInitializeComponents
+AActor::InitializeComponents
+AActor::PostInitializeComponents
+
+---
+
+InitializeActorsForPlay
+SpawnActor<AGameStateBase>
+GameState = NewGameState;
+World->GameState = NewGameState
+
+GameState는 네트워크 복제 대상 → 모든 클라이언트에게 전달됨
+bAlwaysRelevant = true
+
+---
+
+UpdateWorldComponents() → RegisterAllComponents
+단순히 컴포넌트를 하나씩 등록하면 
+매번 렌더 스레드에 커맨드를 보내야 한다. 
+FRegisterComponentContext를 사용하면 
+등록 요청들을 배치(batch)로 모아 한 번에 전송한다
+
+UPrimitiveComponent::CreateRenderState_Concurrent(FRegisterComponentContext*)
+ENQUEUE_RENDER_COMMAND(CreateRenderState)(LAMBDA)
+
+UPrimitiveComponent::CreatePhysicsState
+FBodyInstance가 Chaos의 FRigidBodyHandle을 생성
+충돌 형태 정의 (FKBoxElem, FKSphereElem 등)
+
+---
+
+void AMyActor::PostInitializeComponents()
+{
+    if (HasAuthority())
+    {
+        // 서버에서만 실행되는 초기화
+        // 예: AI 컨트롤러 배정, 게임 로직 타이머 등
+    }
+    // Authority와 무관한 초기화 (렌더링, 오디오 등)
+}
+
+---
+
+void AController::PostInitializeComponents()
+{
+    World->AddController(this);
+
+    InitPlayerState();
+    // → PlayerStateClass를 SpawnActor로 생성
+    // → PlayerState.bNetAddressable = true (복제 대상)
+    // → PlayerState.UniqueId 설정
+}
+
+---
+
+for (ULocalPlayer* LocalPlayer : GameInstance->GetLocalPlayers())
+  APlayerController* PC = GameMode->Login(...)
+  GameMode->PostLogin(PC)
+
+AGameModeBase::Login(...)
+
+1. PlayerController 클래스 결정
+2. PlayerStart 위치 선택 (아직 Pawn은 없지만 위치 결정)
+3. SpawnActor<APlayerController>
+4. ULocalPlayer와 연결
+  NewPC->SetPlayer(NewPlayer);
+5. 로그인 승인 처리
+  NewPC->ClientSetHUD(HUDClass)
+
+---
+---
+---
+Last Iteration with Claude
+---
+---
+---
+
+운영체제의 로더 — ntdll.dll가
+PE(Portable Executable) 헤더를 파싱하고,
+이 프로그램이 의존하는 DLL들을 메모리에 매핑하고
+각 DLL의 초기화 루틴을 실행한 뒤
+
+마지막으로 CRT(C 런타임)에 제어를 넘긴다.
+
+CRT는
+전역 변수들을 0으로 초기화하고
+그 다음 전역 객체들의 생성자를 순차적으로 호출
+
+*.gen.cpp 파일들 안에는 다음과 같은 패턴의 전역 객체들이 존재한다.
+static TClassCompiledInDefer<AMyActor> AutoInitializeAMyActor(TEXT("AMyActor"), ...);
+
+이 전역 객체의 생성자는 "나중에 AMyActor라는 UClass를 등록해야 한다"는 사실을 
+내부 대기열에 적어놓는 것이 전부다
+실제 UClass 생성은 아직 아니다
+
+이후 CRT는 WinMain을 호출하고
+WinMain은 GuardedMain을 호출한다
+
+GuardedMain의 구조
+GEngineLoop
+PreInit -> Init -> Tick+ -> Exit
+
+---
+
+GEngineLoop.PreInit()
+PreInitPreStartupScreen
+// Option 로딩 스크린 영상
+PreInitPostStartupScreen
+
+---
+
+PreInitPreStartupScreen 1
+
+동적 메모리 할당
+`GMalloc`이 초기화되기 전까지는 `new` 연산자를 사용할 수 없다
+모든 힙 할당이 `GMalloc`이라는 단일 인터페이스로 라우팅됨
+C++의 전역 `operator new`를 자체 구현으로 교체했음
+
+---
+
+PreInitPreStartupScreen 2
+
+플랫폼 초기화
+Windows 타이머의 기본 해상도는 15.6ms
+`Sleep(1)`을 호출해도 실제로는 15ms를 기다릴 수 있다는 뜻
+`timeBeginPeriod(1)`
+
+---
+
+PreInitPreStartupScreen 3 
+FCommandLine::Set()
+이후 엔진 어디서든 커맨드라인에 접근
+이후 수십 개의 초기화 결정을 좌우
+
+---
+
+[ntdll -> crt (전역 변수/객체 초기화) -> WinMain -> GuardedMain (GEngine)]
+PreInitPreStartupScreen 4
+`GGameThreadId`에 현재 스레드의 ID를 저장
+이 이후부터 `IsInGameThread()` 체크가 의미를 갖는다
+
+---
+
+PreInitPreStartupScreen 5
+언리얼의 문자열 인터닝 시스템 초기화
+전역 이름 풀(`FNamePool`)에 각 고유 문자열이 한 번만 저장되고
+그 인덱스가 `FName`의 실제 값이 된다
+`FName("Actor") == FName("Actor")`는 문자열 비교가 아니라 정수 비교다
+
+---
+
+PreInitPreStartupScreen 6
+FTaskGraphInterface::Startup
+GameThread, RenderThread, RHIThread, AudioThread라는 Named Thread 슬롯들이 배정
+현재 실행 중인 메인 스레드는 GameThread 슬롯에 등록된다.
+코어 수에 비례한 워커 스레드들이 생성되어 대기 상태에 진입한다
+
+---
+
+PreInitPreStartupScreen 7
+`GLog` 초기화
+로그 시스템은 복합 출력 장치(multiplexer)로 구현되어 있어, 
+파일 출력, VS Output 창, 콘솔 창 등 여러 목적지에 메시지를 전달한다.
+`GLog`가 준비되기 전까지 임시 버퍼에 쌓인 로그들이 Flush된다
+
+---
+
+PreInitPreStartupScreen 8
+네트워크 소켓 시스템
+`WSAStartup(MAKEWORD(2, 2), &WsaData)`
+Windows Socket API의 시작점
+이 호출 없이는 이후 어떤 소켓 작업도 불가능하다
+
+---
+
+PreInitPreStartupScreen 9
+FModuleManager::Get().LoadModule(TEXT("CoreUObject"))
+
+GUObjectArray
+약 36만 개 슬롯을 미리 할당하는 전역 오브젝트 레지스트리
+`UObject`는 생성되는 즉시 이 배열에 등록되고 인덱스를 부여
+
+FUObjectHashTables
+이름으로 오브젝트를 빠르게 찾기 위한 해시맵들
+
+GC 인프라 초기화
+
+ProcessNewlyLoadedUObjects()
+CRT static init 단계에서 누적된 UClass 요청들을 처리
+각 UClass의 빈 껍데기 생성
+Z_Construct_UClass_XXX() 호출 (껍데기를 채운다)
+CDO 생성
+  `StaticAllocateObject()`로 메모리를 할당
+  GUObjectArray에 등록
+  C++ 생성자 호출
+  생성자 안에서 `CreateDefaultSubobject<T>()`로 컴포넌트들 생성
+  CDO는 GC 루트셋에 영구 고정
+
+---
+
+PreInitPreStartupScreen 10
+`GConfig`는 `.ini` 파일들의 집합
+도메인(Engine, Game, Input 등)마다 레이어가 쌓인다
+`Base*.ini` → `Default*.ini` → `Windows/Windows*.ini` → `Project*.ini`
+
+---
+
+PreInitPreStartupScreen 11
+`PreDefault` 이하 단계의 플러그인들 로드
+
+---
+
+PreInitPreStartupScreen 12
+`RHIInit()`
+DXGI 팩토리가 생성되고, 
+설치된 GPU 어댑터들이 열거되며, 
+어댑터 하나가 선택된다
+
+`D3D12CreateDevice()`가 GPU 드라이버와 통신 채널을 수립하고, 
+Command Queue(Direct, Compute, Copy), Descriptor Heap들이 생성된다.
+
+`GDynamicRHI`에 이 모든 것을 관장하는 
+`FD3D12DynamicRHI` 인스턴스가 배정된다.
+
+이 시점에는 SwapChain이 만들어지지 않는다. 
+SwapChain은 OS 창(`HWND`)에 바인딩되어야 하는데, 
+창은 아직 만들어지지 않았다.
+
+렌더 스레드(`FRenderingThread`)와 RHI 스레드(`FRHIThread`)가 시작된다
+게임의 렌더링 파이프라인이 형성된다
+
+GameThread → [RenderCommand Queue] → RenderThread → [RHICommand Queue] → RHIThread → GPU
+
+---
+
+[ntdll -> crt(init globals) -> WinMain -> GuardedMain -> GEngineLoop.PreInit,Init,Tick,Exit ]
+
+PreInitPostStartupScreen
+언리얼의 pak 가상 파일 시스템
+Decorator 패턴으로 구성된 체인
+최상단에 가상 경로를 처리, 그 아래에 암호화 레이어, 그 아래에 실제 OS 파일 I/O가 있다.
+
+---
+
+GEngineLoop.Init() 1
+게임 엔진 자체의 객체들을 만드는 단계
+
+UGameEngine 생성
+전역 포인터 `GEngine`에 배정
+
+`UEngine::Init()`
+`FTimerManager`
+`FAudioDeviceManager`
+`AGameNetworkManager`
+
+---
+
+GEngineLoop.Init() 2
+`UGameViewportClient`가 생성
+
+GEngineLoop.Init() 3
+Win32 API `CreateWindowExW()`가 호출되어 `HWND`를 획득
+`IDXGIFactory::CreateSwapChainForHwnd()`가 D3D12 Command Queue와 Win32 창을 연결
+Triple Buffering과 Variable Refresh Rate(VRR) 지원 설정
+
+---
+
+GEngineLoop.Init() 4
+로컬 플레이어 N명에 대해 `ULocalPlayer`가 N개 생성
+
+각 `ULocalPlayer`는 물리 입력 장치(`ControllerId`)와 화면 영역(`Origin`, `Size`)을 소유
+렌더러는 로컬 플레이어마다 `FSceneView`를 생성하여 각자의 시점에서 씬을 그린다
+
+입력 라우팅은 `FKeyEvent`에 담긴 `ControllerId`를 기준으로 올바른 `ULocalPlayer`를 찾아 
+그 플레이어의 `PlayerController`에게 전달하는 방식으로 이루어진다
+
+---
+
+GEngineLoop.Init() 5
+UGameInstance 생성과 초기화
+UGameInstanceSubsystem 발견과 인스턴스화
+
+---
+
+[GEnginLoop. PreInit -> Init]
+`GEngine->Start()` → `StartGameInstance()` → `Browse()` → `LoadMap()`
+
+`FWorldContext`는 월드 하나의 맥락 정보를 담는 컨테이너
+현재 `UWorld`, 
+소유하는 `UGameInstance`, 
+모든 로컬 플레이어, 
+활성화된 NetDriver들, 
+현재/예정 URL
+
+---
+
+LoadPackage()
+Pak 가상 파일시스템에서 `.umap` 파일을 열고,
+`FLinkerLoad`(역직렬화 엔진)가 패키지 헤더를 파싱
+
+`SpawnActor<T>()`로 Actor를 생성할 때는, C++ 생성자가 실행된 뒤 
+CDO로부터 기본 프로퍼티 값들이 복사된다.
+
+맵 로드 시 C++ 생성자가 실행된 뒤, 
+**에디터에서 설정한 값들을 담은 바이너리 데이터가 그 위를 덮어쓴다.
+
+생성자에서 설정한 기본값은 직렬화된 값보다 낮은 우선순위를 갖는다. 
+레벨에 배치된 Actor들이 에디터에서 수정한 대로 메모리에 복원되는 것은 이 메커니즘 때문이다
+
+---
+
+`UWorld::InitWorld()`
+1 Chaos Physics가 `FPhysScene`을 생성하며 솔버를 초기화
+이후부터 컴포넌트들이 물리 프록시를 이 씬에 등록할 수 있다
+
+2 UNavigationSystemV1이 생성되어 미리 구워진 NavMesh 데이터를 로드할 준비를 한다
+3 오디오 시스템이 월드와 연결된다
+
+`UWorldSubsystem`들이 CDO 탐색으로 자동 발견되어 초기화된다
+
+`UReplicationGraph`가 생성
+"어떤 Actor를 어떤 클라이언트에게 얼마나 자주 복제할 것인가"를 공간적 계산으로 결정하는 시스템
+
+---
+
+UWorld::Listen
+이 머신을 서버로 만드는 순간
+`UIpNetDriver`가 생성
+PacketHandler 파이프라인이 구성
+패킷이 소켓에서 나가고 들어올 때 통과하는 처리 단계들의 체인
+
+StatelessConnectHandlerComponent
+클라이언트가 연결을 요청하면, 
+서버는 랜덤 쿠키를 담은 Challenge를 보내고 
+**어떤 상태도 저장하지 않는다**. 
+클라이언트가 그 쿠키를 포함하여 응답해야만 
+서버가 `UNetConnection`을 생성한다
+
+---
+
+[UWorld. InitWorld -> Listen -> InitializeActorsForPlay]
+UWorld::InitializeActorsForPlay
+GameMode 생성
+GameMode는 자신의 초기화 과정에서 `AGameStateBase`를 스폰한다
+
+Review
+SpawnActor의 내부 흐름은 일관된 의식을 따른다
+UObject 메모리 할당
+GUObjectArray 등록
+C++ 생성자 실행
+PostSpawnInitialize
+PreInitializeComponents
+InitializeComponents
+PostInitializeComponents
+`OnActorSpawned` 델리게이트 브로드캐스트
+
+---
+
+Tip
+Register vs Initialize
+
+
+---
+
+N명의 로컬 플레이어 각각에 대해 `GameMode->Login()`이 호출된다
+`Login()`은 PlayerController를 SpawnActor로 생성하고 ULocalPlayer와 연결
+
+`PostLogin()`에서 `RestartPlayer()` → `SpawnDefaultPawnFor()` → `PC->Possess(Pawn)` 체인
+
+InputComponent들은 스택을 형성
+PlayerController의 InputComponent가 최상단에, 
+Pawn의 InputComponent가 그 아래에. 
+상위가 입력을 소비하면 하위로 전달되지 않는다
+
+---
+---
+---
+New 1st Iteration
+---
+---
+---
+
+FEngineLoop
+힙에 할당된 인스턴스가 아님, 
+프로그램의 전역 스코프에 존재하는 GEngineLoop 전역 변수에 바인딩
+
+순서를 표현한다
+PreInit, Init, Tick, Exit
+
+---
+
+UGameEngine
+GEngine이라는 전역 포인터에 바인딩
+
+FEngineLoop::Init()에서 NewObject<UGameEngine>로 생성
+수명은 프로세스 종료 시까지
+
+담당하는 정보의 범위
+│
+├─ [소유]  GameViewport: UGameViewportClient*
+├─ [소유]  GameInstance: UGameInstance*
+├─ [소유]  WorldList: TArray<FWorldContext>   ← 활성 World들의 컨텍스트
+├─ [관리]  FTimerManager                      ← SetTimer/ClearTimer 시스템
+├─ [관리]  FAudioDeviceManager                ← XAudio2 기반 오디오 장치
+├─ [관리]  IStreamingManager                  ← 텍스처/메시 스트리밍
+├─ [참조]  IOnlineSubsystem*                  ← 온라인 서브시스템 (소유 아님)
+└─ [관리]  GConfig에서 읽은 클래스명들
+
+---
+
+UGameEngine::Init() 내부
+GameInstance보다 먼저
+
+UGameViewportClient
+│
+├─ [정보]  MaxSplitscreenPlayers: 최대 몇 명까지 split-screen 허용
+├─ [정보]  FSplitscreenData: 각 플레이어의 화면 영역 레이아웃
+├─ [역할]  Slate ↔ 게임 렌더링의 다리
+├─ [역할]  OS 입력 이벤트 → 올바른 ULocalPlayer로 라우팅
+└─ [역할]  DXGI SwapChain과 연결된 Win32 창(HWND)의 관리자
+
+UGameViewportClient가 공유 자원
+N명의 로컬 플레이어가 있어도 뷰포트 클라이언트는 하나
+분할 화면의 각 영역을 "같은 창 안에서" 관리
+
+입력 라우팅이 UGameViewportClient를 거치는 방식
+
+OS로부터 키보드/게임패드 입력 도착
+    │
+    ▼
+FSlateApplication::ProcessInputEvent(FKeyEvent)
+    FKeyEvent에는 ControllerId 필드가 있다
+    │
+    ▼
+UGameViewportClient::InputKey()
+    ControllerId로 올바른 ULocalPlayer를 탐색
+    │
+    ▼
+ULocalPlayer → APlayerController::InputKey()
+    실제 게임 로직으로 전달
+
+---
+
+UGameEngine::Init() 내부
+GameInstance보다 먼저
+
+ULocalPlayer는 UObject 계층에서 UPlayer를 상속
+│
+├─ ControllerId: int32
+│   └─ 어떤 물리 입력 장치와 연결됐는가
+│      (0 = 첫 번째 게임패드 또는 키보드+마우스)
+│
+├─ ViewportOrigin: FVector2D  )  split-screen 내 이 플레이어의
+├─ ViewportSize: FVector2D    )  화면 영역 (정규화 좌표)
+│
+├─ PlayerController: APlayerController*
+│   └─ LoadMap 이후 GameMode::Login()에 의해 연결됨
+│      (생성 시점에는 nullptr)
+│
+├─ SubsystemCollection       ← ULocalPlayerSubsystem들
+│
+└─ CalcSceneView()           ← 이 플레이어 시점의 FSceneView 계산
+                                렌더러가 이것을 보고 이 플레이어의 화면을 그림
+
+ULocalPlayer는 엔진 레이어의 개념이고(GEngine에 소속), 
+APlayerController는 게임 프레임워크 레이어의 개념이다(World에 Spawn된 Actor)
+이 둘은 LoadMap 이후 Login() 과정에서 PC->SetPlayer(LocalPlayer)로 연결된다
+
+---
+
+UGameEngine::Init() 내부에서 UGameViewportClient와 ULocalPlayer 생성 이후에
+
+FEngineLoop::Init()
+    └── UGameEngine::Init()
+        ├── UGameViewportClient 생성
+        ├── OS 창(HWND) + SwapChain 생성
+        ├── ULocalPlayer들 생성 (N개)
+        └── UGameInstance 생성 ← 여기
+
+UGameInstance가 담당하는 핵심 역할은 맵 전환을 살아남는 것
+UWorld와 그 안의 모든 Actor들은 맵이 전환되면 파괴된다
+게임 전역(game-wide) 상태를 보관하는 올바른 장소
+
+UGameInstance가 담당하는 정보:
+│
+├─ LocalPlayers: TArray<ULocalPlayer*>   ← UGameEngine과 공유 참조
+│   (엄밀히는 UGameEngine->WorldList의 FWorldContext에도 동일 참조가 있음)
+│
+├─ SubsystemCollection                   ← UGameInstanceSubsystem들
+│
+├─ OnlineSession 델리게이트 바인딩
+│   └─ OnCreateSessionComplete, OnJoinSessionComplete 등
+│
+└─ 맵 전환 시 보존해야 할 게임 데이터들
+   (맵 A에서 맵 B로 이동해도 살아남아야 하는 것들을 여기에 보관)
+
+---
+
+Tip
+┌─────────────────────┬──────────────────┬────────────────────────────┐
+│ Subsystem 타입      │ Outer (소유자)   │ 언제 살고 언제 죽는가      │
+├─────────────────────┼──────────────────┼────────────────────────────┤
+│ UEngineSubsystem    │ GEngine          │ 프로세스 전체 생애         │
+│ UGameInstanceSubsys │ UGameInstance    │ 맵 전환을 초월, 게임 내내  │
+│ UWorldSubsystem     │ UWorld           │ 현재 맵의 생애             │
+│ ULocalPlayerSubsys  │ ULocalPlayer     │ 해당 로컬 플레이어의 생애  │
+└─────────────────────┴──────────────────┴────────────────────────────┘
+
+ULocalPlayerSubsystem이 특히 강력한 이유
+N명의 로컬 플레이어가 있으면 N개의 독립 인스턴스가 생성된다. 
+Player 0의 HUD 상태와 Player 1의 HUD 상태를 완전히 분리하고 싶다면 
+ULocalPlayerSubsystem이 정답이다.
+
+---
+
+UEngine::LoadMap
+
+FEngineLoop::Init()
+    └── GEngine->Start()
+        └── GameInstance->StartGameInstance()
+            └── UEngine::Browse(URL)
+                └── UEngine::LoadMap(WorldContext, URL)
+
+FWorldContext
+│
+├─ World: UWorld*                          ← 현재 활성 World
+├─ OwningGameInstance: UGameInstance*
+├─ LocalPlayers: TArray<ULocalPlayer*>     ← UGameInstance와 공유
+├─ ActiveNetDrivers: TArray<FNamedNetDriver>
+│   └─ FNamedNetDriver
+│       ├─ NetDriver: UNetDriver*
+│       └─ NetDriverDef: FNetDriverDefinition*
+├─ LastURL: FURL                           ← 현재 맵 URL
+├─ PendingURL: FURL                        ← 다음 맵 URL (전환 중)
+└─ WorldType: EWorldType::Game
+
+PIE(Play In Editor)에서는 복수의 FWorldContext가 존재할 수 있다
+FWorldContext의 분리는 이 시나리오를 지원하기 위한 설계다.
+
+---
+
+UWorld의 소유 구조:
+│
+├─ PersistentLevel: ULevel*
+│   └─ Actors: TArray<AActor*>    ← 레벨에 배치/스폰된 모든 Actor
+│
+├─ StreamingLevels: TArray<ULevelStreaming*>
+│   └─ (동적으로 로드/언로드되는 서브레벨들)
+│
+├─ AuthorityGameMode: AGameModeBase*    ← 서버/Listen Server에만 존재
+├─ GameState: AGameStateBase*           ← 항상 존재, 복제됨
+├─ NetworkManager: AGameNetworkManager*
+│
+├─ PhysicsScene: FPhysScene*            ← Chaos Physics 솔버
+├─ NavigationSystem: UNavigationSystemV1*
+│
+├─ NetDriver: UNetDriver*               ← Listen Server에서 채워짐
+│   └─ (FWorldContext.ActiveNetDrivers의 "GameNetDriver"와 같은 것)
+│
+├─ ReplicationDriver: UReplicationGraph*
+│
+├─ TimerManager: FTimerManager*         ← World 레벨 타이머 (Actor들이 쓰는 것)
+│
+├─ [UWorldSubsystem 인스턴스들]
+│
+└─ 중요한 상태 플래그들:
+   ├─ bBegunPlay: bool          
+   ├─ bIsWorldInitialized: bool
+   └─ WorldType: EWorldType
+
+---
+
+UWorld::InitWorld() 순서:
+│
+├─ FPhysScene 생성 (Chaos Physics)
+│   └─ 중력 설정, 솔버 파라미터 초기화
+│   └─ 이 시점 이후 컴포넌트들이 물리 프록시를 등록할 수 있다
+│
+├─ UNavigationSystemV1 생성
+│   └─ 미리 구워진 NavMesh 로드 준비
+│
+├─ FAudioDevice와 연결
+│
+├─ AGameNetworkManager Spawn       ← [교정] Init()이 아닌 여기서
+│
+├─ UWorldSubsystem들 초기화
+│   (SubsystemCollection.Initialize(this))
+│
+└─ UReplicationGraph 생성
+   └─ InitForNetDriver(NetDriver) [Listen() 이후에 연결됨]
+
+---
+
+이 메서드 하나가 이 World를 "서버"로 만든다
+InitWorld() 직후, InitializeActorsForPlay() 직전에 호출
+
+UWorld::Listen() 흐름
+│
+├─ NetDriverDefinition 탐색 ("GameNetDriver")
+│
+├─ UIpNetDriver NewObject
+│
+├─ UIpNetDriver::InitListen()
+│   ├─ PacketHandler 파이프라인 구성
+│   │   └─ StatelessConnectHandlerComponent
+│   │       (Challenge/Response 핸드쉐이크로 SYN-flood 방어)
+│   │
+│   └─ FNetworkObjectList 생성
+│       (복제 대상 Actor 목록)
+│
+└─ this->NetDriver = NetDriver
+   FWorldContext.ActiveNetDrivers에 등록
+
+---
+
+InitializeActorsForPlay()
+    ├─ GameMode/GameState Spawn
+    ├─ UpdateWorldComponents()    ← RegisterAllComponents
+    │                               컴포넌트들이 World에 "존재 등록"
+    ├─ InitGame()
+    └─ RouteActorInitialize()     ← Pre/Init/PostInitializeComponents
+                                    컴포넌트들의 "게임 로직 초기화"
+
+Register (RegisterComponent → OnRegister):
+    질문: "이 컴포넌트가 World에 존재하는가?"
+    수행: 렌더/물리 씬에 자신을 등록
+    결과: 씬 안에 보이고, 충돌 감지 대상이 됨
+
+Initialize:
+    질문: "이 컴포넌트의 게임 로직이 준비됐는가?"
+    수행: 타이머 설정, 다른 컴포넌트 참조 캐싱, 초기값 세팅
+    선결조건: 반드시 Register 이후에 호출될 수 있음
+
+---
+
+FRegisterComponentContext — 배치 최적화
+
+비효율적인 방식 (개별 전송):
+컴포넌트 A → [커맨드] → 렌더 스레드
+컴포넌트 B → [커맨드] → 렌더 스레드  (N번의 컨텍스트 전환)
+컴포넌트 C → [커맨드] → 렌더 스레드
+
+FRegisterComponentContext를 사용한 배치:
+컴포넌트 A → 버퍼에 추가 ┐
+컴포넌트 B → 버퍼에 추가 ├─ Context.Process() → 렌더 스레드 (1번 전송)
+컴포넌트 C → 버퍼에 추가 ┘
+
+---
+
+PostInitializeComponents
+컴포넌트들이 모두 초기화된 이후
+
+ACharacter
+CharacterMovementComponent ↔ CapsuleComponent ↔ SkeletalMeshComponent
+상호 참조 완성
+
+AController
+World->AddController(this)
+HasAuthority()이면 InitPlayerState() 호출
+
+일반 Actor
+if (HasAuthority())
+{
+    // 서버 전용 초기화
+    // AI 배정, 게임 로직 타이머 등
+}
+// 공통 초기화 (렌더, 오디오 등)
+
+---
+
+네트워크 레이어: 복제기계
+
+---
+---
+---
+2nd New Iteration
+---
+---
+---
+
+정보는 자신의 생명주기와 같은 곳에 산다
+정보가 살아야 하는 기간과, 그것을 담는 그릇의 기간이 일치
+
+그릇이 너무 오래 살면 불필요한 자원을 붙들고, 
+그릇이 너무 빨리 죽으면 데이터가 사라진다
+
+---
+
+GEngine->WorldList
+├─ FWorldContext { WorldType: Editor,  World: EditorWorld }
+└─ FWorldContext { WorldType: PIE,     World: GameWorld   }
+                                            ↑
+                              이 World에 UGameInstance가 붙음
+
+---
+
+GEngine에 게임 전역 상태를 직접 넣으면 어떤 일이 벌어지는가
+에디터에서 PIE를 실행할 때마다 그 상태가 남는다. 
+두 번째 PIE 실행 시 첫 번째 실행의 잔재가 섞인다
+
+---
+
+UGameInstance가 담당하는 범위는 정확히 "게임 한 판의 생애"다. 
+메인메뉴 → 로딩 → 게임플레이 맵 → 보스방 → 엔딩 맵으로 이어지는 
+전 과정이 하나의 Game Session이다
+
+GameInstance의 핵심 가치 — 맵 전환을 살아남는 정보
+
+Map A 실행 중:
+  UWorld (Map A) ─── 모든 Actor들 
+  UGameInstance                    
+      └─ 플레이어 진행도             
+      └─ 누적 점수                   
+      └─ 언락된 아이템 목록           
+      └─ ULocalPlayer들 ←────────── (LocalPlayer는 살아남음)
+
+Map B 로드 후:
+  UWorld (Map B) ─── 새로운 Actor들
+  UGameInstance ←── 여전히 같은 인스턴스
+      └─ 플레이어 진행도 (보존됨)
+      └─ 누적 점수 (보존됨)
+
+ULocalPlayer가 UGameInstance(Outer: GEngine)에 소속되는 이유도 여기 있다
+"이 기계 앞의 물리적 플레이어"라는 사실은 맵이 바뀌어도 변하지 않는다
+그러나 그 플레이어의 APlayerController와 APawn은 맵 전환 시 파괴되고 새로 만들어진다
+
+---
+
+FWorldContext.LocalPlayers와 UGameInstance.LocalPlayers가 "공유 참조"라고만 서술했는데
+실제 관리 주체는 UGameInstance이고, FWorldContext는 편의상 같은 포인터를 들고 있다
+
+LocalPlayer를 추가/제거하는 API(GEngine::CreateLocalPlayer())는 
+최종적으로 UGameInstance::AddLocalPlayer()를 통해 GameInstance->LocalPlayers 배열을 수정한다
+
+FWorldContext의 참조는 파생된 뷰다.
+
+---
+
+UMG가 Slate 위에 얹혀 있는 것이지, Slate가 UMG를 위해 존재하는 것이 아니다
+
+Slate는 독립적인 애플리케이션 레이어다
+FSlateApplication은 PreInitPreStartupScreen 단계에서 초기화된다
+이것은 Slate가 엔진의 하위 모듈이 아니라, 엔진과 나란히 존재하는 독립 레이어임을 보여준다.
+
+FSlateApplication (싱글턴)
+│
+├─ [OS 인터페이스]
+│   ├─ Win32 메시지 펌프 관리 (WM_KEYDOWN, WM_MOUSEMOVE 등)
+│   ├─ SWindow → HWND 생성/관리
+│   └─ 멀티모니터, DPI 스케일링 처리
+│
+├─ [렌더링]
+│   ├─ FSlateRHIRenderer (자체 렌더 패스 보유)
+│   ├─ Slate 위젯 트리를 GPU에 직접 렌더링
+│   └─ 게임 World 렌더링과 독립적으로 동작 가능
+│
+├─ [입력 라우팅]
+│   ├─ 모든 OS 입력을 가장 먼저 수신
+│   ├─ 포커스된 위젯에 우선 전달
+│   └─ 게임 뷰포트로 전달 여부 결정
+│
+├─ [UI 프레임워크]
+│   ├─ 위젯 계층 (SWidget, SCompoundWidget 등)
+│   ├─ 레이아웃 시스템 (SBox, SOverlay, SVerticalBox 등)
+│   └─ 애니메이션, 스타일 시스템
+│
+└─ [게임 뷰포트 브리지]
+    └─ SViewport → FViewportClient (UGameViewportClient)
+        게임 World 렌더링을 Slate 렌더링 패스 안에 내장
+
+---
+
+UGameViewportClient는 Slate 위젯이다
+게임 화면 자체가 하나의 Slate 위젯으로 관리된다
+
+SWindow (OS 창 전체)
+└─ SOverlay
+   ├─ SGameLayerManager          ← 게임 레이어 컨테이너
+   │   └─ SViewport              ← 여기서 UGameViewportClient::Draw() 호출
+   │       └─ [게임 World 렌더링 결과 텍스처가 여기 표시됨]
+   └─ [Slate UI 위젯들]          ← UMG로 만든 HUD 등
+       (게임 화면 위에 오버레이)
+
+---
+
+FSlateApplication::Tick()
+│
+├─ SViewport을 만나면 UGameViewportClient::Draw() 호출
+│      └─ 게임 World 렌더링 (GameThread → RenderThread → RHIThread → GPU)
+│
+└─ 이후 Slate 자체의 위젯들을 렌더링 (UMG, 에디터 UI 등)
+    └─ FSlateRHIRenderer가 Slate 전용 렌더 패스 실행
+
+게임 화면은 Slate의 한 위젯으로 합성된다. 
+에디터에서 뷰포트 탭을 여러 개 열 수 있는 것, 
+PIE 창이 에디터 창 안에 내장될 수 있는 것
+이 모든 것이 Slate의 위젯 트리 덕분이다
+
+---
+
+입력과 오디오
+"하드웨어 레이어"와 "콘텐츠 레이어"
+
+입력 파이프라인 전체:
+
+[OS 레이어]
+WM_KEYDOWN / XInputGetState()
+    │ (DirectInput/XInput API)
+    ▼
+[Slate 레이어] ← FSlateApplication 소유
+FSlateApplication::ProcessKeyDownEvent(FKeyEvent)
+    포커스된 위젯이 있으면 먼저 그곳으로 전달
+    UI가 소비하지 않으면 게임 뷰포트로 전달
+    │
+    ▼
+[Engine 레이어] ← UGameViewportClient 소유 (GEngine 소속)
+UGameViewportClient::InputKey()
+    FKeyEvent.ControllerId 로 올바른 ULocalPlayer 탐색
+    │
+    ▼
+[GameInstance 레이어] ← ULocalPlayer 소유 (GEngine→GameInstance 소속)
+ULocalPlayer → Enhanced Input Subsystem 전달
+    UEnhancedInputLocalPlayerSubsystem (ULocalPlayerSubsystem)
+    입력 매핑 컨텍스트(IMC) 처리, 액션/축 값 계산
+    │
+    ▼
+[World 레이어] ← APlayerController 소유 (UWorld 소속)
+APlayerController → FInputActionBinding 처리
+    InputComponent 스택 순회
+    BindAction / BindAxis 콜백 실행
+    │
+    ▼
+APawn::SetupPlayerInputComponent() 에서 바인딩한 것들
+
+---
+
+UGameViewportClient가 GEngine 소속인 이유
+뷰포트가 맵과 무관하게 존재
+로딩 화면이 표시되는 동안에도 뷰포트는 살아있다.
+
+UEnhancedInputLocalPlayerSubsystem이 ULocalPlayer 소속인 이유
+입력 매핑 컨텍스트가 플레이어별로 다를 수 있기 때문
+Player 0는 키보드+마우스 매핑, Player 1은 게임패드 매핑을 독립적으로 가지는 
+가능성을 구조적 차원에서 지원
+
+APlayerController가 UWorld 소속인 이유
+"이 캐릭터를 조종한다"는 행위가 게임 세계 안의 개념이기 때문
+
+---
+
+GEngine (Process 생애)
+└─ FAudioDeviceManager
+   │  오디오 하드웨어 추상화 레이어 관리
+   │  XAudio2 디바이스 생성/소멸
+   │  여러 World가 오디오 디바이스를 공유하거나
+   │  각자 독립적으로 가질 수 있게 관리
+   │
+   └─ FAudioDevice (하나 이상)
+          ↑ UWorld가 이것을 참조 (소유는 FAudioDeviceManager)
+
+UWorld (Map 생애)
+└─ AudioDeviceHandle    ← FAudioDevice 참조 핸들
+   │  이 World의 사운드 씬 관리
+   │  공간 오디오 계산 (어디서 소리가 나는가)
+   │  액티브 사운드 목록 관리
+   │
+   └─ UAudioComponent (AActor 컴포넌트로 소속)
+          Actor가 내는 소리들
+
+ULocalPlayer / APlayerController (Player 생애)
+└─ 오디오 리스너 위치
+   APlayerController가 매 프레임 AudioDevice에
+   리스너 위치/방향을 갱신
+   (FListener: 귀가 어디 있는가)
+
+---
+
+소리의 공간적 계산은 World 안의 정보에 의존
+맵이 바뀌면 이전 맵의 액터들이 내던 소리들은 자연스럽게 정리되어야 한다.
+
+리스너 위치가 APlayerController 레이어에서 갱신되는 이유
+Player 0와 Player 1은 서로 다른 위치에서 세계를 듣는다
+
+---
+
+"플레이어"를 표현하는 세 레이어
+
+ULocalPlayer     ← "이 기계 앞에 앉아있는 물리적 인간"
+    │               엔진 레이어 개념. 입력 장치와 화면 영역을 소유.
+    │               맵 전환을 초월. GEngine 소속.
+    │
+APlayerController  ← "그 인간의 게임 세계 안에서의 의지"
+    │               게임 프레임워크 레이어. Actor. UWorld 소속.
+    │               맵 전환 시 재생성됨 (SeamlessTravel 예외).
+    │               Possess/UnPossess로 조종 대상을 바꿀 수 있음.
+    │
+APawn              ← "그 의지가 실체화된 세계 속 몸"
+                    물리적 존재. Actor. UWorld 소속.
+                    PC가 없어도 존재할 수 있음 (AI가 조종하는 Pawn).
+
+---
+
+네트워크 아키텍처에서 PlayerController의 존재 위치
+
+Listen Server
+  APlayerController_Player0  (ROLE_Authority, Local)
+  APlayerController_Player1  (ROLE_Authority, Local)
+  APlayerController_Remote1  (ROLE_Authority) ← 원격 클라이언트용
+      └─ NetConnection_Remote1: UIpConnection*
+
+원격 클라이언트 (Remote1의 기계):
+  APlayerController_Remote1  (ROLE_AutonomousProxy) ← 자신의 것만 존재!
+  (다른 플레이어의 PC는 이 기계에 없음)
+  APawn_Player0              (ROLE_SimulatedProxy)  ← Pawn만 복제됨
+  APawn_Player1              (ROLE_SimulatedProxy)
+  APawn_Remote1              (ROLE_AutonomousProxy) ← 자신의 Pawn
+
+클라이언트에는 자신의 PlayerController만 존재한다
+클라이언트는 다른 플레이어들의 Pawn(SimulatedProxy)만 복제받아 시각적으로 표현한다
+
+---
+
+APlayerController의 소유 구조:
+│
+├─ [연결 정보]
+│   ├─ Player: UPlayer*            ← ULocalPlayer (로컬) 또는 UNetConnection (원격)
+│   └─ NetConnection: UNetConnection*  ← 로컬 플레이어는 nullptr
+│
+├─ [조종 관계]
+│   ├─ Pawn: APawn*                ← Possess된 현재 Pawn
+│   ├─ AcknowledgedPawn: APawn*   ← 클라이언트가 확인한 Pawn
+│   └─ SpectatorPawn: ASpectatorPawn*  ← 관전 모드일 때
+│
+├─ [카메라]
+│   └─ PlayerCameraManager: APlayerCameraManager*
+│       블렌딩, FOV, 포스트 프로세스, 카메라 쉐이크 등
+│
+├─ [입력]
+│   └─ InputComponent: UInputComponent*
+│       InputComponent 스택의 최상단
+│       (Pawn의 InputComponent보다 우선)
+│
+└─ [HUD]
+    └─ MyHUD: AHUD*               ← 이 플레이어의 HUD Actor
+
+---
+
+ULocalPlayer과 APlayerController 연결의 타이밍
+
+FEngineLoop::Init()
+├─ ULocalPlayer 생성            ← PlayerController = nullptr
+└─ (GameInstance::Init, Start)
+
+LoadMap() → InitializeActorsForPlay()
+└─ GameMode->Login(LocalPlayer)
+   └─ APlayerController SpawnActor
+       └─ NewPC->SetPlayer(LocalPlayer)    ← 이 순간 연결됨
+          LocalPlayer->PlayerController = NewPC
+          NewPC->Player = LocalPlayer
+          NewPC->NetConnection = nullptr    ← 로컬 플레이어는 항상 nullptr
+
+LoadMap() → InitializeActorsForPlay()
+└─ GameMode->PostLogin(PC)
+    └─ RestartPlayer() → SpawnDefaultPawnFor()
+        └─ PC->Possess(Pawn)            ← PC와 Pawn 연결
+
+---
+---
+---
+Final Iteration
+---
+---
+---
+
+OS의 로더가 문을 열고
+CRT가 씨앗을 심고
+GMalloc이 땅을 만들고
+GUObjectArray가 행정을 등록하고
+CDO가 원형을 빚고
+RHI가 빛을 만들고
+Pak이 지도를 펼치고
+GEngine이 마을을 세우고
+GameInstance가 기억을 담고
+World가 물리와 공간을 채우고
+Actor들이 저마다의 자리에 서고
+PlayerController가 의지를 가다듬고
+Pawn이 몸을 준비한 
+과정을 거친 후 
+BeginPlay
+
+---
+
+ntdll의 로더
+문지기
+PE 헤더를 읽어 이 덩어리가 무엇인지 따진다
+의존성의 그래프를 순회하며 각각 DLL을 메모리 위에 배치한다
+
+CRT 
+전역 변수들을 0으로 닦아내고
+전역 객체들의 생성자를 하나씩 호출한다
+
+*.gen.cpp 파일들 속
+TClassCompiledInDefer 객체의 생성자가 자신을 대기열에 추가한다
+이것들은 이후 UClass 시스템이 준비된 이후 처리된다
+
+WinMain()
+"GuardedMain으로 가라"
+
+---
+
+GuardedMain이 열렸다.
+
+GEngineLoop.PreInit()
+
+1. GMalloc 공간
+이것이 없으면 new는 허공에 집을 짓는 것이다
+
+C++의 전역 operator new는 오래전에 이미 
+GMalloc으로 가도록 덧쓰여 있었다
+
+GMalloc 이 준비되기 전에는
+이 프로그램은 힙을 사용할 수 없다
+
+---
+
+2. timeBeginPeriod(1) 시간의 해상도
+
+3. 실행 명령을 전역접근가능한 형태로 변환 FCommandLine::Set()
+
+4. GGameThreadId 세팅
+
+5. FName 이름
+
+6. FTaskGraphInterface::Startup(NumCores) 일꾼 
+
+Named Threads
+├─ GameThread      ← 지금 이 스레드
+├─ RenderThread    ← RHIInit 이후 실제 스레드 배정
+├─ RHIThread       ← D3D12 사용 시
+└─ AudioThread
+
+Worker Threads
+└─ WorkerThread_0 ~ N  (대기열 앞에서 블로킹 대기)
+
+7 GLog 기록
+FOutputDeviceRedirector
+
++ FOutputDeviceFile     → 로그 파일
++ FOutputDeviceDebugString → VS Output
++ FOutputDeviceConsole  → 콘솔 창
+
+비-게임 스레드들의 로그는 내부 뮤텍스로 보호되며, 
+게임 스레드의 Tick에서 flush된다.
+
+8 항구 WSAStartup
+
+---
+
+9 행정 UObject 시스템
+존재의 시스템
+
+FModuleManager::Get().LoadModule(TEXT("CoreUObject"))
+
+GUObjectArray: FUObjectArray
+└─ ObjObjects: 슬롯들의 배열
+   각 슬롯 (FUObjectItem):
+   ├─ Object: UObject*       ← 실제 오브젝트 포인터
+   ├─ Flags: int32           ← IsRootSet, PendingKill 등
+   ├─ ClusterRootIndex       ← GC 클러스터링
+   └─ SerialNumber           ← TWeakObjectPtr 유효성 검증용
+
+모든 UObject는 태어나는 순간 이 배열에 등록되고 인덱스를 받는다
+GC는 이 배열을 걸어다니며 살아있는 것과 수거할 것을 가른다
+TWeakObjectPtr는 인덱스와 시리얼 넘버를 기억하고 참조 시 "아직 살아있는가"를 묻는다.
+
+FUObjectHashTables 
+이름으로 찾는 인덱스
+
+GC 인프라
+FGarbageCollector, 루트셋 관리. 
+이제 죽음과 삶이 관리된다
+
+---
+
+ProcessNewlyLoadedUObjects()
+
+UClassRegisterAllCompiledInClasses()
+crt 에서 뿌려진 씨앗들로부터 UClass의 빈 껍데기가 만들어진다
+GUObjectArray에 등록된다.
+
+UObjectProcessRegistrants()
+각 껍데기에 대해 Z_Construct_UClass_XXX()가 호출
+
+UClass::GetDefaultObject()
+StaticAllocateObject()        ← 메모리 할당 + GUObjectArray 등록
+AMyActor::AMyActor()         ← C++ 생성자 호출
+CreateDefaultSubobject<T>() ← 기본 컴포넌트들이 생겨남
+GC 루트셋에 영구 고정
+
+이후 UE API를 통한 모든 인스턴스 생성은 이 원형의 복사에서 시작한다
+
+---
+
+10 FConfigCacheIni
+Base*.ini → Default*.ini → Windows*.ini → Project*.ini
+
+11 RHIInit()
+
+DXGI 팩토리가 열리고
+어댑터들이 열거된다
+가장 강한 GPU가 선택된다
+드라이버와 통신 채널이 수립된다 - D3D12CreateDevice()
+
+Command Queue 생성: Direct / Compute / Copy
+Descriptor Heap:   RTV / DSV / CBV·SRV·UAV / Sampler
+GDynamicRHI = new FD3D12DynamicRHI(Adapter)
+
+그러나 SwapChain은 아직 없다.
+창은 FEngineLoop::Init()에서야 태어난다
+
+두 스레드가 시작된다
+
+GameThread  →  [RenderCommand Queue]  →  RenderThread → [RHICommand Queue] → RHIThread → GPU
+
+세 개의 파이프라인이 병렬로 흐른다. 
+GameThread가 오늘의 일을 적는 동안 
+RenderThread는 어제의 일을 번역하고 
+RHIThread는 그저께의 일을 GPU에 제출한다.
+
+---
+
+12 창고와 창고지도 Pak과 AssetRegistry
+
+FPakPlatformFile 
+가상 파일시스템의 관리자. 
+Decorator 체인으로 지어진 것
+
+FPakPlatformFile            ← 가상 경로 처리
+└─ FEncryptedPakPlatformFile  ← 암호화 레이어
+└─ FPhysicalPlatformFile  ← 실제 OS 파일 I/O
+
+이 지도가 펼쳐지면 
+Content/Characters/Hero.uasset
+실제로는 존재하지 않던 경로가 유효해진다.
+
+이후 파일 읽기
+O(1) 해시 조회 → Pak 내 Offset으로 Seek → 필요한 크기만 읽기 → 압축 해제 → 복호화
+
+---
+
+기타: FSlateApplication
+
+FSlateApplication
+│
+├─ [OS 인터페이스]   Win32 메시지 펌프, SWindow → HWND, DPI 스케일링
+├─ [렌더링]          FSlateRHIRenderer — 자체 렌더 패스 (게임 렌더와 독립)
+├─ [입력 최전방]     모든 OS 입력 최초 수신 → 포커스 위젯 우선 전달
+├─ [UI 프레임워크]   SWidget 계층, 레이아웃, 애니메이션, 스타일
+└─ [게임 브리지]     SViewport → UGameViewportClient
+
+게임 화면 자체가 Slate 위젯 하나다.
+
+SWindow (OS 창 전체)
+└─ SOverlay
+   ├─ SGameLayerManager
+   │   └─ SViewport ← UGameViewportClient::Draw() 호출
+   │       (게임 World 렌더링이 여기에 표시됨)
+   └─ [UMG 위젯들] ← 게임 화면 위 오버레이
+
+FSlateApplication::Tick()
+    └─ SViewport 만나면 → UGameViewportClient::Draw()
+           (게임 World 렌더: GameThread→RenderThread→RHIThread→GPU)
+    └─ 이후 Slate 자체 렌더 (UMG, 에디터 UI)
+           FSlateRHIRenderer — Slate 전용 패스
+
+---
+
+FEngineLoop::Init
+
+1 GEngine(UGameEngine / UEditorEngine)
+
+2 UGameViewportClient 
+
+3 OS 창
+SNew(SWindow) → FSlateApplication::AddWindow() → CreateWindowExW() 
+HWND가 생겼으므로, 이제 SwapChain이 가능하다
+CreateSwapChainForHwnd(CommandQueue, HWND, ...)
+Triple Buffering, VRR 지원
+
+4 ULocalPlayer들
+
+ULocalPlayer
+├─ ControllerId         ← 어떤 게임패드/키보드인가 (XInput 인덱스)
+├─ Origin, Size         ← 화면에서의 자기 몫
+├─ PlayerController*    ← LoadMap 이후에 연결됨 (지금은 nullptr)
+├─ SubsystemCollection  ← ULocalPlayerSubsystem
+└─ CalcSceneView()      ← 렌더러에게 "나는 이렇게 본다"를 계산
+
+ULocalPlayer는 엔진 레이어 개념이고, 
+APlayerController는 게임 프레임워크 레이어 개념
+
+---
+
+5 UGameInstance 
+
+6 LoadMap과 InitWorld
+
+FWorldContext 
+GEngine->WorldList에 자리잡고 있다
+
+FWorldContext
+├─ World: UWorld*
+├─ OwningGameInstance
+├─ LocalPlayers[]       ← UGameInstance가 관리 주체, 여기는 참조 뷰
+├─ ActiveNetDrivers[]   ← FNamedNetDriver {NetDriver*, NetDriverDef*}
+├─ LastURL / PendingURL
+└─ WorldType: EWorldType::Game
+
+---
+
+LoadPackage() 
+세계의 역직렬화
+
+FLinkerLoad가 .umap 헤더 파싱
+Import 테이블 → 의존 패키지들 재귀 로드
+
+---
+
+UWorld::InitWorld() 
+
+FPhysScene 
+  물리 프록시 등록이 가능해진다
+
+UNavigationSystemV1
+  NavMesh 로드 준비
+
+FAudioDevice 연결
+  오디오 하드웨어는 GEngine 것. World는 참조할 뿐
+
+AGameNetworkManager 생성
+
+UWorldSubsystem들
+
+UReplicationGraph
+
+---
+
+UWorld::Listen()
+  UIpNetDriver::InitListen()
+  PacketHandler 파이프라인
+  FNetworkObjectList 생성 
+
+---
+
+InitializeActorsForPlay
+AGameModeBase 생성 - 규칙
+AGameStateBase 생성 - 공개 일지
+UpdateWorldComponents - 등록
+AGameModeBase 초기화
+RouteActorInitialize 초기화
+Login(), PostLogin() - 플레이어의 입장
+
+---
+
+GameMode->Login(LocalPlayer_i)
+APlayerController Spawn
+APlayerState Spawn
+ClientSetHUD
+
+GameMode->PostLogin(PC)
+SpawnDefaultPawnFor 
+Possess
+BuildInputStack
+
+---
+---
+---
+
+에디터 실행 중:
+    GEngine (UEditorEngine) ─── 계속 살아있음
+
+    PIE 시작 → UGameInstance 생성
+    PIE 중    → UGameInstance 살아있음
+    PIE 중지  → UGameInstance 소멸
+    PIE 재시작 → 새 UGameInstance 생성 (깨끗하게)
+
+GEngine에 게임 전역 상태를 넣으면 첫 번째 PIE의 잔재가 두 번째 PIE에 남는다
+매번 GEngine->Score = 0 같은 리셋 코드를 직접 짜야 한다
+
+여러 PIE 인스턴스가 동시에 실행
+
+에디터의 "2 Players" PIE:
+    GEngine (하나, 공유)
+    ├─ UGameInstance_PIE_1  ← 서버
+    └─ UGameInstance_PIE_2  ← 클라이언트
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
