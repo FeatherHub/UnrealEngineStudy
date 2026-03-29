@@ -139,6 +139,41 @@
 					"label": ""
 				}
 			]
+		},
+		{
+			"path": "064_260328.txt",
+			"bookmarks": [
+				{
+					"line": 114,
+					"column": 0,
+					"label": ""
+				}
+			]
+		},
+		{
+			"path": "065_260329.txt",
+			"bookmarks": [
+				{
+					"line": 609,
+					"column": 3,
+					"label": ""
+				},
+				{
+					"line": 728,
+					"column": 3,
+					"label": ""
+				},
+				{
+					"line": 972,
+					"column": 0,
+					"label": ""
+				},
+				{
+					"line": 999,
+					"column": 1,
+					"label": ""
+				}
+			]
 		}
 	]
 }

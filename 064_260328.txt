@@ -1,0 +1,480 @@
+
+FPlatformMisc
+Platform Abstraction Layer
+
+FGenericPlatformMisc          (공통 기본 구현, GenericPlatform/)
+    └─ FWindowsPlatformMisc   (Windows 특화, WindowsPlatform/)
+    └─ FAndroidPlatformMisc   (Android 특화)
+    └─ ...
+
+typedef 기반 레이어링
+typedef FWindowsPlatformMisc FPlatformMisc;  // 컴파일 타임에 결정
+
+즉 FPlatformMisc는 실제 클래스가 아니라 현재 플랫폼의 구현체에 대한 별칭(alias) 
+빌드 시 타깃 플랫폼에 따라 다른 클래스를 가리키게 된다.
+
+모든 메서드는 static이다
+
+시스템 정보: GetCPUInfo(), NumberOfCores(), GetOSVersion()
+클립보드: ClipboardCopy(), ClipboardPaste()
+크래시 처리: RequestExit(), SubmitErrorReport()
+환경 변수: GetEnvironmentVariable()
+타이머/성능: GetCycles(), GetTicks()
+디버깅: DebugBreak(), IsDebuggerPresent()
+
+
+Slate
+Immediate-Mode GUI 프레임워크
+C++ 코드만으로 UI를 선언적으로 구성
+UMG가 Slate 위에 올려진 블루프린트 친화적 래퍼
+
+Slate DSL
+Slate는 C++ 연산자 오버로딩을 활용해 마치 마크업 언어처럼 읽히는 문법을 만든다
+
+SNew(SVerticalBox)
++ SVerticalBox::Slot()
+  .AutoHeight()
+  [
+      SNew(STextBlock)
+      .Text(LOCTEXT("Hello", "Hello World"))
+      .Font(FSlateFontInfo(...))
+  ]
++ SVerticalBox::Slot()
+  .FillHeight(1.0f)
+  [
+      SNew(SButton)
+      .OnClicked(this, &SMyWidget::OnButtonClicked)
+  ]
+
+Slate는 일반 3D 렌더링과 별도의 2D 렌더 패스를 가진다.
+
+1. **레이아웃 패스**
+2. **페인트 패스** - 드로우 엘리먼트 리스트 생성
+3. **배치 처리(Batching)**  - 드로우 콜 병합
+4. **RHI 제출** — Slate Renderer가 RHI에 제출
+
+---
+
+FViewport
+    ├─ FSlateViewport         (Slate 창에 렌더링 출력 연결)
+    └─ FSceneViewport         (실제 게임/에디터 씬을 렌더링하는 뷰포트)
+
+FViewportClient (인터페이스)
+    ├─ UGameViewportClient   (게임 런타임)
+    ├─ FEditorViewportClient (에디터 뷰포트)
+    └─ FLevelEditorViewportClient (레벨 에디터 특화)
+
+UGameViewportClient           (게임 뷰포트의 고수준 관리자)
+    └─ 내부에 FSceneViewport를 소유
+
+FViewport
+- 렌더링 타깃(백버퍼) 관리
+- 입력 이벤트를 `FViewportClient`에 전달
+- `Draw()` 호출 → `FViewportClient::Draw()`로 위임
+
+FViewportClient 
+- `FViewport`가 이벤트를 전달하는 대상
+
+UGameViewportClient
+- 게임 런타임 관련
+- HUD 렌더링 진입점
+- 화면 전환 (페이드 인/아웃)
+- 뷰포트 분할(Split-Screen) 관리
+- 디버그 정보 출력
+- 마우스 캡처/해제 처리
+- `GameInstance`와 연결
+
+---
+---
+---
+2nd Iteration
+---
+---
+---
+
+Runtime/Core/Public/HAL/
+    PlatformMisc.h       → FPlatformMisc
+    PlatformMemory.h     → FPlatformMemory
+    PlatformProcess.h    → FPlatformProcess
+    PlatformFile.h       → FPlatformFileManager
+    PlatformTime.h       → FPlatformTime
+    PlatformAtomics.h    → FPlatformAtomics
+    PlatformMath.h       → FPlatformMath
+    PlatformString.h     → FPlatformString
+    ...
+
+HAL은 FPlatform* 계열 클래스 전체를 아우르는 모듈
+
+FPlatformMisc는 그 안에서 메모리, 프로세스, 파일, 타이머 등
+카테고리에 속하지 않는 잡다한 플랫폼 기능을 담은 버킷
+
+FWindowsPlatformMisc : public FGenericPlatformMisc
+내부를 보면 전부 WinAPI 직접 호출
+
+---
+
+[OS]
+  HWND (Win32 창 핸들)
+  WndProc (OS 메시지 콜백)
+        ↓  WM_KEYDOWN, WM_MOUSEMOVE, WM_SIZE, WM_ACTIVATE ...
+[UE 플랫폼 레이어]
+  FWindowsApplication          ← GenericApplication의 Windows 구현
+  FWindowsWindow               ← HWND 래핑
+        ↓  OnKeyDown(), OnMouseMove(), ...
+[UE Slate 레이어]
+  FSlateApplication            ← 중앙 싱글톤, 모든 UI 이벤트 허브
+  SWindow                      ← Slate의 최상위 창 위젯
+        ↓  입력 라우팅
+  SWidget 트리 (포커스 기반)
+        ↓ 
+  FSceneViewport → UGameViewportClient ← 게임 렌더 영역의 경우
+        ↓
+  PlayerController → InputComponent
+
+---
+
+FSlateApplication 
+Slate 전체 시스템의 중앙 싱글톤
+OS와 UE 위젯 사이의 교환소(dispatcher) 역할
+
+① OS 입력을 Slate로 번역
+FSlateApplication은 FGenericApplicationMessageHandler 인터페이스를 구현
+FWindowsApplication이 WndProc에서 메시지를 파싱한 뒤 이 인터페이스를 통해 SlateApplication을 호출한다
+
+FWindowsApplication이 WM_KEYDOWN을 받으면 내부에서:
+MessageHandler->OnKeyDown(KeyCode, CharCode, bIsRepeat)
+
+② 창(SWindow) 생명주기 관리
+
+모든 SWindow 인스턴스는 FSlateApplication이 소유
+
+NewWindow = SNew(SWindow)
+    .Title(LOCTEXT("Title", "My Window"))
+    .ClientSize(FVector2D(800, 600));
+
+FSlateApplication::Get().AddWindow(NewWindow)
+
+AddWindow()를 호출하면 
+내부적으로 FWindowsApplication::MakeWindow()가 
+CreateWindowEx()를 호출해 HWND를 만들고, 
+그 HWND를 FWindowsWindow가 래핑한 뒤, 
+FSlateViewport와 연결된다.
+
+③ Slate Tick 주도
+
+매 프레임 엔진 루프에서 FSlateApplication::Tick()이 호출된다. 
+입력 이벤트 드레인(큐에 쌓인 이벤트 처리)
+위젯 트리 레이아웃 패스
+페인트 패스 → DrawElements 생성
+Slate Renderer가 RHI에 제출
+
+---
+
+FWindowsApplication 
+OS와의 접선
+
+`WndProc`에서 `WM_INPUT`(Raw Input), `WM_KEYDOWN`, `WM_MOUSEMOVE`, `WM_LBUTTONDOWN` 등 
+원시 OS 메시지를 받아서 
+UE의 언어로 번역한 뒤 `FSlateApplication`에 넘긴다.
+
+
+---
+
+Viewport 
+Slate 창 안에서 게임 씬이 그려지는 영역은 어떻게 연결되는가?
+
+`SWindow`는 Slate가 관리하는 창이다. 
+그런데 게임 씬(3D 렌더링)은 Slate가 그리는 게 아니다. 
+별도의 렌더 패스다. 
+이 둘을 이어주는 연결고리가 `FSceneViewport`다.
+
+SWindow (Slate 위젯 트리의 루트)
+    └─ SViewport (Slate 위젯: "여기 직사각형 영역에 외부 렌더 결과를 끼워넣겠다")
+         └─ FSceneViewport (실제 연결 핀)
+              └─ UGameViewportClient::Draw() → 씬 렌더러
+
+입력 경로 관점에서:
+- 마우스 클릭이 Slate 위젯 위에 오면 → Slate가 처리
+- 마우스 클릭이 게임 뷰포트 영역에 오면 → `FSceneViewport`가 받아서 → `UGameViewportClient` → `PlayerController`
+
+---
+---
+---
+3rd Iteration
+---
+---
+---
+
+FGenericApplication          (플랫폼 앱 추상 기반)
+    └─ FWindowsApplication   (Windows 구현: HWND, WndProc 담당)
+    └─ FMacApplication
+    └─ FLinuxApplication
+    └─ ...
+
+소유는 Slate → Windows 방향, 이벤트 콜백은 Windows → Slate 방향.
+
+---
+
+FWindowsApplication     ─ OS / 플랫폼 축
+FSlateApplication       ─ UI / 창 / 입력 축
+UGameEngine             ─ 게임 세계 축
+
+UGameEngine
+    └─ UGameInstance
+         └─ UWorld              ← 게임 오브젝트 세계 (로직)
+              └─ FScene         ← 렌더 스레드의 세계 표현 (렌더링)
+                   └─ FSceneRenderer
+                        ├─ FDeferredShadingSceneRenderer  (PC/Console 기본)
+                        └─ FMobileSceneRenderer
+
+`UWorld`는 게임 스레드의 세계(AActor, 물리, 로직)이고, 
+`FScene`은 렌더 스레드의 세계다. 
+둘은 `FPrimitiveSceneProxy` 같은 프록시 객체를 통해 연결된다.
+
+---
+
+GEngineLoop          
+FSlateApplication    
+  내부에 FWindowsApplication을 품고 있음
+GEngine              
+UGameInstance        
+UWorld               
+
+---
+
+FSlateApplication exists before GEngine
+It needs to exist early to show startup screens, handle OS messages
+
+Network and Audio need a game context
+
+Slate handles 2D UI rendering since it exists from startup, 
+while 3D scene rendering belongs to GEngine/UWorld
+
+FSlateApplication owns everything that needs to exist before the game world 
+
+---
+
+오디오 하드웨어
+하드웨어 초기화는 맵과 무관
+GEngine의 FAudioDeviceManager
+
+오디오 공간
+UWorld의 FAudioDevice 참조
+
+네트워크 드라이버
+맵마다 소켓을 새로 바인딩한다
+UWorld의 UNetDriver
+
+---
+
+low-level invariant part
+platform or process-wide
+(the audio device driver, the network socket, the physics solver)
+
+high-level variable part
+game or world-specific
+
+---
+
+Slate was designed as a completely self-contained UI universe
+it's a parallel system 
+This is a fundamental difference from UMG, which is tightly coupled to the game world and its systems
+
+---
+
+the Slate UI framework powers the editor, crash reporters, and loading screens, 
+none of which require a UWorld
+
+---
+
+the substrate (the capability layer that defines what's possible in this process)
+the instantiation (the specific current usage)
+
+FAudioDeviceManager is the substrate that enables sound playback,
+while FAudioDevice with specific sounds and listeners in a specific world is the instantiation
+
+WinSock is the network substrate, 
+while UNetDriver managing specific connections for a game session is the instantiation
+
+---
+
+GEngine/UWorld are independent systems 
+that happen to present their output through a Slate widget.
+
+---
+
+FSlateApplication 
+Application Shell role: OS message pump owner, window manager, process-level identity
+UI Framework role: Widget tree, layout, rendering of 2D UI
+
+---
+
+FPlatformMemory     "이 기계에서 메모리란 이렇게 동작한다"
+FPlatformTime       "이 기계에서 시간은 이렇게 측정된다"
+FPlatformProcess    "이 기계에서 프로세스/스레드는 이렇게 다룬다"
+FPlatformAtomics    "이 기계에서 원자 연산은 이렇게 보장된다"
+FPlatformMisc       "그 외 이 기계의 잡다한 사실들"
+
+FPlatformMemory::Malloc()을 호출한다는 것은
+어떤 메모리 관리자 객체에게 요청하는 게 아니라
+이 프로세스가 실행되는 기계의 능력을 사용하는 것이다.
+
+HAL의 모든 메서드가 static이라는 사실은 단순한 구현 디테일이 아니다. 
+이것은 HAL의 개념적 정체를 드러낸다.
+HAL이 묘사하는 것은 상태가 아니다
+
+플랫폼 특화 코드가 코드베이스 전체에 흩어지는 대신, 
+HAL이라는 단 하나의 경계선 안에 봉인된다
+경계선 밖의 모든 코드는 플랫폼을 모른다.
+
+HAL 경계선 안:    ::VirtualAlloc(), ::QueryPerformanceCounter(), __builtin_expect()
+HAL 경계선 밖:    FPlatformMemory::Malloc(), FPlatformTime::Cycles(), 플랫폼 몰라도 됨
+
+HAL은 원소(element) 를 제공한다. 
+그 원소로 무엇을 만들지는 위 계층의 일이다.
+
+새로운 플랫폼을 지원하려면 
+HAL 구현체 하나만 작성하면 된다.
+
+---
+
+HAL 과 Platform Application 의 대비
+
+FGenericApplication / FWindowsApplication (aliased to Platform)
+
+FWindowsApplication은 HWND를 만들고 WndProc을 등록한다
+
+WndProc을 생성한다는 것
+OS의 GUI 서브시스템이 안으로 이 프로세스가 참여 신청을 하는 것이다
+OS는 이후 이 함수를 통해 이 프로세스에게 말을 걸기 시작한다.
+
+"창", "포커스", "DPI", "메시지 큐"
+
+WM_KEYDOWN      "사용자가 키를 눌렀다"
+WM_MOUSEMOVE    "마우스가 움직였다"
+WM_SIZE         "창 크기가 바뀌었다"
+WM_ACTIVATE     "이 창이 포커스를 얻거나 잃었다"
+WM_DESTROY      "이 창을 파괴하라"
+
+---
+
+FWindowsApplication:  VK_65가 눌렸다 (신호)
+FSlateApplication:    현재 포커스된 위젯이 SEditableText이고,
+                      'A' 문자가 입력됐다 (의미)
+
+---
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  HAL
+  "기계의 법칙"
+  FPlatformMemory / FPlatformTime / FPlatformProcess
+  FPlatformAtomics / FPlatformMisc / FPlatformMath
+  
+  특성: static, 인스턴스 없음, 컴파일 타임 typedef
+  질문: 이 기계는 무엇을 할 수 있는가?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Platform Application
+  FGenericApplication → FWindowsApplication
+  FGenericWindow → FWindowsWindow
+  
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  FSlateApplication
+  FWindowsApplication을 소유
+  SWindow / SWidget 트리 관리
+  입력 의미 부여 (포커스, 라우팅)
+  
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  GEngine (UGameEngine)
+  FAudioDeviceManager (소리 재생 능력)
+  ULocalPlayer들 (플레이어 능력)
+  렌더 인프라
+  
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  UGameInstance
+  "게임 세션"
+  OnlineSubsystem 연결
+  맵 전환 초월 데이터
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  UWorld
+  "시뮬레이션 컨텍스트"
+  FPhysScene (이 세계의 물리 법칙)
+  UNetDriver (이 세계의 복제 채널)
+  FAudioDevice 참조 (이 세계의 공간 오디오)
+  FTimerManager (이 세계의 시간)
+  AActor들 
+  
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  FScene / FPrimitiveSceneProxy
+  "렌더 스레드의 세계"
+  게임 스레드와 단방향 메시지 채널로만 연결
+  
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+---
+
+FGenericApplication                     (Engine/Source/Runtime/ApplicationCore/)
+    └─ FWindowsApplication              (Engine/Source/Runtime/Core/Private/Windows/)
+
+Windows 메시지는 즉시 처리되지 않는다
+DeferredWindowsMessages 큐에 먼저 쌓인다
+
+WndProc은 OS가 임의의 타이밍에 호출할 수 있다
+즉시 처리하면 렌더 스레드 중간에 입력이 끼어들 수 있다
+
+게임 스레드의 Tick 내에서 일괄 처리하기 위해 큐에 쌓는다
+
+---
+
+FGenericApplicationMessageHandler 
+Layer 1과 Layer 2 사이의 계약
+
+virtual bool OnKeyChar(const TCHAR Character, const bool IsRepeat);
+virtual bool OnKeyDown(const int32 KeyCode, const uint32 CharCode, const bool IsRepeat);
+...
+
+반환값이 bool
+이벤트가 소비(consume)됐는지를 나타낸다
+소비됐으면 더 처리되지 않아야 한다.
+
+---
+
+FSlateApplication 
+// OS 인터페이스
+TSharedPtr<GenericApplication> PlatformApplication;
+
+// 포커스 상태
+TArray<FWeakWidgetPath> UserFocusEntries;
+
+---
+
+
+
+
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
