@@ -1,0 +1,1025 @@
+Layer 0: Windows OS
+OS가 제공하는 인프라
+
+Win32 메시지 큐
+
+WndProc가 WM_KEYDOWN, WM_KEYUP, WM_CHAR 등을 수신
+각 메시지에는 VK_* 가상 키코드와 스캔코드
+
+Layer 1: FWindowsApplication
+
+FGenericApplication의 Windows 구현체
+
+Win32 메시지 루프를 PumpMessages()로 돌리며
+수신된 Win32 메시지를 UE 표현으로 1차 변환한다
+
+FGenericApplicationMessageHandler 인터페이스를 통해 
+상위 계층과 소통
+
+이 분리 덕분에 
+Mac, Linux 등 플랫폼이 바뀌어도 
+상위 계층은 동일한 인터페이스로 입력을 받을 수 있다
+
+Layer 2: FSlateApplication
+
+UE 입력의 중앙 허브
+
+OnKeyDown(), OnKeyUp(), OnKeyChar() 같은 핸들러 함수들을 정의
+
+입력이 UI 위젯으로 갈지 게임플레이로 넘어갈지를 이 계층에서 결정
+
+Layer 3: FInputKeyManager / FKey / EKeys
+
+2차 변환: 플랫폼 종속적인 키코드를 플랫폼 무관한 추상화로 매핑하는 계층이다.
+
+FInputKeyManager
+Win32의 VK_SPACE → EKeys::SpaceBar 같은 
+플랫폼 키코드 → FKey 매핑 테이블을 관리
+
+상위 계층으로부터 플랫폼 결합을 해제하는 역할을 한다
+
+Layer 4: UPlayerInput
+
+APlayerController가 소유
+
+"이 키가 어떤 게임플레이 의미인가"를 정의하는 매핑 테이블을 보유
+
+FInputActionKeyMapping: FKey → 명명된 액션("Jump", "Fire")의 매핑
+FInputAxisKeyMapping: FKey → 명명된 축("MoveForward")의 매핑
+
+Layer 5: UInputComponent
+
+매핑된 액션/축 이름을 실제 함수 호출로 연결하는 바인딩 테이블
+
+BindAction("Jump", IE_Pressed, this, &AMyChar::Jump) 
+
+Layer 6: APlayerController
+
+전체 구조를 소유하고 조율하는 최상위 객체
+
+InputStack (InputComponent 우선순위 스택)을 관리
+SetupInputComponent()에서 자신의 InputComponent를 초기화
+Possess한 Pawn의 InputComponent도 스택에 등록
+
+---
+---
+---
+
+Phase 0: Before Any Key Is Pressed — The Tick Structure
+
+The input flow doesn't begin with the keypress
+It begins with the engine's tick loop FEngineLoop::Tick() 
+It drives the entire frame
+
+within it FSlateApplication::Tick() is called
+This calls PlatformApplication->PumpMessages()
+the engine asks the OS for pending input
+
+Input processing is therefore poll-driven within a frame-driven loop, 
+not interrupt-driven from the engine's perspective
+
+later in the tick, UWorld::Tick()
+which reaches APlayerController::TickPlayerInput()
+accumulated input state gets dispatched to gameplay bindings
+
+Phase 1: PumpMessages — Draining the OS Queue
+
+FWindowsApplication::PumpMessages() calls the Win32 PeekMessage()
+For each WM_KEYDOWN message, the registered WndProc callback fires.
+
+If you pressed three keys between frames, 
+all three OnKeyDown calls happen sequentially within this one pump
+
+MessageHandler is FSlateApplication
+
+Phase 2: FSlateApplication::OnKeyDown — The Routing Decision
+
+Slate decides who gets the input.
+
+determine the current focus state
+maintains a FSlateUser per local user
+  tracks which widget currently holds keyboard focus via a FWidgetPath.
+
+input routing logic
+
+Path A — UI Consumption
+If a Slate widget has focus
+the input event is routed down the widget path
+Each widget in the path 
+gets a chance to handle the event, and returns FReply::Handled().
+If the input event is consumed, it does not reach gameplay layer.
+This is why typing in a chat box doesn't make your character jump.
+
+Path B — No UI Consumption
+If no widget claims the event (or if the game viewport has focus)
+the input falls through to the gameplay path
+**Slate calls into FViewportClient::InputKey(),
+which usually means UGameViewportClient::InputKey().**
+
+Slate is not just a UI framework, but also the Input Arbiter
+
+Phase 3: Viewport → PlayerController → PlayerInput
+
+UGameViewportClient::InputKey() resolves which local player should receive this input
+and gets the APlayerController
+and calls APlayerController::InputKey().
+
+The PlayerController delegates immediately to its owned UPlayerInput::InputKey()
+
+the key event is not immediately dispatched to bindings.
+Instead, UPlayerInput updates its internal FKeyState map
+For the pressed key, it sets flags like bDown = true, EventAccumulator[IE_Pressed]++
+
+The keypress is recorded as state, but no gameplay delegate fires yet
+The reason for this buffering is frame coherence
+
+all input for the frame should be processed 
+together at a consistent point in the tick, 
+not scattered across whenever PumpMessages happens to fire.
+
+Phase 4: TickPlayerInput
+
+Later UWorld::Tick(),
+every PlayerController gets its TickPlayerInput() called
+and accumulated input state becomes gameplay events.
+
+UPlayerInput::ProcessInputStack() receives the InputComponent stack from the PlayerController
+
+1. Axis Evaluation
+
+For each entry in AxisMappings[], it checks whether the bound FKey is currently held
+If so, it produces a float value (1.0 for digital keys) 
+scaled by the mapping's Scale factor. 
+Multiple keys mapped to the same axis name are summed
+
+2. Action Evaluation
+
+For each entry in ActionMappings[], 
+it checks the EventAccumulator for IE_Pressed or IE_Released
+If the "Jump" action is mapped to EKeys::SpaceBar and the accumulator shows a press event
+"Jump Pressed" action event is generated.
+
+3. Stack Walk
+
+the generated action and axis events are walked against the InputComponent stack
+For each InputComponent in the stack, 
+it checks InputComponent's FInputActionBinding and FInputAxisBinding arrays for matching names.
+
+When a match is found — say FInputActionBinding for "Jump" with IE_Pressed
+the bound delegate fires, say AMyCharacter::Jump()
+
+If that binding has bConsumeInput = true, the event is marked consumed
+
+---
+---
+---
+
+the linker flag /SUBSYSTEM:WINDOWS marks the executable as a GUI application
+and this information is baked into the PE header in the executable file
+
+Windows does not allocate a console window
+What eventually appears on screen is a Win32 GUI window
+an HWND created via CreateWindowEx()
+
+in Windows, input messages are delivered to windows
+The HWND is the address for input delivery
+
+---
+
+WndProc (Window Procedure) is a callback function
+you register with the OS when defining a window class via WNDCLASSEX
+
+when something happens to this window — a key press, a resize, a paint request — we will call this function
+LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
+
+---
+
+a window's message queue belongs to the thread that created it
+There is no separate "input thread" or "message thread" in the default UE architecture.
+
+---
+
+The OS side *is* asynchronous
+hardware interrupts propagate through the driver stack, 
+and the kernel posts messages into the thread's message queue
+Messages accumulate in the queue between frames. 
+This part is interrupt-driven.
+
+those messages are invisible until it explicitly calls `PeekMessage()`
+inside `PumpMessages()` inside PlatformApplication from the game thread's perspective
+
+The game thread **chooses when to look**. 
+It's like a mailbox.
+the postal service delivers letters asynchronously, 
+but you only process them when you walk out and open the box.
+
+---
+
+the static layers represent **ownership and abstraction boundaries**
+the dynamic flow reveals **two temporal phases** that cut across those boundaries
+
+The entire input system splits into an **ingestion half** and a **dispatch half**, 
+separated by `UPlayerInput`'s `FKeyState` map 
+acting as a frame-coherence buffer. 
+
+This buffer is the single most important structural element 
+for understanding the dynamic flow
+
+---
+
+Ingestion half
+FSlateApplication::Tick()
+early in the frame (which is FEngineLoop::Tick)
+
+The path is a chain of **progressive abstraction**
+
+each layer strips away one platform-specific detail
+and hands up a more abstract representation
+
+1 OS message queue          WM_KEYDOWN + VK_SPACE
+2 FWindowsApplication       strips Win32 envelope, calls handler interface
+3 FSlateApplication         routing decision: UI or gameplay?
+4 UGameViewportClient       resolves local player
+5 APlayerController         delegates to owned UPlayerInput
+6 UPlayerInput::InputKey()  writes to FKeyState buffer
+
+the traversal is a **write path**
+nothing is *consumed*, only transformed 
+
+**FInputKeyManager**
+A global singleton that is not owned by any element
+it holds maps that translates `VK_SPACE` into `EKeys::SpaceBar`
+
+---
+
+Dispatch half
+UWorld::Tick()
+later in the frame (which is FEngineLoop::Tick)
+
+the PlayerController **actively reads** the buffer and **walks the InputComponent stack**:
+
+APlayerController::TickPlayerInput()
+  → UPlayerInput::ProcessInputStack()
+      reads FKeyState buffer (the accumulated state)
+      evaluates AxisMappings[]  → float values
+      evaluates ActionMappings[] → discrete events
+      walks InputComponent stack top-to-bottom
+        → UInputComponent[n]::check bindings
+          → delegate fires → AMyCharacter::Jump()
+
+UPlayerInput, a reader of the buffer
+UInputComponent is passive, it's a table being queried, not an agent
+APlayerController is the orchestrator driving the whole dispatch
+
+Why the Buffer Exists
+if Jump() fired during PumpMessages()
+The gameplay function might destroy an actor, 
+which could modify the InputComponent stack. 
+But PumpMessages is still iterating through OS messages
+
+The buffer cleanly separates the gather invariant
+(the InputComponent stack won't change while I'm recording key states)
+from the dispatch invariant
+(the key state map won't change while I'm walking the stack)
+
+the EventAccumulator
+a transient per-frame counter that gets cleared after dispatch
+for discrete events like Actions 
+
+different lifetimes
+different temporal semantics
+Axes are continuous queries
+which persists across frames
+
+---
+
+Layer 0–1 (OS + FWindowsApplication)
+Input source
+
+Active only during ingestion
+After PumpMessages, these layers are dormant until next frame
+
+---
+
+Layer 2 (FSlateApplication)
+Active during ingestion
+
+the caller of Layer 1 
+and the router of Layer 1's output.
+
+---
+
+Layer 3 (FKey/EKeys/FInputKeyManager)
+Vocabulary translation
+Not a runtime phase of its own 
+it's a lookup that happens inline during the ingestion path
+Its static existence decouples all upper layers from platform key codes.
+
+---
+
+Layer 4 (UPlayerInput)
+
+It owns both the state (FKeyState) 
+and the semantic mapping tables (ActionMappings, AxisMappings)
+
+---
+
+Layer 5 (UInputComponent)
+
+The callback binding table
+
+---
+
+Layer 6 (APlayerController)
+
+It triggers dispatch (TickPlayerInput), 
+owns the buffer (UPlayerInput), 
+and manages the priority structure (InputStack)
+
+---
+
+Stage 0: The Electrical Event → OS Structures
+
+The keyboard controller sends a scan code
+a hardware-level identifier for the physical key
+via the USB/PS2 interrupt
+
+The Windows kernel driver translates this into a MSG structure 
+and posts it into the thread message queue which is
+associated with the thread that created the HWND
+
+MSG {
+    HWND   hwnd      →  the game window handle
+    UINT   message   →  WM_KEYDOWN
+    WPARAM wParam    →  VK_SPACE  (virtual key code, platform-defined integer)
+    LPARAM lParam    →  [scan code, repeat count, extended flag, etc. packed into 32 bits]
+    DWORD  time      →  OS timestamp
+    POINT  pt        →  cursor position at time of event
+}
+
+엔터(Enter) 키나 숫자 패드의 엔터 키는 둘 다 VK_RETURN을 반환하지만, 
+스캔 코드를 확인하면 두 키를 명확히 구분할 수 있습니다.
+
+---
+
+Stage 1: PumpMessages — Extracting From the OS
+
+FEngineLoop::Tick() → FSlateApplication::Tick() → FWindowsApplication::PumpMessages()
+
+Inside PumpMessages
+while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE))
+{
+    TranslateMessage(&msg);  // generates WM_CHAR from WM_KEYDOWN if applicable
+    DispatchMessage(&msg);   // calls WndProc
+}
+
+PeekMessage moves the MSG out of the OS queue
+DispatchMessage invokes WndProc (registered as FWindowsApplication::AppWndProc).
+
+FWindowsApplication owns the pump loop
+AppWndProc is the callback ( =bridge function ) registered at window-creation time
+
+Inside AppWndProc
+The MSG struct is decomposed into discrete parameters
+
+and then FWindowsApplication calls
+MessageHandler->OnKeyDown(Win32KeyCode, CharacterCode, bIsRepeat);
+(MessageHandler is a facet of FSlateApplication)
+
+But notice: the key is still `VK_SPACE`, a platform-specific integer.
+No UE-level translation has happened yet.
+
+---
+
+Stage 2: Slate — Routing and First UE Translation
+
+FSlateApplication::OnKeyDown
+
+calls FInputKeyManager::Get().GetKeyFromCodes(Win32KeyCode, CharacterCode)
+which does the lookup
+VK_SPACE (0x20)  →  EKeys::SpaceBar (FKey wrapping FName("SpaceBar"))
+
+FInputKeyManager
+owns twp maps
+one from virtual key code to FKey, 
+another from character code to FKey
+
+These maps were populated at engine startup 
+by `FInputKeyManager::InitKeyMappings()`
+
+Slate calls into it as a service, 
+but doesn't own or manage its lifetime.
+
+After translation
+FSlateApplication constructs
+
+FKeyEvent {
+    FKey          Key           →  EKeys::SpaceBar
+    FModifierKeysState          →  {bShift=false, bCtrl=false, bAlt=false, ...}
+    uint32        CharacterCode →  ' ' (0x20, the ASCII space)
+    uint32        KeyCode       →  VK_SPACE (preserved, but secondary now)
+    bool          bIsRepeat     →  false
+    uint32        UserIndex     →  0 (first local user)
+}
+
+The key identity has been lifted from platform vocabulary to UE vocabulary
+
+The FModifierKeysState was assembled using the information queued in the pump moment
+synthesizing instantaneous modifier state
+
+Now Slate routes
+It checks FSlateUser[0]'s focus state via the FWidgetPath
+
+If a Slate widget has keyboard focus,
+FSlateApplication calls FEventRouter::Route()
+which walks the FWidgetPath 
+from the root window down to the focused widget
+
+Each SWidget::OnKeyDown(FGeometry, FKeyEvent) returns FReply. 
+If any returns FReply::Handled(), the event is consumed
+
+Path B
+Slate falls through to the viewport
+
+FSlateApplication 
+→ FSceneViewport::OnKeyDown()
+→ FViewportClient::InputKey(FKey, EInputEvent)
+
+another transformation takes in this moment
+The FKeyEvent (a Slate-level structure) is 
+decomposed into discrete parameters for the viewport interface
+the FKey and an EInputEvent enum (IE_Pressed)
+
+The Slate-specific FModifierKeysState, UserIndex, etc. are stripped
+
+FSceneViewport
+the Slate-side representation of the game viewport widget
+the Slate world
+
+UGameViewportClient 
+the engine/gameplay-side viewport handler
+the UObject world
+
+---
+
+UGameViewportClient::InputKey()
+needs to figure out which player should get this input
+
+it queries UGameInstance for the ULocalPlayer
+gets that player's APlayerController
+and calls PlayerController->InputKey
+
+UGameViewportClient knows UGameInstance 
+UGameInstance owns array of ULocalPlayer
+ULocalPlayer has a APlayerController
+
+semantic transitions
+from "a viewport received a key"  
+to "a specific player's controller received a key."
+
+---
+
+APlayerController::InputKey() immediately delegates to its owned UPlayerInput
+
+UPlayerInput::InputKey()
+the key event is written into the **FKeyState** map
+
+TMap<FKey, FKeyState> UPlayerInput::KeyStateMap
+
+FKeyState for EKeys::SpaceBar {
+    RawValue             →  FVector(1.0, 0, 0)    // 1.0 = fully pressed for digital
+    bDown                →  true                    // persistent: held state
+    bDownPrevious        →  false                   // was it down last frame?
+    bConsumed            →  false                   // has dispatch consumed it?
+    EventAccumulator[IE_Pressed]  →  1              // transient: count of press events this frame
+    EventAccumulator[IE_Released] →  0
+}
+
+The data has gone from a discrete event ("spacebar was pressed") 
+to **stateful accumulation** ("spacebar is currently down, and one press event occurred this frame")
+
+a fundamental change — from event to state
+
+---
+
+Later in the frame
+APlayerController::TickPlayerInput()
+UPlayerInput::ProcessInputStack
+
+---
+
+For each `FInputAxisKeyMapping` in `AxisMappings[]`
+FInputAxisKeyMapping {
+    AxisName  →  "MoveForward"
+    Key       →  EKeys::W
+    Scale     →  1.0
+}
+
+Multiple mappings to the same axis name are summed (e.g., `EKeys::S` mapped with `Scale = -1.0`)
+
+For each `FInputActionKeyMapping` in `ActionMappings[]`
+FInputActionKeyMapping {
+    ActionName  →  "Jump"
+    Key         →  EKeys::SpaceBar
+    bShift      →  false
+    bCtrl       →  false
+    bAlt        →  false
+    bCmd        →  false
+}
+
+from "SpaceBar is down with 1 press event" 
+to "the action named Jump has a Pressed event."
+
+from physical key identity 
+to gameplay meaning
+
+The `FKey` is gone
+
+---
+
+The generated action events are now matched against the InputComponent stack
+
+InputStack
+  [0]  UInputComponent* on AMyGameCharacter (the possessed pawn)
+  [1]  UInputComponent* on AMyPlayerController
+
+FInputActionBinding {
+    ActionName     →  "Jump"
+    KeyEvent       →  IE_Pressed
+    bConsumeInput  →  true
+    ActionDelegate →  AMyGameCharacter::Jump()
+}
+
+Name matches, event type matches. The delegate fires
+
+---
+
+After the stack walk, 
+`EventAccumulator` values are reset
+
+---
+
+bIsRepeat 
+OS auto-repeating
+OS-controlled
+control-panel settings
+repeat delay, how long you hold a key before repeats start
+repeat rate, how fast repeats fire once started
+
+this `WM_KEYDOWN` is not from a fresh physical press — the key was already down.
+
+---
+
+If Slate owned it, any other system that needed key translation would have a dependency on Slate
+"to know what key was pressed, you must know about the UI framework."
+
+singleton pattern expresses 
+this is shared infrastructure with no natural owner
+
+Its data (the mapping tables) is immutable after initialization
+a globally accessible translation service
+
+---
+
+SViewport
+Slate widget
+Slate's layout system
+
+SViewport **owns** an `FSceneViewport`.
+When `SViewport` receives input, it **delegates** to its owned `FSceneViewport`.
+
+It occupies a rectangular region of the HWND's client area
+
+FSceneViewport inherits from `FViewport`
+engine viewport
+
+`FSceneViewport` holds a pointer to its `FViewportClient`
+When `FSceneViewport` receives `OnKeyDown`, it calls `ViewportClient->InputKey()`
+
+UGameViewportClient implements the `FViewportClient` interface
+
+---
+
+not all screen regions are Slate widgets, 
+but all screen regions are managed through the Slate layout tree
+
+The game viewport appears as an SViewport widget in the Slate tree
+but the actual rendering happens in the non-Slate FSceneViewport and UGameViewportClient objects
+
+---
+---
+---
+
+
+WinMain 
+executable is marked as a GUI-subsystem application
+no console allocated
+
+WNDCLASSEX wc
+wc.cbSize        = sizeof(WNDCLASSEX);
+wc.lpfnWndProc   = AppWndProc;          // ← the callback
+wc.hInstance      = hInstance;          // ← from WinMain's parameter
+wc.lpszClassName  = "UnrealWindow";
+RegisterClassEx(&wc);
+
+HWND hWnd = CreateWindowEx(
+    0,                    // extended style
+    "UnrealWindow",       // the class registered above
+    "My Game",            // title bar text
+    WS_OVERLAPPEDWINDOW,  // style flags
+    x, y, width, height,  // position and size
+    NULL,                 // parent window
+    NULL,                 // menu
+    hInstance,
+    NULL                  // additional data
+);
+
+The OS creates the associated message queue infrastructure
+ntil this call, there is no window, no message queue, and no way to receive input.
+
+In UE's startup sequence
+this happens inside FWindowsApplication::MakeWindow() in FEngineLoop::PreInit/PreInitPreStartupScreen
+Later, the same HWND is passed to CreateSwapChainForHwnd() 
+to bind the rendering pipeline in FEngineLoop::PreInit/PreInitPostStartupScreen
+
+---
+
+Before any input can flow, a set of structures must already exist
+the prerequisite for understanding the flow itself
+
+OS executable loader
+reads the PE header
+calls WinMain() instead of main()
+
+No console is allocated
+nothing is on screen
+a process with no windows
+
+FEngineLoop::PreInit()
+FWindowsApplication::MakeWindow()
+WNDCLASSEX, CreateWindowEx => HWND
+the moment something appears on screen
+a rectangle managed by the OS window manager
+a title bar and a client area
+
+the OS creates the thread message queue 
+associated with the calling thread (the game thread)
+
+Later, the same HWND is passed to IDXGIFactory::CreateSwapChainForHwnd()
+binding the rendering swapchain to the window's client area
+
+So the HWND
+is the delivery address for input
+is the presentation target for rendering
+
+---
+
+FWindowsApplication wraps the platform layer
+It holds the HWND (via FWindowsWindow)
+and knows how to pump the message queue
+
+It holds FGenericApplicationMessageHandler* 
+this is the interface through which it communicates upward 
+without knowing who's listening
+
+---
+
+FSlateApplication
+registers itself as that FGenericApplicationMessageHandler
+creates the Slate widget tree,  
+creates an SViewport widget that bridges the game's rendering area within the layout
+
+SViewport in turn owns an FSceneViewport, the engine-side viewport, not a S-Family
+FSceneViewport in turn holds a pointer to UGameViewportClient, the gameplay-side viewport handler
+
+This three-object composition
+SViewport, FSceneViewport, UGameViewportClient
+is linking the Slate world, the Engine world, and the gameplay world
+
+---
+
+FInputKeyManager
+InitKeyMappings().
+VK_* → FKey
+character code → FKey
+
+**an inversion of the abstraction hierarchy**
+If Slate owned it, any non-UI system needing key translation 
+would acquire a dependency on the UI framework
+
+---
+
+APlayerController
+creates its owned UPlayerInput
+manages the InputStack (array of UInputComponent*) 
+
+UPlayerInput holds 
+KeyStateMap, ActionMappings[], and AxisMappings[]
+
+UInputComponent
+BindAction(...)
+APawn::SetupPlayerInputComponent(UInputComponent*)
+PlayerController에 의해 possession될 때 호출된다
+
+APlayerController::SetupInputComponent()
+메뉴 열기, 커서 토글, 카메라 모드 전환
+possession과 무관한 플레이어 의도
+
+---
+---
+---
+
+All of this exists before a single key is pressed
+The message queue is empty. 
+FKeyState entries are all zero. 
+The InputStack is assembled and waiting. 
+The system is a pipeline with no fluid in it.
+
+---
+
+The Tick — The Heartbeat That Drives Everything
+
+The input system is not event-driven from the engine's perspective
+
+It is frame-driven, with a poll point.
+
+FEngineLoop::Tick() is the master heartbeat
+Inside it, Sub-Ticks are installed forming a graph
+
+FSlateApplication::Tick()
+FWindowsApplication::PumpMessages()
+the sole moment per frame when the engine looks at the OS message queue
+PumpMessages is the moment the mailbox is opened
+
+UWorld::Tick()
+APlayerController::TickPlayerInput()
+
+This two-phase design — ingestion then dispatch
+the temporal backbone of the entire input architecture
+Input arrives in the first moment, gameplay reacts in the second
+
+---
+
+keyboard controller
+sends a scan code, hardware identifier for the physical key
+through a USB interrupt
+
+kernel driver translates this into a MSG structure
+{
+    hwnd    
+    message →  WM_KEYDOWN
+    wParam  →  VK_SPACE (0x20)
+    lParam  →  [scan code | repeat count | extended bit | previous key state | ...]
+}
+
+kernel posts this MSG into the game thread's message queue (hwnd)
+(it will be found at the moment the game thread calls PumpMessage)
+
+---
+
+FWindowsApplication::PumpMessages()
+while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) // Peek with REMOVE consumes a message 
+{
+    TranslateMessage(&msg);   // augments WM_CHAR for character input
+    DispatchMessage(&msg);    // invokes associated callback
+}
+
+If three keys were pressed between frames, 
+this loop runs three iterations
+All three callback invocations happen sequentially
+
+Inside WindowsApplication::AppWndProc, the MSG structure is decomposed
+The packed lParam bitfield is split into its semantic components:
+
+case WM_KEYDOWN:
+    uint32 KeyCode    = wParam;                // VK_SPACE
+    uint32 CharCode   = ...;                   // from TranslateMessage
+    bool   bIsRepeat  = (lParam >> 30) & 1;    // previous key state bit
+
+---
+
+then calls
+MessageHandler->OnKeyDown(KeyCode, CharCode, bIsRepeat)
+
+The **first transformation** has occurred
+`MSG` -> (KeyCode, CharCode, bIsRepeat)
+
+But no UE-level abstraction has been applied yet.
+
+---
+
+FSlateApplication::OnKeyDown(KeyCode, CharCode, bIsRepeat)
+does two things: **translate** and **route**.
+
+1 **Translation**
+calls `FInputKeyManager::Get().GetKeyFromCodes(KeyCode, CharCode)`
+which returns `EKeys::SpaceBar`
+
+FSlateApplication then constructs FKeyEvent
+{
+    Key            →  EKeys::SpaceBar       (the UE-level key identity)
+    ModifierKeys   →  {Shift=false, Ctrl=false, Alt=false, ...}
+    CharacterCode  →  0x20 (' ')
+    KeyCode        →  VK_SPACE              (preserved but now secondary)
+    bIsRepeat      →  false
+    UserIndex      →  0
+}
+
+The **second transformation**
+
+lifted from platform vocabulary (`VK_SPACE`) 
+to UE vocabulary (`EKeys::SpaceBar`)
+
+The `FKeyEvent` also enriches the data
+`FModifierKeysState` is assembled by querying instantaneous modifier key states
+synthesizing context that wasn't in the original `WM_KEYDOWN` message
+
+2 **Routing**
+
+checks the focus state for this user via `FSlateUser` and its `FWidgetPath`
+
+If a **UI widget** has keyboard focus
+the event is routed through `FEventRouter::Route()`
+
+The event goes to the **focused widget first** (the leaf), 
+and if that widget returns `FReply::Unhandled()`, 
+it **bubbles upward** through parent widgets. 
+The first widget to return `FReply::Handled()` terminates propagation.
+
+If **no widget consumes** the event
+typically because the game viewport's `SViewport` has focus
+Slate falls through to the gameplay path
+
+---
+
+The **third transformation**
+
+the `FKeyEvent` (a Slate-level structure rich with modifier state and user index)
+is **decomposed** into
+simpler parameters for the viewport interface
+just the `FKey` and an `EInputEvent`
+
+---
+
+The call chain crosses the **Slate–Engine bridge**
+
+`SViewport` (Slate widget)
+`FSceneViewport` (engine viewport, owned by SViewport)
+`UGameViewportClient` (gameplay handler)
+
+They're connected by ownership
+
+---
+
+UGameViewportClient::InputKey()
+resolves the ULocalPlayer by querying `UGameInstance` 
+and gets PlayerController from ULocalPlayer
+
+**Bonus: Structural Transformation**
+
+This is a semantic zoom-in 
+from "a viewport received a key" to "a specific player's controller received a key"
+
+`APlayerController::InputKey()` immediately delegates to its owned 
+`UPlayerInput::InputKey()`
+
+The **fourth transformation**
+
+The discrete event — "spacebar was pressed" — is written into the persistent `FKeyState` map
+
+KeyStateMap[EKeys::SpaceBar] = FKeyState {
+    RawValue                      →  FVector(1.0, 0, 0)
+    bDown                         →  true         (persistent — held state)
+    bDownPrevious                 →  false        (what bDown was last frame)
+    bConsumed                     →  false
+    EventAccumulator[IE_Pressed]  →  1            (transient — events this frame)
+    EventAccumulator[IE_Released] →  0
+}
+
+axes read `bDown`, 
+actions read the accumulator.
+
+---
+
+The Dispatch — State Becomes Action
+Later in the same frame, UWorld::Tick()
+
+APlayerController::TickPlayerInput()
+  UPlayerInput::ProcessInputStack(InputStack)
+
+UPlayerInput::ProcessInputStack does three things
+
+The **fifth transformation**
+
+First
+UPlayerInput evaluates its **AxisMappings**
+
+if it has an entry like {AxisName: "MoveForward", Key: EKeys::W, Scale: 1.0}
+it checks `KeyStateMap[EKeys::W].bDown
+Multiple mappings to the same axis name are summed
+
+yields to {MoveForward, float}
+
+UPlayerInput evaluates its **ActionMappings**
+
+if it has an entry like {ActionName: "Jump", Key: EKeys::SpaceBar}
+it checks `KeyStateMap[EKeys::SpaceBar].EventAccumulator[IE_Pressed]
+
+yields to {Jump, IE_Pressed} "action" event
+
+After this step, the `FKey` is gone.
+What remains is a set of named axis values and named action events
+
+The transformation from physical identity to gameplay meaning is complete.
+
+All the transformations so far
+1. Keyboard Controller Scan Code sent via USB/PS2 interrupt messaging
+2. Windows MSG struct
+3. WindowsApplication unpacks MSG struct 
+4. SlateApplication simplifies 
+5. UPlayerInput::InputKey accumulates into state
+6. UPlayerInput::ProcessInput transforms again into game event  
+
+---
+
+Second
+The Stack Walk
+Meaning Becomes Function Call
+
+For each InputComponent
+ProcessInputStack iterates InputComponent's ActionBindings
+If it finds an InputActionBinding whose ActionName matches "Jump" and KeyEvent matches "IE_Pressed"
+the bound delegate fires, AMyCharacter::Jump()
+
+The PlayerController's InputComponent at stack position [1] never sees it
+if that InputComponent's that ActionBinding's bConsumeInput was set 
+
+
+---
+
+EngineLoopTick
+  PlatformApplicationTick
+    PumpMessage
+    MessageHandler->OnKeyDown 
+      FSlateApplication->OnKeyDown 
+      SViewport
+      UGameViewportClient::InputKey
+        APlayerController::InputKey
+        UPlayerInput::InputKey
+  UWorldTick
+    APlayerController::TickPlayerInput()
+    UPlayerInput::ProcessInputStack(PC->InputStack)
+  
+---
+---
+---
+
+
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+
+
+ 
+---
+
+I am now genuinely wondering how other platform (such as Linux) is integrated in this Unreal Engine Input System picture. Because the Windows-specificities seem to influence the structure of the interface so that the interface cannot be commensurated with other platforms... (All the HWND is handled around various moments, and the message queue specificities, VK_* and scan code dichonomy is baked in InputManager's "two map" structure, Windows specific VK_* baked in FKeyEvent property, etc...)
+
+---
+
+So the WindowsApplication creates and manages the "GUI window"
+and SlateApplication manages the "Widgets" inside the "GUI window",
+and the SlateApplication's Widgets have each own region, inside the "GUI window"
+and into one of those regions which are split and layout by the SlateApplication, the ViewportClient sends its pixel buffer to it.
+
+Am I getting the whole picture correct?
+
+---
+
+the call chain between the SViewport, FSceneViewport, and UGameViewportClient is not treated clearly.
+and first of all, who called SViewport? and first of all, who called SlateApplication?
+at which phase of the Engine & at which class & at which method & at which phase of that method?
+
+---
+
+How can we express the complex key combo in this input system?
+For example, I want to express this combo. within 10 seconds, if "A" then "B" then "C" is input, the bound delegate is fired.
+
+For another example, I want to express this combo. within 10 seconds, if "A" is pressed more than three times, the bound delegate is fired.
