@@ -973,53 +973,176 @@ EngineLoopTick
 ---
 ---
 ---
-
-
----
----
----
----
----
----
----
----
----
----
----
----
----
----
----
----
----
 ---
 ---
 ---
 
+abstraction boundary — FGenericApplicationMessageHandler
+Its interface methods like OnKeyDown(uint32 KeyCode, uint32 CharCode, bool bIsRepeat) 
+use plain integers and booleans
 
- 
----
+PumpMessages() on FGenericApplication
+Every platform has some version of "drain the OS event queue"
 
-I am now genuinely wondering how other platform (such as Linux) is integrated in this Unreal Engine Input System picture. Because the Windows-specificities seem to influence the structure of the interface so that the interface cannot be commensurated with other platforms... (All the HWND is handled around various moments, and the message queue specificities, VK_* and scan code dichonomy is baked in InputManager's "two map" structure, Windows specific VK_* baked in FKeyEvent property, etc...)
+On Windows, it's the PeekMessage / DispatchMessage
+FLinuxApplication::PumpMessages() calls SDL_PollEvent() in a loop
 
----
+The structural pattern 
+"poll a queue in a loop, 
+translate each event, 
+call the handler interface 
+is genuinely universal
 
-So the WindowsApplication creates and manages the "GUI window"
-and SlateApplication manages the "Widgets" inside the "GUI window",
-and the SlateApplication's Widgets have each own region, inside the "GUI window"
-and into one of those regions which are split and layout by the SlateApplication, the ViewportClient sends its pixel buffer to it.
-
-Am I getting the whole picture correct?
-
----
-
-the call chain between the SViewport, FSceneViewport, and UGameViewportClient is not treated clearly.
-and first of all, who called SViewport? and first of all, who called SlateApplication?
-at which phase of the Engine & at which class & at which method & at which phase of that method?
+all desktop operating systems use some form of event queue for input delivery.
 
 ---
 
-How can we express the complex key combo in this input system?
-For example, I want to express this combo. within 10 seconds, if "A" then "B" then "C" is input, the bound delegate is fired.
+Upper layers deal with FGenericWindow*, an abstract base class. 
+FWindowsWindow holds the HWND internally
+FLinuxWindow holds an SDL_Window* internally
 
-For another example, I want to express this combo. within 10 seconds, if "A" is pressed more than three times, the bound delegate is fired.
+So the HWND is not "passed around" at the input system level. 
+It lives inside FWindowsWindow
+
+and is visible only to FWindowsApplication 
+(which registered AppWndProc against it) 
+and to the RHI backend 
+(which needs the native handle to create a swapchain)
+
+---
+
+FInputKeyManager's two maps
+
+VK_* (key identity) vs. WM_CHAR character (text output)
+SDL_Scancode (physical key position) vs. SDL_Keycode (layout-dependent key meaning)
+keyCode (physical) vs. characters (NSString of produced text).
+
+---
+
+platform-conditional code
+
+#if PLATFORM_WINDOWS
+#if PLATFORM_LINUX
+
+---
+
+The real platform differences are absorbed at the edges
+
+Where platforms genuinely diverge
+hard cases are things like 
+touch input (which has no analog on desktop)
+
+gamepad input (where platforms have wildly different APIs
+  XInput, DirectInput, SDL_GameController, HID)
+
+IME/text composition (where the interaction model differs fundamentally 
+  between CJK input methods on different platforms)
+
+---
+
+FWindowsApplication creates and manages the HWND
+FSlateApplication manages a tree of widgets that subdivide the HWND's client area into regions
+the game world's rendered output occupies one of those regions (the one belonging to SViewport)
+
+The renderer (the scene rendering pipeline — FSceneRenderer, the deferred shading passes, etc.)
+renders the 3D world into a render target texture that FSceneViewport owns
+
+This happens during the rendering phase of the frame, driven by the render thread
+The result is a GPU-side texture containing the rendered scene
+
+UGameViewportClient doesn't participate in this
+it's a gameplay-level object concerned with input routing and HUD setup, not pixel production.
+
+Then, during Slate's draw pass
+Slate walks its widget tree and composites everything into the final frame
+When it reaches SViewport
+that widget says "draw my region 
+using the render target texture that my owned FSceneViewport produced."
+
+Slate treats the 3D scene's output as just another rectangular element to composite, 
+no different in principle from a button texture or a text glyph
+
+Other widgets (HUD elements, menus, debug overlays) are drawn in their own regions, 
+potentially overlapping the viewport.
+
+The final composited result 
+Slate widgets and the viewport's rendered scene composited together
+is what goes to the swapchain
+which presents it onto the HWND's client area
+
+So the pixel flow is
+the renderer pushes pixels into a texture
+and Slate pulls that texture during compositing
+The HWND is the final destination
+
+---
+
+1
+FEngineLoop::PreInit()
+FSlateApplication::Create()
+registers itself as the FGenericApplicationMessageHandler on FWindowsApplication
+
+2
+FEngineLoop::Init()
+UGameEngine::Init()
+
+creates the UGameViewportClient instance
+At this point, it exists but is not connected to any viewport or any Slate widget
+
+calls UGameEngine::CreateGameWindow()
+creates an SGameLayerManager 
+a composite Slate widget that owns an SViewport
+The SViewport widget, upon initialization, constructs its owned FSceneViewport
+
+Then the engine connects the two sides: 
+FSceneViewport receives a pointer to UGameViewportClient as its FViewportClient,
+and UGameViewportClient receives a reference back to the FSceneViewport.
+
+FEngineLoop::PreInit()
+  └─ FSlateApplication::Create()              ← empty Slate singleton
+
+FEngineLoop::Init()
+  └─ UGameEngine::Init()
+       ├─ creates UGameViewportClient          ← gameplay handler, unattached
+       └─ creates the game viewport widget
+            ├─ SGameLayerManager               ← composite Slate widget
+            │    └─ SViewport                  ← the Slate widget for the game view
+            │         └─ creates FSceneViewport ← engine viewport, owned by SViewport
+            └─ wires them together:
+                 FSceneViewport.ViewportClient = UGameViewportClient
+                 UGameViewportClient.Viewport  = FSceneViewport
+
+The SGameLayerManager (containing SViewport) is 
+then added to the Slate window's widget tree
+
+---
+
+During FEngineLoop::Tick(), 
+rendering proceeds in two distinct stages
+
+Stage 1: Scene rendering
+
+UGameEngine::RedrawViewports()
+UGameViewportClient::Draw().
+it constructs FSceneView objects 
+(camera position, projection matrix, visibility settings, post-process parameters) 
+and hands them to FSceneViewport, which enqueues the actual scene rendering work 
+to the render thread.
+
+The render thread executes the deferred shading pipeline (FSceneRenderer), 
+writing the 3D world into a render target texture that FSceneViewport owns
+By the end of this stage, the texture exists on the GPU, containing the rendered scene.
+
+Stage 2: Slate compositing
+
+Slate's draw pass
+FSlateApplication::DrawWindows() 
+walks the Slate widget tree
+
+When it reaches SViewport, the widget says: 
+"for my rectangular region, sample the render target texture 
+that my owned FSceneViewport holds"
+
+Slate treats this texture as just another element to composite
+
+---
