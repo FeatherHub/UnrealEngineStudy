@@ -1,0 +1,401 @@
+The Shape of a Single Tick
+
+FEngineLoop::Tick()
+│
+├─ 1. Frame timing          — "How long was the last frame?"
+│
+├─ 2. Input                 — "What did the player do?"
+│
+├─ 3. World Tick            — "Let the world advance by DeltaTime"
+│   ├─ PrePhysics Ticks     (Actor/Component ticks before physics)
+│   ├─ Physics Step         (Chaos solver advances)
+│   ├─ PostPhysics Ticks    (react to physics results)
+│   └─ TG_LastDemotable     (final game logic)
+│
+├─ 4. Slate/UI Tick         — "Update and render UI"
+│
+├─ 5. RHI + Render Tick     — "Submit this frame to GPU"
+│
+└─ 6. Housekeeping          — "GC, async loading, network flush"
+
+---
+
+Stage 1 — Frame Timing
+
+FApp::UpdateLastTime()
+FApp::SetDeltaTime(CurrentTime - LastTime)
+
+DeltaTime is then clamped
+If the previous frame took 5 seconds (say, a debugger breakpoint), 
+the game shouldn't suddenly leap forward 5 seconds
+
+This single float — DeltaTime — flows through virtually everything that follows
+Physics, animation, movement, timers
+
+---
+
+Stage 2 — Input
+
+FSlateApplication::PumpMessages()   
+FSlateApplication::Tick()
+  Distributes input to widgets
+  or passes down to game viewport
+
+---
+
+Stage 3 — World Tick
+
+UGameEngine::Tick(DeltaTime)
+└─ UWorld::Tick(LEVELTICK_All, DeltaTime)
+
+TG_PrePhysics      ← Character movement prediction, input response
+       ↓
+   [Chaos Physics Substep]
+       ↓
+TG_StartPhysics
+TG_DuringPhysics
+TG_EndPhysics
+       ↓
+   [Physics results available]
+       ↓
+TG_PostPhysics     ← Read physics results, IK, ragdoll
+       ↓
+TG_PostUpdateWork  ← Camera, late updates
+       ↓
+TG_LastDemotable   ← Lowest priority, deferrable work
+
+---
+
+Stage 4 — Slate and UI Tick
+
+After the game world has advanced
+
+FSlateApplication::Tick()  (second pass — layout and render)
+└─ SWindow → SOverlay → SGameLayerManager → SViewport
+   └─ UGameViewportClient::Draw()   ← Kicks off game world rendering
+└─ [UMG widgets layout and paint]
+└─ FSlateRHIRenderer — Slate's own render pass
+
+---
+
+Stage 5 — Render and RHI
+
+GameThread  — Records render commands this frame
+RenderThread — Processes last frame's commands, builds RHI commands
+RHIThread   — Submits the frame before that to GPU
+
+At any moment, three different frames are in flight simultaneously.
+
+GameThread       [──── Frame N   ────]
+RenderThread     [──── Frame N-1 ────]
+RHIThread        [──── Frame N-2 ────]
+GPU              [──── Frame N-3 ────]
+
+---
+
+Stage 6 — Housekeeping
+
+FTicker::GetCoreTicker().Tick(DeltaTime)   ← General-purpose ticker delegates
+FAsyncLoadingThread::TickAsyncLoading()    ← Stream in assets requested this frame
+UNetDriver::TickDispatch()                 ← Receive incoming network packets
+UNetDriver::ServerReplicateActors()        ← Send replication data to clients
+GEngine->TickDeferredCommands()            ← Execute deferred console commands
+ConditionalCollectGarbage()                ← GC if budget allows
+
+The network tick
+incoming packets are processed, 
+and outgoing replication data is computed and dispatched
+This means the replication state clients receive 
+reflects the end-of-frame state of the server, not mid-frame
+
+---
+
+Dawn      — Check the time (DeltaTime)
+Morning   — Hear what happened (Input)
+Daytime   — Everyone does their work (World Tick, Physics)
+Evening   — Post the announcements (UI, Rendering)
+Night     — Send letters to other villages (Network)
+           — Clean up what died today (GC)
+
+
+---
+---
+---
+Revision 2
+---
+---
+---
+
+A single Tick is fundamentally an information flow problem
+
+The world has a current state. 
+By the end of one Tick, that state must advance by DeltaTime, 
+and the consequences must be distributed to all interested parties
+  the GPU, other machines on the network
+
+┌─────────────────────────────────────────────────────────────────┐
+│  Stage 1: CONTRACT    "How much time are we advancing?"         │
+│      ↓                                                          │
+│  Stage 2: GATHER      "What signals arrived since last frame?"  │
+│      ↓                                                          │
+│  Stage 3: SIMULATE    "Advance the world by DeltaTime"          │
+│      ↓                                                          │
+│  Stage 4: PROPAGATE   "Distribute the new state outward"        │
+│      ↓                                                          │
+│  Stage 5: PRESENT     "Record what this frame looks like"       │
+│      ↓                                                          │
+│  Stage 6: COLLECT     "Clean up what died, prepare for next"    │
+└─────────────────────────────────────────────────────────────────┘
+
+You cannot Propagate before Simulation (you'd send stale state)
+
+---
+
+Stage 1 — CONTRACT: Frame Timing
+
+QueryPerformanceCounter on modern Windows gives nanosecond-range resolution
+The raw result is a double to preserve precision over long sessions
+(a float loses sub-millisecond precision after ~30 minutes of runtime)
+
+Transformation 1 — Maximum Delta Clamping
+a debugger breakpoint, a shader compilation stall, or an OS scheduling hiccup
+could produce a RawDeltaTime of multiple seconds
+
+Physics with a 3-second timestep would explode
+characters would teleport through floors, projectiles would tunnel through walls
+
+Transformation 2 — Frame Rate Limiting
+If GEngine->GetMaxFPS() is set
+the engine will sleep the game thread until the target frame interval has elapsed
+via spin-waiting
+
+The sleep is intentionally imprecise
+OS Sleep() is not accurate enough at short durations
+
+so the engine combines Sleep() for the bulk of the wait 
+and a busy-spin for the final millisecond.
+
+Transformation 3 — Frame Rate Smoothing
+
+DeltaTime is averaged over a sliding window of recent frames
+This reduces the perceived jitter from frame-to-frame variance
+
+The cost: responsiveness to sudden frame rate changes is slightly delayed.
+
+The Dilator: Time Dilation
+EffectiveDeltaTime = RawDeltaTime * CustomTimeDilation
+
+The physics engine has its own TimeDilation path
+This is why bullet-time effects can slow actor ticks without slowing the UI
+
+---
+
+Stage 2 — GATHER: Signal Collection
+
+signal sources
+OS events, platform input devices, and the network socket
+
+A: OS Message Pump
+FWindowsPlatformApplication::PumpMessages()
+PeekMessage / DispatchMessage loop
+
+- `WM_KEYDOWN` / `WM_KEYUP` / `WM_CHAR`
+- `WM_MOUSEMOVE` / `WM_LBUTTONDOWN` / `WM_MOUSEWHEEL`
+- `WM_SIZE` / `WM_MOVE` (window resize/move)
+- `WM_ACTIVATEAPP` (focus gain/loss)
+- `WM_QUIT`
+
+WndProc translates them into Slate events and enqueues them into `FSlateApplication`'s event queue
+
+B: Slate Input Processing
+
+FSlateApplication::Tick(DeltaTime)
+   → FSlateApplication::PollGameDeviceState()
+       → IInputDevice::Tick() for each registered device
+       → XInput polling (gamepad state)
+   → ProcessDeferredEvents()
+       → for each queued FSlateEvent:
+           route to focused widget or game viewport
+
+Routing Decision
+│
+├─ Is there a focused Slate widget? (e.g., a text input box in a menu)
+│   Yes →  send to widget first
+│          widget calls SetHandled() if it consumes it
+│          event stops here
+│
+└─ Not handled by UI
+   UGameViewportClient::InputKey(FKeyEvent)
+    │
+    ├─ Extract ControllerId from FKeyEvent
+    ├─ Find matching ULocalPlayer
+    └─ Route to APlayerController input stack
+       [PC InputComponent] → [Pawn InputComponent]
+
+This is why opening an inventory screen automatically prevents character movement  
+the menu widget is capturing input before the game viewport sees it.
+
+The Enhanced Input path
+
+APlayerController → UEnhancedInputLocalPlayerSubsystem::ProcessInputStack()
+│
+├─ For each active InputMappingContext (IMC)
+│   ├─ Check raw key against mappings
+│   ├─ Apply InputModifiers (deadzone, swizzle, negate, etc.)
+│   └─ Feed into InputTriggers (Pressed, Released, Hold, Tap, etc.)
+│
+└─ Fire ETriggerEvent callbacks:
+    Started / Ongoing / Triggered / Completed / Canceled
+
+The value that reaches your `BindAction` callback is already processed
+
+C: Network Packet Reception
+
+for each UNetDriver in WorldContext.ActiveNetDrivers
+  UNetDriver::TickDispatch(DeltaTime)
+
+`TickDispatch` drains the UDP receive buffer
+
+ServerSocket->RecvFrom(Buffer, Size, BytesRead, SenderAddr)
+loop until RecvFrom returns false (buffer empty)
+
+Identify connection: MappedClientConnections[SenderAddr]
+  if not found → new connection attempt → StatelessConnect challenge
+
+PacketHandler pipeline (inbound)
+  AESGCMHandler → ReliabilityHandler
+
+UNetConnection::ReceivedRawPacket()
+  → Parse into FBitReader
+  → Extract bunches (header: channel index, reliable flag, sequence)
+  → Route bunch to correct UActorChannel
+  → UActorChannel::ReceivedBunch()
+      → FRepLayout::ReceiveProperties()
+          → Apply changed properties to Actor in-place
+          → Trigger OnRep_ functions
+
+property changes from the network are applied here before World::Tick runs
+replicated actors already have their latest network values
+
+---
+
+Stage 3 — SIMULATE: World Tick
+
+UGameEngine::Tick(DeltaTime, bIdleMode)
+└─ for each FWorldContext in GEngine->WorldList:
+   └─ UWorld::Tick(LEVELTICK_All, DeltaTime)
+
+tickable entity
+Actor, ActorComponent, physics body, animation
+registers a `FTickFunction` with the world's `FTickTaskManager`
+
+FTickFunction is a rich descriptor
+├─ TickGroup: ETickingGroup          which group to run in
+├─ bTickEvenWhenPaused: bool
+├─ bCanEverTick: bool
+├─ bStartWithTickEnabled: bool
+├─ TickInterval: float               run every N seconds, not every frame
+├─ Prerequisites: TArray<FTickFunction*>  dependency graph
+└─ virtual ExecuteTick() = 0         the actual tick call
+
+tick functions
+distributed across worker threads via the TaskGraph
+
+The game thread does not tick every actor serially
+it dispatches the work 
+and waits for completion at group boundaries.
+
+TG_PrePhysics dispatch:
+    GameThread enqueues all TG_PrePhysics FTickFunctions as TaskGraph tasks
+    Worker threads execute them in parallel (respecting prerequisites)
+    GameThread waits at group boundary: FTickTaskManager::RunTickGroup()
+
+---
+
+Stage 4 — PROPAGATE: State Distribution
+
+After Simulation has produced a new world state
+that state must be **distributed** to all parties
+
+three outbound channels
+the network, the streaming system, and the asset system
+
+A: Network Replication
+
+for each UNetDriver:
+    UNetDriver::ServerReplicateActors()
+
+for each connected client, 
+determine which actors are relevant to that client, 
+what has changed about them since last send, 
+and serialize only the delta.
+
+B: Level Streaming Async Work
+
+`FAsyncLoadingThread` processes `LoadPackage` requests for streaming level assets.
+When loading completes, the game thread receives a callback on the next tick
+
+The actual integration into the world happens on the game thread 
+(UObject manipulation is game-thread-only)
+
+C: Async Asset Loading
+Any async calls from previous frames that have completed are finalized here
+(`TSoftObjectPtr<T>` loading resolution)
+
+---
+
+Stage 5 — PRESENT: Rendering Submission
+
+It **records** what should be rendered
+
+UGameEngine::RedrawViewports()
+└─ for each FViewport in AllViewports:
+   └─ FViewport::Draw(bShouldPresent)
+      └─ UGameViewportClient::Draw(Viewport, Canvas)
+
+Inside `UGameViewportClient::Draw()`
+For each ULocalPlayer:
+    ULocalPlayer::CalcSceneView(ViewFamily, ...)
+    │
+    ├─ Reads APlayerController::PlayerCameraManager
+    ├─ Applies FOV, post-process settings
+    └─ Produces FSceneView — the complete description of this player's viewpoint
+
+After the game render commands are enqueued, 
+Slate performs its own render pass
+
+FSlateApplication::Tick() (second call — rendering phase)
+└─ FSlateRHIRenderer::DrawWindows()
+   ├─ Paint all Slate widgets (SWindow tree)
+   │    Each widget's OnPaint() produces FSlateDrawElement commands
+   ├─ Composite game viewport texture with UI elements
+   └─ ENQUEUE Slate render commands to render thread
+
+The final image on screen is the game world render composited with the Slate UI layer
+
+├─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ STAGE 5: PRESENT ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─  │
+│  UGameEngine::RedrawViewports()                                    │
+│  └─ ULocalPlayer::CalcSceneView()  → FSceneView                    │
+│  └─ ENQUEUE_RENDER_COMMAND(DrawScene)   [non-blocking]             │
+│  FSlateApplication render pass          [non-blocking]             │
+│                                                                    │
+│  [Meanwhile on render thread: processing LAST frame's commands]    │
+│  [Meanwhile on RHI thread:   submitting FRAME-2's D3D12 calls]     │
+│  [Meanwhile on GPU:          executing FRAME-3's draw calls]       │
+│─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ │
+
+---
+
+Tick 시스템 전체는 Task Graph / tick group / prerequisite 같은 스케줄링 구조를 사용
+하지만 일반적인 Actor Tick / gameplay Tick은 보통 Game Thread 기준
+일부 TickFunction만 명시적으로 bRunOnAnyThread 같은 조건을 통해 async tick 으로 worker thread 에서 돌 수 있어요.
+
+일반 Actor Tick 은 보통 다음을 많이 건드려요
+  UWorld 상태
+  다른 Actor / Component 참조
+  overlap / collision 결과
+  delegate broadcast
+
+이런 것들은 대체로 UObject 계층이에요
+
+---
