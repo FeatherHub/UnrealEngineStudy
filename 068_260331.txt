@@ -1,0 +1,2402 @@
+"Destruction, Cloth, Fluid, Rigid Body를 하나의 통합 솔버 위에서 돌린다"
+
+Game Thread                    Physics Thread
+─────────────────────         ─────────────────────
+UWorld                         FPhysScene_Chaos
+UPrimitiveComponent     ←→     FBodyInstance / FActorHandle
+FBodyInstance (proxy)          Chaos::FRigidBodyHandle
+AActor transform               Chaos particle state
+
+Physics 시뮬레이션은 결정론적 고정 timestep으로 돌아야 하고
+Game Thread는 가변 프레임레이트로 돌아
+
+게임 레이어
+UPrimitiveComponent가 물리의 진입점이야. 
+UStaticMeshComponent, USkeletalMeshComponent 등이 여기 속해
+FBodyInstance를 멤버로 갖고 있는데, 
+이게 Game Thread 쪽의 물리 상태 프록시야.
+
+FBodyInstance
+Game Thread 코드가 물리 상태를 읽고 쓸 수 있는 인터페이스를 제공하면서,
+동시에 Physics Thread의 실제 파티클 핸들을 감싸는 래퍼 역할
+
+Scene 레이어
+UWorld는 FPhysScene을 소유 (구현체는 FPhysScene_Chaos)
+이게 물리 월드의 컨테이너
+FPhysScene이 Physics Thread를 실제로 구동하고 시뮬레이션 tick을 조율
+
+Chaos Solver 레이어
+PBD (Position Based Dynamics) 방식으로 constraint를 푼다
+PhysX (impulse-based)와의 주요 차이
+
+PBD는 위치를 직접 보정하는 방식이라 안정성이 높고 대규모 rigid body에 유리
+대신 에너지 보존이 impulse 방식보다 덜 정확
+
+Geometry / Collision 레이어
+충돌 형상은 FKAggregateGeom으로 표현
+(sphere, box, capsule, convex hull의 집합)
+런타임에는 Chaos의 implicit geometry 표현으로 변환
+
+Collision query (raycasting, sweep, overlap)는 
+FPhysicsInterface를 통해 들어오고, 
+결과는 FHitResult로 Game Thread에 반환
+
+[Game Thread]
+  AActor::Tick()
+  → UPrimitiveComponent transform 변경
+  → FBodyInstance에 변경 사항 기록 (dirty)
+
+[Physics Thread Kick]
+  FPhysScene::StartFrame()
+  → dirty body들을 Physics Thread에 push (marshal)
+  → Chaos solver tick (고정 substep, e.g. 1/60s)
+  → 충돌 감지 → constraint resolution → 위치 적분
+
+[Game Thread Sync]
+  FPhysScene::EndFrame() / WaitPhysScenes()
+  → Physics Thread 결과를 Game Thread로 pull back
+  → FBodyInstance가 결과를 UPrimitiveComponent에 반영
+  → AActor transform 업데이트
+
+이 마샬링 구조 때문에 물리 결과가 1 프레임 지연되는 건 피할 수 없는 구조적 특성이야. 
+이게 눈에 띄는 경우가 있어서 Async Physics 모드와 일반 모드를 선택적으로 쓸 수 있어.
+
+Chaos Destruction (Geometry Collection)
+Fracture 데이터를 미리 구워두고 (Voronoi 또는 수동 분할)
+런타임에 조각들을 Chaos rigid body로 활성화
+AGeometryCollectionActor와 UGeometryCollectionComponent가 진입점
+
+Chaos Cloth
+UChaosClothComponent가 관리
+메시 버텍스를 파티클로 취급하고 constraint로 연결해서 천 시뮬레이션
+물리 파이프라인 안에 통합되어 있어서 rigid body와 상호작용이 가능
+
+Physical Animation
+UPhysicalAnimationComponent가 애니메이션 포즈와 물리 시뮬레이션 결과를 블렌딩
+FAnimInstanceProxy의 Physics blend 경로와 연결
+
+URadialForceComponent
+한 지점에서 방사형으로 impulse나 force를 쏘는 컴포넌트
+
+Physics Fields
+Anchor, Strain/Force, Sleep/Disable/Kill
+공간에 규칙을 걸고, 그 공간에 들어온 파티클들이 그 규칙을 받게 하는 방식
+대규모 파괴나 연출
+
+Skeletal Mesh, Physics Asset
+SkeletalMesh → PhysicsAsset rigid bodies/constraints → Chaos simulation
+별도의 물리 신체를 만든 뒤, 그 결과를 다시 캐릭터 표현에 반영하는 과정
+캐릭터 래그돌은 “본마다 물리 바디를 가진 Skeletal Mesh”라는 형태로 물리 세계에 투영되는 거예요
+
+게임 코드에서는 SetSimulatePhysics, AddForce, SetCollisionProfileName 같은 API를 만지지만, 
+실제론 이 호출들이 FBodyInstance를 통해 물리 씬으로 전달돼요
+
+**“부딪히는지 검사하는 것”**과 
+**“실제로 물리적으로 움직이게 하는 것”**을 분리
+
+Query
+- "여기서 앞으로 쏘면 무엇을 맞나?"
+- "이 캡슐을 이 방향으로 밀면 어디에서 막히나?"
+- 순간적인 검사
+
+Simulation
+- "이 통은 중력과 충격을 받아 실제로 굴러가나?"
+- "이 문은 힌지 constraint로 흔들리나?"
+- 시간에 따라 상태가 진화
+
+Component / BodyInstance → PhysicsScene / Interface → Chaos Solver
+그 연결을 담당하는 추상 경계가 FPhysScene 계열과 FPhysInterface_Chaos예요.
+FBodyInstance::GetPhysicsScene()가 body의 소속 씬을 반환하고
+FPhysInterface_Chaos는 Chaos를 호출하는 공용 인터페이스 역할을 해요
+
+ExecuteWrite(FPhysScene*, ...) 같은 API가 따로 있는 것도, 
+물리 상태를 임의의 타이밍에 마구 건드리지 않고, 
+**적절한 쓰기 경로**를 통해 반영하려는 구조라는 신호예요
+
+UPrimitiveComponent
+   ↓
+FBodyInstance
+   ↓
+Proxy (game thread ↔ physics thread bridge)
+   ↓
+Particle Handle
+   ↓
+Solver / Evolution
+   ↓
+충돌쌍 생성, 접촉 Solve, 
+joint/constraint 처리, 속도/위치 갱신
+sleep/wake 관리
+
+cinematic-quality destruction을 
+"실시간으로 다룰 수" 있다
+Geometry Collection은 이 파괴 가능한 구조의 핵심 자산/표현
+
+멀쩡한 벽
+= 겉보기에는 하나
+
+Chaos 내부
+= 여러 조각들의 계층적 집합(cluster)
+
+충격/strain 누적
+→ 임계점 돌파
+→ cluster 해제
+→ 개별 조각이 독립 rigid body로 전환
+
+UPhysicalMaterial
+물체가 월드와 동적으로 상호작용할 때의 반응을 정의
+friction, restitution, surface type 같은 차이
+
+---
+
+모든 것은 파티클이다
+강체든, 천이든, 파괴된 조각이든
+Chaos 솔버가 다루는 단위는 TGeometryParticle의 파생 타입
+
+FGeometryParticle은 위치와 회전만 가진다
+지형처럼 움직일 의도가 없는 정적 형상이 여기 해당
+
+FKinematicGeometryParticle
+속도 데이터를 가지지만 force에 반응하지 않는다
+에스컬레이터처럼 애니메이션이 직접 움직이는 body
+
+FPBDRigidParticle은 완전히 시뮬레이션되는 rigid body다. 
+이게 "물리가 작동하는" body.
+
+FPBDRigidParticle
+고전역학에서 rigid body를 완전히 기술하는데 필요한 것들
+위치 X, 회전 R, 선속도 V, 각속도 W, 질량 M, 관성 텐서 I와
+
+FImplicitObject 
+충돌 형상을 어떻게 표현하느냐
+PhysX가 명시적 mesh를 저장하는 방식
+Chaos는 implicit geometry
+임의의 점 x에서 φ(x) = 부호 있는 거리를 반환하는 함수를 사용
+
+FSphere, FBox, FCapsule, FConvex, FTriangleMeshImplicitObject, 
+TImplicitObjectUnion (여러 shape 조합) 등이 파생된다.
+
+---
+
+조합 폭발이 발생하는 구조
+O(n²) 충돌 쌍 검색
+
+Broadphase
+ISpatialAcceleration<FAccelerationStructureHandle> 인터페이스로 추상화
+기본 구현은 TAABBTree
+
+모든 파티클의 AABB를 계층적 트리로 관리
+O(n log n)
+
+TBoundingVolumeClusters는 공간적으로 근접한 sleeping body들을 그룹으로 묶는다. 
+클러스터 전체가 다른 body와 overlap되지 않으면 내부는 아예 검사 안 해
+sleeping body가 많은 large-scale destruction에서 핵심적인 최적화.
+
+Narrowphase: GJK / EPA / SAT
+
+Broadphase가 넘겨준 overlap 후보 쌍들 각각을 정밀하게 검사하는 단계.
+
+GJK (Gilbert-Johnson-Keerthi)
+두 convex shape 사이의 최소 거리
+두 shape의 Minkowski difference가 원점을 포함하는지를 
+iterative simplices 방법으로 검사
+
+GJK가 penetration을 감지하면
+EPA (Expanding Polytope Algorithm)로 전환해서 
+침투 깊이와 접촉 법선을 계산한다.
+
+Box-box에는 SAT (Separating Axis Theorem)가 별도 fast path로 존재
+특정 primitive pair에 특화된 알고리즘이 더 빠르기 때문.
+
+Solver & Constraints: 물리 법칙이 집행되는 곳
+PhysX는 impulse-based 방식
+충돌을 감지하면 운동량 보존에 따라 impulse를 계산해서 속도를 직접 수정
+Chaos는 Position Based Dynamics (PBD)
+
+PBD에서 constraint는 C(x) = 0 형태의 기하학적 조건
+솔버는 이 조건을 만족시키도록 위치 x를 반복적으로 투영
+속도는 위치 변화로부터 역산
+
+impulse-based 방식은 수치 정밀도가 높지만 
+constraint가 많아지면 (대규모 destruction처럼 수천 개의 접촉) 
+시스템이 불안정해진다
+
+PBD는 iteration 수를 줄이면 constraint가 덜 정확하게 풀리지만 
+시스템이 발산하지 않고 안정하게 수렴한다
+
+TPBDRigidsEvolution이 실제 적분 엔진
+FPBDRigidsSolver가 외부 인터페이스를 제공
+
+kinematic body들의 목표 위치를 적용
+중력, RadialForce 등 외력을 모든 dynamic particle에 누적
+symplectic Euler 적분으로 새 위치를 계산 (속도 먼저 업데이트, 업데이트된 속도로 위치 적분)
+FContactPoint 목록을 생성해 FPBDCollisionConstraints에 등록
+모든 constraint를 N회 반복해서 투영 (UPhysicsSettings에서 설정)
+위치 변화에서 속도를 역산
+에너지가 임계값 이하인 island를 sleeping으로 전환
+
+Constraint 종류
+FPBDCollisionConstraints가 contact manifold를 관리
+restitution (반발계수), friction을 constraint coefficient로 인코딩. 
+XPBD (Extended PBD)로 compliance 파라미터를 추가해서 restitution 튜닝 가능
+
+FPBDJointConstraints가 물리적 조인트를 처리
+각 joint는 6DOF (position 3 + rotation 3) constraint의 부분집합
+Hinge joint는 rotation 2축을 잠그고 1축만 열어두는 식
+FJointSolverGaussSeidel이 각 joint를 Gauss-Seidel iteration으로 풀어
+
+FSimCallbackObject
+솔버 루프 내 특정 실행 시점에 callback을 삽입하는 인터페이스
+post-integrate, post-solve 같은 시점에 게임 코드가 개입
+Chaos Vehicles의 타이어 마찰이 이 경로를 탄다
+타이어 force는 매 physics substep마다 계산되어야 하고, 
+GT 코드가 PT 루프 안에 정확한 타이밍으로 개입해야 하기 때문
+
+Game Thread → Physics Thread 방향
+FPhysCommandHandler (command queue) 
+FSimCallbackObject::PhysicsCommands_External
+비동기 command로 전달
+
+Physics Thread → Game Thread 방향
+매 프레임 끝에 FPhysScene_Chaos::EndFrame()에서 결과를 pull
+FBodyInstance를 통해 UPrimitiveComponent로 반영
+
+FPhysScene_Chaos는 FPBDRigidsSolver를 소유
+프레임 경계에서 
+StartFrame() → physics tick → WaitPhysScenes() / EndFrame() 구조로 GT와 동기화
+
+FPhysCommandHandler
+GT에서 오는 명령들을 lock-free queue로 받아서
+physics tick 시작 전 일괄 처리
+
+FPhysicsInterface 
+모든 Physics Thread 작업을 static 함수로 추상화한 레이어
+
+FPhysicsInterface::SetLinearVelocity_AssumesLocked(ActorHandle, Velocity);
+FPhysicsInterface::AddImpulse_AssumesLocked(ActorHandle, Impulse);
+FPhysicsInterface::SetMass_AssumesLocked(ActorHandle, Mass);
+
+이 함수를 호출하는 코드는 이미 Physics Scene lock을 획득했다는 전제를 함수 이름에 인코딩
+
+runtime assertion 대신 naming convention으로 전제를 명시화
+type system 강제보다 약하지만 없는 것보다 낫다.
+
+FBodyInstance
+UPrimitiveComponent의 멤버
+FPhysicsActorHandle ActorHandle
+Physics Thread particle에 대한 handle
+
+CollisionEnabled, ObjectType, CollisionResponses
+Game Thread 쪽의 collision 설정을 담는다
+
+FPhysicsInterface를 통해 PT에 particle을 생성
+
+SetLinearVelocity() 같은 메서드는 내부에서 
+FPhysicsCommand::ExecuteOnUnbrokenBody() 패턴으로 Scene lock 획득
+→ FPhysicsInterface::*_AssumesLocked 호출의 흐름을 탄다
+
+bSimulatePhysics
+PT particle의 ObjectState를 Dynamic ↔ Kinematic 사이에서 전환하는 command가 
+FPhysCommandHandler를 통해 PT에 전달
+
+UPrimitiveComponent
+렌더링 (SceneProxy), 
+물리 (FBodyInstance), 
+충돌 쿼리 (collision channel) 
+세 시스템이 교차하는 지점
+
+SetSimulatePhysics(true) → InitBody() → PT particle 생성의 체인이 
+"물리 활성화"의 경로
+
+AddForce(), AddImpulse() 등은 
+FBodyInstance를 경유해서 PT로 전달
+
+GetBodyInstance()로 FBodyInstance에 직접 접근할 수 있는데, 
+이 경우 호출자가 Scene lock을 직접 관리해야 한다.
+
+ECollisionChannel & ECollisionResponse
+"각 CollisionChannel에 어떻게 반응하는가" (Ignore, Overlap, Block).
+
+Block collision은 OnComponentHit을 발행
+Overlap은 OnComponentBeginOverlap / EndOverlap을 발행
+
+Chaos Destruction
+UGeometryCollectionComponent
+Fracture mesh를 미리 구워서
+Voronoi 또는 수동 분할로 조각들을 생성
+각 조각이 별도의 FPBDRigidParticle이 된다
+
+FGeometryCollectionPhysicsProxy
+GT ↔ PT bridge
+FBodyInstance/FPhysicsInterface 경로 대신 destruction에 특화된 별도 proxy
+수천 개의 조각이 clustered island로 관리
+
+Sleeping cluster 메커니즘
+연결된 조각들이 FPBDRigidClusteredParticle로 하나의 particle처럼 동작
+멀쩡한 건물은 사실상 하나의 rigid body처럼 취급된다는 뜻
+
+Chaos Cloth
+UChaosClothComponent
+메시 버텍스 → FPBDParticles 변환
+Edge constraint (형태 유지), bending constraint (굽힘 저항), volume constraint (부피 보존) 등으로 
+천의 물리적 특성을 Represent
+
+FClothingSimulationChaos가 cloth simulation을 구동
+rigid body collision과의 상호작용은 단순화된 capsule/sphere collision shape을 사용
+Chaos main solver와 통합되어 있어서 
+rigid body가 cloth에 반응하는 상호작용이 가능.
+
+Physical Animation
+UPhysicalAnimationComponent
+Animation 시스템 (FAnimInstanceProxy)과 
+Physics 시스템 (FBodyInstance)을 bridge
+
+SetSkeletalBodySimulated()로 지정된 본부터 아래의 bone들을 
+physics simulation으로 전환
+
+애니메이션 포즈를 목표 값으로 삼아 
+motor force를 물리 body에 적용
+
+FPhysicalAnimationData의 OrientationStrengthMultiplier, AngularVelocityStrengthMultiplier
+얼마나 강하게 포즈를 따라가는지 결정
+
+FAnimNode_AnimDynamics
+mass-spring proxy로 흔들림을 근사
+Physical Animation은 FPBDRigidParticle을 사용하는 full Physics Thread simulation
+
+---
+
+Invariant Reading Point
+함수는 함수 호출을 함축한다.
+함수의 호출
+  1. 고정된 life cycle 의 구조의 어느 시점에?
+  2. 어떤 조건에서?
+
+일종의 이벤트(사건)으로 보기
+  고정 이벤트
+  조건부 이벤트
+
+---
+
+Invariant Reading Point
+함수는 구현자를 함축한다. 
+  1. global scoped
+  2. 파일 scoped
+  3. 클래스 scoped -> object method
+함수는 함수 호출을 함축한다.
+함수의 호출은 호출자를 함축한다.
+  1. 누가 이 코드블락을 소유하는가?
+  2. 누가 이 코드블락을 호출하는가?
+
+---
+
+who allocoated this?
+who ends this?
+=>
+who owns this?
+=>
+tree
+
+---
+
+what is its outermost context?
+=>
+tree root, 
+thread context, 
+
+---
+
+what call protocol does this have?
+=>
+synchronous, asynchronous
+lock free, lock assumed
+
+---
+
+모든 코드 구조물에는 특정 속성들이 항상 붙어있다
+소유자가 있고, 호출자가 있고, 실행되는 컨텍스트가 있고, 실패 방식이 있다
+
+코드가 반드시 함축하고 있는 속성들을 읽어내는 행위다
+
+이 함수가 사용하는 리소스는 누가 소유하는가
+이 함수가 생성하는 것은 누가 소유할 것인가
+
+이 클래스는 무엇의 소유자인가
+이 클래스 자신은 누구의 소유물인가
+
+소유권이 없으면 유효성을 보장할 주체가 없어진다
+
+FPhysicsInterface::SetLinearVelocity_AssumesLocked
+이 코드는 Physics Scene lock이 이미 획득된 컨텍스트에서만 의미가 있다
+
+실행 컨텍스트
+스택 레이어
+호출 스택의 어떤 위치에서 이것이 의미를 갖는가
+
+순서 제약
+FPhysScene_Chaos::StartFrame() 이전에 dirty body 마킹이 완료되어야 한다
+InitBody() 이전에 SetCollisionProfileName()이 호출되어야 의미가 있다
+의존성 제약의 다른 표현
+
+선조건 (Precondition): 이것이 올바르게 작동하기 위해 사전에 참이어야 하는 것
+후조건 (Postcondition): 실행 후 호출자에게 보장하는 것
+
+---
+
+금지된 것
+불가능하게 된 것
+
+FBodyInstance가 존재하는 이유
+Game Thread 코드가 Physics Thread particle을 직접 건드리는 것을 불가능하게 만들기 위해
+
+FPhysCommandHandler가 존재하는 이유
+Game Thread가 임의 타이밍에 Physics Thread 상태를 변경하는 것을 금지하기 위해
+
+이 구조물이 없다면 무엇이 가능해지는가?
+
+---
+
+시간적 비용 (복잡도, 지연)
+공간적 비용 (메모리 레이아웃, 캐시 친화성)
+부작용 비용 (상태 변경의 파급 반경)
+
+---
+
+어떤 조건에서 이 코드가 잘못 작동하는가?
+실패가 발생할 때 그것은 즉각 드러나는가(loud), 아니면 조용히 잘못된 상태로 남는가(silent)
+실패가 호출자(혹은 시스템)에 어떻게 전파되는가
+
+---
+
+그 존재는 진짜 실체인가, 프록시인가, 핸들인가?
+
+누가 누구를 언제 움직이는가
+state는 언제 누가 변경하고
+명령은 어느 경로로 전달되는가
+
+---
+
+실제 물리 시뮬레이션의 살아 있는 상태는 Physics Thread 쪽 particle에 있고
+
+UPrimitiveComponent.FBodyInstance는 Game Thread에서 그것을 읽고 쓰는 프록시
+
+---
+
+이것은 지속적으로 존재하는가, 한 프레임짜리 임시 값인가?
+state
+
+---
+
+“A 세계 ↔ B 세계” 사이의 중간자들
+
+이것은 중간자인가
+아니면 독립자인가
+
+---
+
+시간의 선들
+
+여러 선들의 합성으로 본다
+즉, 각각의 선들을 독립적으로 떼어내서 본다
+하나의 선을 식별한다
+
+Game Thread
+  Tick
+  → dirty 기록
+
+Physics Thread Kick
+  → push / marshal
+  → solver tick
+
+Game Thread Sync
+  → pull back
+  → 결과 반영
+
+---
+
+발화 조건
+
+함수를 인과계열의 결과로 본다
+함수를 수신기로 본다
+
+함수 자체에는 인과구조가 인코딩되어 있지 않다
+하지만 전체는 인과구조를 인코딩한다
+
+---
+---
+---
+---
+---
+---
+---
+
+FVector::Dot(const FVector& A, const FVector& B)
+A · B = |A||B|cosθ
+두 벡터가 같은 방향이면 양수, 수직이면 0, 반대 방향이면 음수.
+단위 벡터끼리의 내적은 cosθ
+B 방향으로 A를 투영한 길이에 |B|를 곱한 값
+
+FVector::Cross(const FVector& A, const FVector& B)
+A × B = |A||B|sinθ * n̂
+n̂은 A와 B 둘 다에 수직인 단위 벡터. 방향은 오른손 법칙
+결과 벡터의 크기는 A와 B가 만드는 평행사변형의 넓이
+두 벡터에 수직인 법선 벡터 계산 (삼각형 법선, 평면 법선)
+
+교환법칙이 성립하지 않는다
+이게 외적의 특징이자 방향 정보가 담겨있는 이유다
+A × B와 B × A는 부호가 반대
+
+UE는 왼손 좌표계가 아닌 Z-up 오른손 좌표계를 사용하지만
+관습적으로 X가 Forward, Y가 Right, Z가 Up이다
+DCC 툴과 좌표 변환이 필요한 이유
+FBX 임포트 시 Z-up ↔ Y-up 변환이 자동으로 일어난다
+
+FRotator — 인간을 위한 회전 표현
+struct FRotator {
+    double Pitch;  // Y축 회전 (위아래 고개)
+    double Yaw;    // Z축 회전 (좌우 몸통)
+    double Roll;   // X축 회전 (몸통 기울임)
+};
+
+Euler angles
+회전을 세 개의 독립된 축 회전의 합성으로 표현
+인간이 이해하고 에디터에서 편집할 수 있는 형태의 회전 표현
+Pitch를 30도로 설정해라
+vs
+쿼터니언의 (W=0.966, X=0, Y=0.259, Z=0)
+
+UE의 FRotator는 Yaw → Pitch → Roll 순서로 적용된다
+(intrinsic 기준)
+
+Gimbal Lock
+Euler angles의 구조적 결함
+Pitch가 ±90도에 가까워지면 Yaw와 Roll이 같은 회전을 표현하게 되어 한 자유도를 잃는다
+조종사가 완전히 수직으로 기울었을 때 좌우 회전과 몸통 기울임이 구분되지 않는 현상
+
+FQuat — 회전의 실제 내부 표현
+struct FQuat {
+    double X, Y, Z, W;
+};
+축-각도 표현
+W = cos(θ/2)
+X = sin(θ/2) * n̂.x
+Y = sin(θ/2) * n̂.y
+Z = sin(θ/2) * n̂.z
+
+4D 구면(S³)에서의 투영
+
+단위 쿼터니언 (|Q| = 1)은 3D 회전과 일대일 대응한다
+Q와 -Q가 같은 회전을 표현한다
+S³에서의 antipodal points가 SO(3)의 같은 원소로 매핑된다
+쿼터니언이 회전군 SO(3)의 double cover인 이유다
+
+FQuat::Dot(A, B) < 0이면 같은 방향을 향하지만 
+"반대편 경로"로 표현된 것 — SLERP 전에 부호를 맞춰줘야 한다.
+
+FQuat Combined = RotationB * RotationA;  // A 먼저, B 나중 적용
+쿼터니언 곱은 교환법칙이 성립하지 않는다
+행렬 곱과 마찬가지
+
+FVector Rotated = MyQuat.RotateVector(OriginalVector);
+내부적으로 q * v * q⁻¹ 형태의 쿼터니언 sandwich product로 계산
+
+역회전
+FQuat Inverse = MyQuat.Inverse();
+FQuat Conjugate = FQuat(-X, -Y, -Z, W);
+
+단위 쿼터니언의 역은 켤레
+
+FQuat Interpolated = FQuat::Slerp(A, B, Alpha);
+S³ 구면 위를 등속으로 이동
+결과가 언제나 단위 쿼터니언이고, 보간 경로가 최단 호(arc)다
+
+오일러각을 선형 보간하면 비직관적 경로가 발생한다
+행렬의 선형 보간은 중간 행렬이 유효한 회전이 아닐 수 있다
+
+FTransform — 위치, 회전, 스케일의 합성
+struct FTransform {
+    FQuat   Rotation;
+    FVector Translation;
+    FVector Scale3D;
+};
+
+non-uniform scale + rotation의 합성에서 shear가 발생한다는 구조적 제약
+이 경우 FMatrix로 변환해서 처리
+
+FTransform World = Local * Parent
+FTransform Local = World * Parent.Inverse()
+
+FVector WorldPos = MyTransform.TransformPosition(LocalPos)
+FVector LocalPos = MyTransform.InverseTransformPosition(WorldPos)
+
+FVector WorldDir = MyTransform.TransformVector(LocalDir)
+
+---
+
+struct FMatrix {
+    double M[4][4];
+};
+Homogeneous Coordinates
+점 (x, y, z)를 (x, y, z, 1)로, 방향 벡터를 (x, y, z, 0)으로
+Translation을 포함한 모든 affine 변환을 4×4 행렬 하나로 표현
+
+4번째 성분이 0이면 방향 벡터 (translation 영향 안 받음), 
+1이면 위치 (translation 영향 받음)
+
+FMatrix ViewMatrix = FLookAtMatrix(CameraPos, TargetPos, UpVector)
+FMatrix ProjMatrix = FPerspectiveMatrix(HalfFOV, Width, Height, Near, Far)
+FMatrix MVP = ModelMatrix * ViewMatrix * ProjMatrix
+
+---
+
+struct FPlane : public FVector {
+    double W;  // 원점으로부터의 부호 있는 거리
+};
+
+평면의 방정식: n̂ · x = d 또는 Ax + By + Cz = W
+XYZ가 법선 벡터, W가 평면까지의 거리
+
+float Distance = Plane.PlaneDot(Point)
+// 양수: 법선이 가리키는 쪽 (front)
+// 음수: 반대쪽 (back)
+// 0: 평면 위
+
+Frustum Culling은 이것을 여섯 개의 평면에 대해 반복해서 
+물체가 카메라 절두체 안에 있는지 판단한다
+
+---
+
+struct FRay {
+    FVector Origin;
+    FVector Direction;  // 정규화
+};
+
+레이는 P(t) = Origin + t * Direction 형태의 반직선. 
+t ≥ 0이 "앞방향"을 정의한다
+
+UWorld::LineTraceSingleByChannel()은 FRay를 받아 
+물리 엔진의 broadphase (AABB tree 쿼리) → narrowphase (ray-implicit intersection) 과정을 거쳐
+FHitResult를 반환한다
+
+Ray-Sphere, Ray-Box, Ray-Convex 각각에 specialised한 intersection 공식이 있고
+FImplicitObject 계층에 Raycast() 인터페이스가 정의되어 있다
+
+---
+
+변환 비용
+
+FRotator → FQuat : 삼각함수 6번,
+FQuat → FRotator : atan2 + asin
+FQuat → FMatrix : 곱셈 18번
+FMatrix → FQuat : 대각선 검사 + sqrt
+FQuat * FQuat : 곱셈 16번
+
+---
+
+Object Space
+  ↓  Model Matrix (FTransform → FMatrix)
+World Space
+  ↓  View Matrix (FLookAtMatrix)
+View Space (Camera Space)
+  ↓  Projection Matrix (FPerspectiveMatrix)
+Clip Space
+  ↓  원근 나눗셈 (÷ W)
+NDC (Normalized Device Coordinates)   [-1, 1]³
+  ↓  Viewport Transform
+Screen Space                           [0, Width] × [0, Height]
+
+---
+
+Object Space
+모델이 원점에 있다고 가정하고 메시를 정의하는 공간
+조명 계산, 노말맵, 스킨 웨이트가 모두 이 공간에서 만들어진다
+
+View Space
+카메라가 원점
+카메라가 바라보는 방향이 -Z (UE는 +X)인 공간
+이 공간에서 절두체 컬링이 가장 단순해진다
+Z 깊이가 직접적으로 카메라 거리가 되기 때문이다
+
+Clip Space
+투영 후 W로 나누기 전 상태
+GPU가 이 공간에서 클리핑을 수행한다
+W를 나누기 전에 클리핑하는 이유 
+W=0 (카메라 평면)에서 나눗셈이 발산하는 것을 막기 위해
+
+Normalized Device Coordinates
+모든 플랫폼에서 [-1,1]³로 정규화된 공간
+DirectX는 Z가 [0,1], OpenGL은 [-1,1]
+UE가 렌더링 백엔드를 추상화하는 이유 중 하나가 이 차이다
+
+UGameViewportClient::Project(), DeprojectScreenToWorld(), GetPlayerViewPoint() 
+
+---
+
+T (Tangent)   — 텍스처 U 방향
+B (Bitangent) — 텍스처 V 방향  
+N (Normal)    — 표면 법선
+
+노말맵은 Tangent Space에서 정의된 법선을 저장한다
+(0, 0, 1)이 "표면 수직 방향"이다
+이것을 World Space 법선으로 변환하는 행렬이 TBN
+
+N_world = TBN * N_tangent
+
+Normal의 올바른 변환 행렬은 Model Matrix의 역전치(Inverse Transpose) 다.
+
+
+---
+
+// B 방향으로 A를 투영
+FVector Projected = B * (FVector::DotProduct(A, B) / B.SizeSquared());
+"A에서 B 방향 성분만 뽑아낸다."
+이동 벡터에서 경사면 방향 성분만 추출
+
+// A에서 B 방향 성분을 제거
+FVector Rejected = A - Projected;  
+투영의 여집합
+법선 방향 성분을 제거해서 표면을 따르는 이동 벡터를 만들 때
+
+FVector Reflected = A - 2 * FVector::DotProduct(A, Normal) * Normal;
+FVector Reflected = FVector::VectorReflect(Incident, Normal);
+
+A · N이 법선 방향 성분의 크기, 그것의 2배를 빼면 법선에 대해 반사된다
+물리 기반 반사, 완전 탄성 충돌, 거울 반사
+
+// 느림 - sqrt 포함
+if (Vec.Size() < Threshold) 
+
+// 빠름 - sqrt 없음
+if (Vec.SizeSquared() < Threshold * Threshold)
+
+a < b와 a² < b²는 양수에서 동치
+
+---
+
+각속도 (Angular Velocity)
+방향이 회전축, 크기가 rad / sec
+FVector AngularVelocity = FBodyInstance->GetUnrealWorldAngularVelocityInRadians()
+이 표현 방식을 축-각도 벡터 (Axis-Angle Vector) 또는 rotation vector
+
+FQuat은 회전 상태를 표현하고, 
+각속도 FVector는 회전 속도를 표현한다
+
+각속도에서 다음 프레임의 회전을 예측:
+
+FQuat DeltaRotation = FQuat(AngularVelocity.GetSafeNormal(), 
+                            AngularVelocity.Size() * DeltaTime);
+
+FQuat NextRotation = DeltaRotation * CurrentRotation;
+
+---
+
+괴팅겐 대학
+실 모형, 석고 모형, 철사 모형으로 이루어진 거대한 수학적 물체 컬렉션
+대수 곡면, 극소 곡면, 직선 곡면
+방정식으로만 존재하는 것들을 실제로 손으로 만지고 돌려볼 수 있게
+
+Felix Klein
+수학적 대상은 반드시 물리적 직관과 동시에 발전해야 한다
+
+Brill, Schilling 같은 회사를 통해 대학들에 상업적으로 판매
+수학과의 필수 장비
+
+Gaspard Monge
+프랑스 군사 요새 설계에서 출발한 Descriptive Geometry
+
+3D 물체를 두 개의 수직한 평면에 투영한다
+건축가, 기계 기술자, 수학자
+2D 투영들의 체계적 관계를 읽는 능력으로 훈련
+2D 여러 장을 서로 엮어서 3D를 복원하는 감각을 전문적으로 훈련
+
+---
+
+복소수가 2D 회전을 완벽하게 표현한다
+3D에 대해서도 같은 걸 할 수 있는가?
+방법은 순전히 대수적 조작과 기하학적 해석의 왕복
+3개의 성분으로 이루어진 수 체계 (i, j, k를 가진 삼원수)를 시도했는데, 곱셈이 성립하지 않았어. 
+결합법칙이나 분배법칙을 만족하는 방식으로 i, j, k의 관계를 정의할 수가 없었지.
+차원을 하나 더 올려야 한다, 4개의 성분
+그리고 i² = j² = k² = ijk = -1
+
+3D 공간 모형을 만들어서 붙잡은 게 아니라, 
+2D 복소수에서 작동하는 구조를 대수적으로 확장하는 감각
+
+---
+
+실제로 공간에 실이 당겨져 있는 것처럼 시각화
+맥스웰은 이 직관을 수학으로 번역
+
+전기장을 비압축성 유체의 흐름으로 상상
+자기장을 분자 와류(molecular vortices) — 작은 소용돌이들이 공간을 채우는 것 — 으로 상상
+이 유체는 발판(scaffolding)이다. 건물이 완성되면 해체한다
+
+---
+
+Hamilton, Tait
+수학자
+
+Gibbs, Heaviside 
+물리학자와 공학자
+
+직관이란 게 어떤 표현 체계로 훈련됐는가에
+
+---
+
+2D에서 먼저 이해하고, 
+3D의 한 축만 있는 단순한 경우를 이해하고, 
+그 다음 일반으로 확장하는 패턴
+
+물리적 현상을 대응
+각속도 벡터의 직관은 팽이를 돌려보는 것
+각운동량 보존은 팔을 오므리면 빨리 돌아가는 피겨스케이터
+내적이 투영이라는 것은 햇빛에 막대기의 그림자를 관찰하는 것
+
+정지한 공간 대신 변환을 중심에 두는 훈련
+Klein의 에를랑겐 프로그램 (1872) 
+기하학을 "변환의 집합이 보존하는 것이 무엇인가"로 재정의하는 관점
+유클리드 기하학은 거리와 각도를 보존하는 변환의 집합
+아핀 기하학은 평행성을 보존하는 변환의 집합
+
+---
+
+방향과 합성을 다루는 프레임워크들
+기하학, 역학, 해석기하, 구면삼각법, 힘의 평행사변형
+
+선분, 각, 투영, 삼각형, 평행사변형, 힘의 합성 같은 기하 도식이 먼저
+오늘날처럼 a + b, dot, cross를 먼저 배우기보다
+
+기하학적 조작들을 더 압축적이고 계산 친화적인 언어로 재조직
+
+---
+
+곡면의 꼬임, 절단면, 특이점, 접평면
+공식만으로는 잘 안 잡히니까
+실제 모델을 돌려 보고 빛을 비춰 보고 실선이 어떻게 지나가는지 보면서
+
+오늘날 3D 뷰포트에서 orbit 하며 보는 일을
+실물 모형을 손으로 돌리며 했다
+
+---
+
+공간을 계산 가능한 것으로
+복소수를 2D에서 더 높은 차원으로 확장하여 공간의 방향과 회전을 다루려는 시도
+1843 Hamilton quaternions
+공간 관계를 더 잘 다루는 대수적 언어를 찾는 것
+
+
+---
+
+기하적 조작
+회전, 평행, 수직, 절단, 교선, 접선, 법선 같은 관계를 도식적으로 다루기
+
+대수로 압축하기
+해석기하, vector analysis, quaternion 언어
+
+---
+---
+---
+---
+---
+---
+
+
+공간에 대한 수학은 결국 세 가지 능력을 요구해
+위치를 기술할 것. 관계를 측정할 것. 변환을 표현할 것.
+이 세 가지 요구가 전체 수학적 어휘를 생성해
+
+---
+
+공간의 한 점의 위치를 기술하려면 뭔가 고정된 것이 필요해
+기준점 (origin)과 기준 방향들 (basis)
+이것을 선택하는 순간, 모든 점이 세 개의 숫자로 기술된다
+
+공간 자체는 어떤 원점도 선호하지 않아
+공간은 균질하고 (homogeneous) 등방적이야 (isotropic)
+어디서나 같고, 어느 방향도 특별하지 않아.
+
+이 원초적 사실로부터 변위(displacement) 개념이 도출된다
+변위는 원점이 없어도 의미를 갖는다
+원점에 무관하게 의미를 갖는 방향과 크기의 쌍
+
+
+---
+
+두 벡터 사이의 관계
+공간에 거리와 각도의 구조가 있다는 사실
+내적 공간 (inner product space) 구조
+유일한 대칭적 이중선형형식
+
+이 두 벡터가 span하는 평면에 수직인 벡터를 표현하고 싶다
+
+n차원에서 두 벡터에 수직인 방향의 수는 n-2야. 
+1차원에서는 -1개 (불가), 
+2차원에서는 0개 (스칼라 하나), 
+3차원에서는 정확히 1개 (벡터 하나), 
+4차원에서는 2개 (벡터 하나로 표현 불가)
+
+---
+
+공간의 변환을 표현
+
+선형 변환
+직선을 직선으로 보내고 원점을 보존하는 변환
+
+행렬은 변환이지 공간의 기술이 아니야
+Klein의 에를랑겐 프로그램
+기하학은 변환들의 군(group)과 그 불변량(invariant)으로 정의된다.
+
+유클리드 기하학은 거리와 각도를 보존하는 변환들의 집합
+아핀 기하학은 평행성을 보존하는 변환들
+사영 기하학은 비율을 보존하는 변환들
+
+어떤 기하학을 다루느냐에 따라 어떤 행렬 집합을 다루는지가 결정
+
+---
+
+회전은 거리와 각도를 보존하는 선형 변환이야
+SO(3) 자체가 위상적으로 단순 연결(simply connected)이 아니다
+SO(3)에는 "구멍"이 있어
+180도 회전들로 이루어진 닫힌 경로를 연속적으로 변형해서 점으로 수축시킬 수 없어.
+위상수학의 정리에 따르면, 
+n차원 구면을 n차원 실수 공간으로 연속적으로 매핑하면서 
+전단사(bijective)를 유지하는 것이 불가능
+지구본을 펼쳐서 완전히 정확한 평면 지도를 만들 수 없는 것과 같은 이유야.
+
+해결책은 SO(3)의 보편 덮개(universal cover) 를 찾는 거야
+SO(3)와 국소적으로 같지만 위상적으로 단순 연결인 공간
+그것이 S³ (3차원 구면, 즉 4차원 공간의 구면)
+
+---
+
+"모든 점을 (3, 0, 0)만큼 이동"하는 것은 원점을 보존하지 않아
+그래서 행렬 하나로 표현할 수 없어.
+평행이동만 선형 대수 밖에 있어.
+해결책은 차원을 하나 올리는 거야
+이것이 동차좌표
+
+---
+
+수학은 공간의 대칭 구조를 채굴한다
+
+3D 공간에는 고유한 대칭 구조가 있어. 
+어디서나 같고 (균질성), 
+어느 방향도 특별하지 않고 (등방성), 
+거리가 있고, 
+각도가 있고, 
+변환들이 합성 가능하고. 
+
+수학은 이 구조를 대수적으로 포착하려는 시도야
+
+각 수학적 구조는 공간의 특정 성질 하나에 대응해
+벡터는 균질성에서, 
+내적은 거리/각도 구조에서, 
+행렬은 선형 변환에서, 
+쿼터니언은 SO(3)의 위상에서, 
+동차좌표는 아핀 구조에서 나와
+
+---
+
+이 수학은
+위치, 변위, 길이, 각도, 좌표계, 변환, 회전의 합성을 다룰 수 있는 언어를 하나씩 꺼내 들게 되었어요
+
+---
+
+어디에 있는가?
+어느 방향으로 얼마나 떨어져 있는가?
+얼마나 길고, 얼마나 기울고, 얼마나 수직인가?
+움직임과 회전은 어떻게 합성되는가?
+좌표계를 바꾸면 이것은 어떻게 보이는가?
+
+공간을 기술하려면 반드시 생기는 최소한의 문법
+
+rotation이 길이를 보존하면서 방향만 바꾸는 변환으로 다뤄지고
+
+---
+
+점 둘을 빼야 비로소 “어느 방향으로 얼마나 떨어져 있는가”가 생겨요.
+점끼리는 보통 더하지 않아요.
+
+affine space에서는 원점이 본질이 아니고, 점들의 차이가 vector가 돼요
+
+즉 위치는 점, 이동은 벡터예요
+affine space가 “origin을 잊어버린 vector space”라는 설명이 나오는 이유가 바로 이것이에요
+
+우리가 실제로 사는 공간은 “원점이 우주적으로 박혀 있는 공간”이 아니라, 
+어느 점을 기준으로 잡아도 같은 공간이기 때문이에요.
+
+---
+
+점 A와 점 B가 있다
+→ 이 둘의 차이는 "A에서 B로 가는 이동"이다
+→ 이것이 벡터다
+
+“어디 있느냐”만이 아니라 “어떻게 이동하느냐”
+
+affine space와 vector space의 분리가 바로 그 구별을 보존해 줘요
+
+---
+
+scalar
+길이의 배율
+시간 같은 파라미터
+보간과 가중치
+
+“절반만 움직여라”, “3초 뒤의 위치”, “두 점의 중간” 같은 말
+
+공간수학의 최소 언어는
+점 + 벡터 + 스칼라에서 시작
+
+---
+
+기저 basis와 좌표 coordinates
+성분화 장치, 기록 장치
+
+어떤 기준축에 대한 성분으로 분해해서 기록해야
+
+벡터 v = x * e1 + y * e2 + z * e3
+
+여기서 중요한 것은 좌표는 본질이 아니라 번역본이라는 점
+본질은 벡터 자체(특정한 수로 포착되기 이전의 크기와 방향 자체)고, 
+좌표는 특정 basis에 대해 그 벡터를 적어 놓은 숫자표예요
+
+공간에는 (특정 수와 독립적으로 존재하는) 실재가 있다
+구체적 수로 다루려면 기준축이 필요하다
+좌표는 그 기준축에 대한 성분표다
+
+---
+
+길이, 각도, 수직성은 아직 없어요
+여기에 추가로 들어오는 것이 metric이고
+3D Euclidean 공간에서는 그것이 보통 dot product로 구현돼요
+
+dot product가 하는 일은 사실 세 가지예요.
+길이 측정
+각도 측정
+한 벡터가 다른 벡터 방향으로 얼마나 들어 있는지 측정
+
+공간에 **“가깝다/멀다”, “평행하다/수직이다”**라는 감각을 부여하는 장치예요.
+
+3D 공간을 다룬다
+형태를 유지하고, 거리와 각도를 비교하고, 투영하고, 충돌을 판단하는 것까지 포함
+
+길이와 각이 없으면 기하학은 거의 절반이 사라져요
+
+---
+
+orientation, 그리고 3D에서의 cross product
+
+dot은 “얼마나 같은 방향인가”는 말해 주지만
+어느 쪽으로 비틀렸는가, 어느 평면의 법선인가, 면적이 어느 방향을 향하는가는 말해 주지 못하기 때문
+
+여기서 들어오는 것이 orientation이고, 
+실전에서 그 대표 연산이 cross product예요
+두 벡터가 만드는 평면을 잡는다
+그 평면에 수직인 방향을 만든다
+그 크기로 면적적 성격까지 담는다
+
+cross는 **“3차원에서 수직인 방향을 하나 더 만들 수 있다”**는 공간의 특성을 언어로 만든 것이에요
+
+---
+
+점, 벡터, 길이, 각이 준비되면 이제 움직임과 변형을 다루고 싶어져요
+그때 필요한 것이 linear transformation이고, 
+이것을 계산 가능한 표로 적은 것이 matrix예요
+
+한 기저에서 다른 기저로, 
+혹은 한 좌표계에서 같은 벡터가 어떻게 보이는지를 기록하는 장치예요
+
+
+---
+
+회전 둘을 “그냥 더한다”라고 말하는 것은 보통 옳지 않아요
+회전은 합성되고, 역이 있고, 길이를 보존하는 특별한 변환들의 집합을 이루어요
+이 성질 때문에 회전은 단순한 vector space가 아니라 더 “굽은” 구조를 갖는 대상으로 다뤄져요
+
+---
+---
+---
+---
+---
+---
+
+
+the dot product doesn't change under rotation
+eigenvalues are invariant under similarity transformations
+the determinant measures something geometric that also survives these changes.
+Eigenvectors reveal the natural axes along which a transformation acts
+
+Rotations themselves form a Lie group
+you can't simply add two rotations, but you can compose them smoothly, 
+and this curved structure means angular velocity lives in the tangent space 
+while rotations themselves live on the manifold
+
+The dot product lets us identify vectors with linear functionals on vectors, 
+which is why normals transform differently than positions
+they're actually elements of the dual space, 
+and this is what the transpose-inverse rule for normals is really capturing.
+
+---
+
+matrices become dual
+either active transformations rotating the object, 
+or passive ones rotating the coordinate system
+
+This duality explains why the view matrix inverts the camera's transformation.
+
+---
+
+내가 기저 {e₁, e₂, e₃}를 선택해서 벡터 v를 (3, 1, 2)라고 기록했다. 
+너는 다른 기저 {f₁, f₂, f₃}를 선택해서 같은 벡터를 (2, -1, 4)라고 기록했다
+
+무엇이 변하고 무엇이 변하지 않는가?
+
+기저를 바꾸면 벡터의 좌표는 변해. 그런데 벡터 자체는 변하지 않아
+그것이 가리키는 방향과 크기는 공간 속에 그대로 있어. 
+이것이 좌표 변환(change of basis)의 본질이야
+
+기저가 바뀌면 좌표가 바뀌는데, 
+좌표 변화는 무작위가 아니라 정확히 기저 변환의 역(inverse) 으로 결정돼
+
+기저가 2배로 커지면, 좌표는 1/2이 되어야 같은 벡터를 표현한다. 
+기저와 좌표는 역방향으로 움직여
+
+기저와 같은 방향으로 변환되는 것들이 있고 (공변, covariant), 
+기저와 반대 방향으로 변환되는 것들이 있어 (반변, contravariant).
+기저가 커지면 좌표가 작아져
+
+그런데 면의 법선(normal)은 공변이야. 
+이것이 법선 벡터를 변환할 때 역전치(inverse transpose) 행렬을 써야 하는 이유야
+법선은 다른 종류의 객체거든
+
+이 구분은 좌표가 본질이 아니라는 것을 알았을 때만 보여
+
+---
+
+능동적(active) 해석
+공간 속의 물체를 실제로 이동시키는 것
+벡터 v를 받아서 다른 벡터 Mv를 돌려주는 것. 
+로봇 팔이 회전하는 것.
+
+수동적(passive) 해석
+물체는 그대로이고 좌표계를 바꾸는 것
+내가 카메라를 오른쪽으로 이동하면, 세계의 모든 것이 왼쪽으로 이동한 것처럼 보여. 
+물체는 안 움직였는데 좌표가 바뀌었어
+
+이 두 해석은 수학적으로 정확히 역(inverse) 관계야
+물체를 행렬 M으로 변환하는 것은, 좌표계를 M⁻¹으로 변환하는 것과 동일한 결과를 만들어
+
+이것이 UE의 뷰 행렬(View Matrix)이 카메라 트랜스폼의 역인 이유야
+
+카메라를 오른쪽으로 이동시키는 변환 T가 있을 때,
+같은 카메라 이동을 "세계가 왼쪽으로 이동"으로 표현하는 뷰 행렬은 T⁻¹이야
+
+이 이중성을 이해하지 못하면, "왜 뷰 행렬에 역행렬을 쓰는가"가 영원히 패턴 암기로 남아.
+
+---
+
+불변량 — 변환이 파괴하지 못하는 것들
+변환을 이야기했으면, 반드시 물어야 할 것이 있어 — 무엇이 보존되는가?
+
+기하학은 변환들의 집합이 아니라
+그 변환들이 보존하는 것들의 집합
+
+내적(dot product)의 스칼라 값은 회전에 대해 불변이야
+벡터의 좌표는 기저가 바뀌면 달라지지만
+두 벡터의 내적값은 달라지지 않아
+왜? 회전은 거리와 각도를 보존하는 변환이고, 내적은 정확히 거리와 각도를 담는 구조니까.
+
+행렬식(determinant)은 아핀 변환에 대해 부분적으로 불변이야
+두 행렬의 행렬식의 곱이 두 행렬 합성의 행렬식이 되는 성질 — det(AB) = det(A)det(B)
+
+물리학에서 "좌표계에 무관한 물리량"이 불변량이야
+어떤 관측자가 어떤 좌표를 쓰든 동의해야 하는 것들.
+에너지, 전하, 질량
+
+불변량이 없으면 두 표현이 같은 것을 말하고 있는지 알 수 없어.
+
+---
+
+행렬식 — 공간이 변환에 의해 얼마나 뒤틀리는가
+단위 정육면체를 행렬 M으로 변환했을 때 만들어지는 평행육면체의 부피
+이것이 |det(M)|이야
+det = 2라면 변환 후 부피가 2배. 
+det = 0이라면 변환이 공간을 더 낮은 차원으로 찌부러뜨린 것
+
+부호는 방향성(orientation)을 담아. 
+det > 0이면 변환이 오른손 좌표계를 오른손 좌표계로 보내. 
+det < 0이면 거울 반사가 포함돼
+
+이것이 UE에서 물체를 음수 스케일로 설정했을 때 법선이 뒤집히는 이유야. 
+거울 변환이 orientation을 뒤집기 때문이야
+
+det(AB) = det(A)det(B)는 이제 공식이 아니라 당연한 사실이야. 
+"A 변환으로 부피가 k배가 되고, B 변환으로 m배가 된다면, 연속 적용하면 km배가 된다."
+
+---
+
+어떤 변환에는 특별한 방향이 있어. 변환했을 때 방향은 유지되고 크기만 바뀌는 방향
+이 방향이 고유벡터(eigenvector)이고, 배율이 고유값(eigenvalue)이야.
+Mv = λv
+"이 벡터 v는 M에 의해 λ배 스트레칭될 뿐, 회전되지 않는다."
+
+회전 행렬의 고유값을 계산하면 복소수가 나와
+순수한 회전에는 실수 고유벡터가 없어
+방향을 유지한 채 크기만 바뀌는 방향이 존재하지 않아. 
+회전은 모든 방향을 틀어버리거든
+이것이 회전이 기하학적으로 특별한 이유의 또 다른 표현이야.
+
+반대로 대칭 행렬(symmetric matrix)은 항상 실수 고유값과 서로 수직인 고유벡터들을 가져
+물리학에서 관성 텐서가 대칭 행렬인 이유가 여기 있어
+관성 텐서의 고유벡터들이 물체의 주축(principal axes), 
+즉 회전시켜도 흔들리지 않는 자연스러운 회전축이야
+
+---
+
+회전의 공간은 왜 "굽어" 있는가
+두 회전을 "더하는" 것이 의미가 없어. 
+회전 A와 회전 B를 성분별로 더하면 회전이 아닌 다른 행렬이 나와.
+회전은 합성(composition) 되지, 더해지지 않아.
+
+이것이 회전의 집합이 벡터 공간이 아닌 이유야
+벡터 공간은 덧셈에 대해 닫혀 있어야 해.
+회전의 집합은 합성(곱셈) 에 대해 닫혀 있어
+
+두 회전을 합성하면 또 다른 회전이야. 
+역이 있어 (역회전). 항등원이 있어 (0도 회전). 결합법칙이 성립해. 
+이게 군(group) 의 구조야.
+
+그런데 회전의 군은 여기서 멈추지 않아
+회전을 "조금씩 연속으로" 할 수 있어
+0도에서 시작해서 90도까지 매끄럽게 회전하는 것.
+이 매끄러움이 회전의 군을 단순한 군이 아니라 
+Lie group 으로 만들어
+군이면서 동시에 매끄러운 다양체(manifold)인 것
+
+회전 자체 — SO(3)의 한 원소 — 는 구부러진 공간(manifold) 위에 있어
+그 공간의 어떤 한 점 (예: 항등 회전, 즉 "아무것도 안 한 상태")에서의 접평면(tangent space)은 완전히 평평한 벡터 공간이야
+이 접평면이 **Lie algebra**야.
+각속도는 리 대수에 산다
+
+접평면에서 다양체로 올라가야 해.
+이것이 지수 사상(exponential map)
+FQuat::Exp()가 그것이고, 역이 FQuat::Log()
+
+---
+---
+---
+
+
+Entity (Object)
+- 점
+- 벡터
+
+측정 (측도, Metric)
+- 길이
+- 각도
+- 면적 방향
+
+변환 (Group)
+- 좌표계 변화
+- 선형변환
+- 회전
+- 평행이동
+
+---
+
+공간은 원점이 없다
+→ 그래서 점과 벡터를 구분해야 한다
+
+벡터는 방향과 크기만 말한다
+→ 그래서 길이/각을 주는 metric이 필요하다
+
+길이/각만으로는 앞뒤, 비틀림, 면의 방향이 부족하다
+→ 그래서 orientation이 필요하다
+
+대상을 옮기고 돌리고 찌그러뜨리고 싶다
+→ 그래서 transformation language가 필요하다
+
+공간에 대해 더 많은 종류의 질문을 던질수록, 
+더 많은 언어가 필요해진 것이에요.
+
+---
+
+벡터
+원점 선택과 무관하게 의미를 갖는다
+두 점의 차이
+점에 벡터를 더해 새 점으로 갈 수 있어요
+
+점은 “어디”, 벡터는 “어떻게/얼마나”예요
+
+좌표는 그 이동을 특정 기저에 대해 숫자로 번역한 것이다
+
+벡터는 공간의 균질성에서 추출된 이동의 단위예요
+
+공간이 먼저 주는 것은 “원점”이 아니라 “균질성”이다
+공간은 본래 점들의 집합일 뿐, 스스로 원점을 품고 있지 않아요
+
+---
+
+Basis는 공간의 일부가 아니라, 공간을 읽기 위해 꽂아 넣은 측정용 골격이에요
+Coordinate는 실재가 아니라 보고서예요
+
+Affine space에 어떤 한 점을 기준점으로 고르고, 몇 개의 독립 방향을 고르면 각 점을 좌표로 쓸 수 있어요
+좌표는 공간의 “본래 이름”이 아니라, 선택된 frame에 대한 주소 체계예요
+
+좌표는 공간의 본질이 아니다.
+좌표는 기저와 원점을 고른 뒤에 생기는 번역본이다.
+벡터는 좌표보다 먼저 존재한다.
+
+---
+
+dot product는 “측정의 도입”이다
+
+벡터공간만으로는 길이와 각도가 없어요.
+inner product space는 벡터공간 위에 추가적인 측정 구조를 얹은 것이고
+Euclidean 공간에서는 그것이 dot product의 형태로 나타나요
+그러면 벡터의 길이, 두 벡터 사이의 각, 직교성이 정의돼요
+
+벡터만 있을 때 공간은 “갈 수 있는 방향들”의 체계이고,
+dot이 들어오는 순간 공간은 “비교 가능한 길이와 각도를 가진 세계”가 돼요.
+
+---
+
+Cross Product 의 본질은
+“두 벡터가 만드는 방향 있는 면”을
+3차원에서는 “하나의 법선 방향”으로 다시 읽어낼 수 있다는 데 있어요.
+
+---
+
+orientation
+오른손좌표계인가
+이 두 벡터쌍은 같은 감김인가
+이 삼각형의 앞면은 무엇인가
+
+공간 전체가 갖는 손잡이성 handedness의 문제
+
+Cross product가 오른손 법칙을 요구하는 것도
+수직 + 어느 쪽이 앞인가까지 함께 말하기 때문
+
+---
+
+행렬은
+공간 안에서 일어나는 선형변환이 기저에 대해 어떻게 보이는지를 적어 놓은 기록물
+
+행렬(숫자들) 자체가 실재가 아니고,
+실재는 (숫자들로 표현되기 이전의) 변환이에요.
+
+선형변환은 직선을 직선으로 보내고 원점을 보존해요
+행렬은 그 변환이 각 basis vector를 어디로 보내는지를 좌표로 적어 둔 것이에요
+
+좌표는 벡터의 번역본이고
+행렬은 변환의 번역본이다
+
+그래서 같은 변환도 basis를 바꾸면 다른 행렬로 보이고,
+다른 변환도 같은 basis에선 한 표로 기록돼요
+
+---
+
+**Pattern**
+추상적 개념에서 시작해서
+계산화의 결과로서 나타나는 수적 표현
+
+공간에서 공간으로 가는 사상 T가 있어. T는 어떤 기저를 선택하든 존재해 
+T는 공간의 구조 자체에 새겨진 것이야
+그런데 이것을 계산 가능하게 기록하려면(수로 표현) 기저를 선택해야 해
+그 선택의 결과물이 행렬이야
+
+---
+
+그러니까 같은 T가 기저 {e₁, e₂, e₃}에서는 행렬 A로 보이고, 
+다른 기저 {f₁, f₂, f₃}에서는 행렬 B로 보여. 
+A와 B는 다른 숫자들이지만 같은 사상이야
+이 관계를 B = P⁻¹AP로 쓰는데, 이것이 "닮음 변환"이야
+
+
+---
+
+기저 변환 — 같은 실재를 다른 언어로 말하기
+기저가 2배 커지면 좌표는 1/2이 되어야 같은 벡터를 표현해. 
+기저와 좌표는 역방향으로 움직여. 이것이 반변(contravariant)이야.
+
+그런데 법선 벡터(normal vector)는 다르게 움직여
+기저가 2배 커지면 법선도 2배가 되어야 해
+기저와 같은 방향으로 움직여. 이것이 공변(covariant)이야
+
+왜 법선이 다르게 움직이는가? 법선은 평면을 정의해 
+"이 평면에 수직인 방향"
+평면 자체가 기저의 변화에 어떻게 반응하는지 생각해보면, 
+법선은 다른 방식으로 변환되어야 한다는 게 기하학적으로 분명해져
+법선은 다른 종류의 수학적 객체 — 이중 공간(dual space)의 원소 — 이기 때문이야
+
+법선은 벡터가 아니라 코벡터(covector)다
+벡터가 화살표라면, 코벡터는 평행한 층(layer)이다.
+
+지형도의 등고선을 생각해봐
+등고선은 방향이 없어
+그런데 벡터(이동 방향)가 등고선을 몇 개 가로지르는지 세면 — 그것이 내적이야
+벡터와 코벡터가 짝을 이루면 스칼라가 나와
+
+A·B를 "벡터 B를 코벡터 A에 집어넣어 스칼라를 얻는 행위"로 읽을 수 있어
+내적 공간(inner product space)은 벡터와 코벡터 사이에 자연스러운 동형사상을 제공하는 구조야 
+공간이 non-uniform하게 늘어날 때 (non-uniform scale, curved space) 이 구분이 터져 나와.
+
+---
+
+행렬식은 변환이 부피를 얼마나 바꾸는가다. 
+단위 정육면체를 이 변환으로 보냈을 때 만들어지는 평행육면체의 부피.
+
+det = 0인 행렬이 역행렬을 갖지 않는 이유
+변환이 공간을 더 낮은 차원으로 찌부러뜨렸어
+손실된 정보를 복원할 수 없어
+
+det(AB) = det(A)det(B)인 이유
+"A 변환으로 부피가 k배, B 변환으로 m배가 된다면, 연속 적용하면 km배다." 자명해.
+
+det < 0
+부피의 방향성 orientation이 뒤집혔어
+오른손 좌표계가 왼손 좌표계가 됐어
+음수 스케일을 가진 물체의 법선이 뒤집히는 이유가 여기 있어
+
+---
+
+고유벡터는 변환이 방향을 보존하는 특별한 축이다
+변환은 공간을 뒤틀어. 대부분의 방향이 바뀌어
+그런데 어떤 특별한 방향들은 크기만 바뀌고 방향은 살아남아
+
+회전 행렬의 고유벡터를 구하면 실수 해가 없어. 왜? 순수한 회전은 어떤 방향도 살려두지 않아
+
+반대로, 대칭 행렬(symmetric matrix)은 항상 실수 고유값과 서로 수직인 고유벡터들을 가져
+관성 텐서가 대칭인 이유가 있어 — 물체의 질량 분포를 나타내는 것이기 때문에 
+"어느 방향에서 보아도 같은 물리적 대상"이야
+
+---
+
+내적은 세 가지 다른 질문에 동시에 답한다. 
+그리고 이 세 질문이 같은 연산으로 수렴한다는 것이 Euclidean 공간의 특별함이다.
+
+A와 B는 얼마나 같은 방향인가? → A·B의 부호와 크기.
+A의 길이는 얼마인가? → A·A = |A|².
+B 방향으로 A가 얼마나 들어있는가 (투영)? → A·B̂ (B의 단위벡터와의 내적)
+
+Euclidean 공간은 거리와 각도가 같은 구조에서 나와
+이 공간에서 "가깝다"와 "같은 방향이다"는 분리할 수 없어
+내적이 그 통합을 표현해
+
+내적이 존재한다는 것은 공간에 metric이 있다는 것이야
+Metric이 없는 공간에서는 "거리"도, "각도"도, "수직"도 없어
+위상 공간(topological space)이 그런 공간이야
+열리고 닫힘만 있지 거리는 없어. 내적을 추가하는 순간 위상 공간이 기하학적 공간이 돼.
+
+---
+
+직교 분해는 공간을 두 개의 독립된 부분 공간으로 쪼개는 유일한 방법이다
+"수직"이 바로 "독립"의 기하학적 표현이다.
+
+벡터 v를 방향 n̂으로 분해한다는 것은: v = (v·n̂)n̂ + (v - (v·n̂)n̂).
+첫 번째 항은 n̂ 방향 성분, 두 번째 항은 n̂에 수직인 성분. 이 둘이 내적이 0이라는 것이 핵심이야
+수직인 두 성분은 서로에게 완전히 무관해
+
+---
+
+군은 "일관된 변환들의 집합"이 필연적으로 갖추게 되는 구조다
+조건들이 공리가 아니라 결과야
+
+두 변환을 연속으로 하면 또 다른 변환이야 — 닫힘
+세 변환의 연속 적용은 어떤 순서로 묶어도 같아 — 결합법칙
+아무것도 하지 않는 변환이 있어 — 항등원
+모든 변환에는 되돌리는 변환이 있어 — 역원 
+
+---
+
+회전을 "조금씩" 할 수 있다는 사실이 회전의 군에 미분 구조를 부여한다
+이 매끄러움이 리 군이다
+그 매끄러움의 "무한소 버전"이 리 대수다
+
+군에 매끄러움이 더해지는 순간,
+"아주 조금 회전했을 때 어떻게 변하는가"를 물을 수 있어. 
+이 물음이 미적분학이야.
+
+리 대수는 항등원 근방의 접평면이야
+항등 회전 (아무것도 안 한 상태) 에서 "아주 조금 회전한다"는 것의 방향들이 접평면을 이루어
+이 접평면은 벡터 공간이야 — 평평해
+회전의 군 자체는 구부러진 다양체지만, 
+그 한 점 근방에서는 평평한 벡터 공간이 근사해.
+
+각속도가 FVector인 이유가 여기서 온다
+각속도는 "아주 짧은 시간 동안의 무한소 회전" — 리 대수의 원소야
+리 대수는 벡터 공간이니까 각속도는 벡터로 표현돼
+방향이 회전축, 크기가 초당 라디안
+
+---
+
+지수 사상은 접평면(리 대수)에서 다양체(리 군)로 올라가는 유일한 자연스러운 방법이다
+"무한소 회전을 쌓아 유한한 회전을 만든다."
+
+스칼라에서 eˣ = 1 + x + x²/2! + x³/3! + ... 인 것처럼, 
+행렬에서도 e^M = I + M + M²/2! + M³/3! + ...이 정의돼.
+
+이것이 수렴하고, 결과가 항상 SO(3) 위에 있어.
+
+현재 방향 q, 각속도 ω, timestep dt. 
+다음 방향 = q * Exp(ω * dt / 2). 
+이것이 substep 적분의 수학적 실체야
+
+---
+---
+---
+
+벡터공간만으로는 “더하기”와 “배율”은 되지만,
+아직 길이, 각도, 수직성, 직교투영, 최단거리는 없어요
+
+inner product는 실수 벡터공간에서는 대칭적이고 쌍선형이며 양의 정부호인 형식으로 정의
+dot product는 그 표준
+
+벡터공간이 주는 것은 두 개예요
+벡터를 더할 수 있다
+벡터를 스칼라배할 수 있다
+
+이 두 연산만으로도
+“변위를 합성한다”,
+“두 배로 늘린다”,
+“중간점을 잡는다”,
+“직선과 평면 같은 선형 구조를 만든다”
+까지는 할 수 있어요.
+
+그런데 여전히 이런 질문에는 답을 못 해요.
+이 벡터의 길이는 얼마인가?
+두 벡터는 얼마나 기울어져 있는가?
+서로 수직인가?
+어느 벡터가 다른 벡터 안에 얼마나 들어 있는가?
+가장 가까운 직교 그림자는 무엇인가?
+
+즉 벡터공간은 변화의 조합은 말하지만,
+아직 관계의 측정은 말하지 못해요.
+
+---
+
+inner product space는 벡터들 사이에 “숫자로 환원되는 관계”를 부여한 벡터공간이에요
+벡터 두 개를 넣으면 스칼라 하나가 나와요.
+“얼마나 같은 방향인가”,
+“얼마나 겹치는가”,
+“얼마나 서로 들어 있는가”
+를 측정하는 관계량이에요.
+
+---
+
+각 인자에 대해 선형적이다
+순서를 바꾸면 같거나, 복소수의 경우 켤레가 붙는다
+자기 자신과의 값은 항상 0 이상이고, 0이 되는 것은 영벡터뿐이다
+
+각 조건은 “측정”이 되려면 거의 피할 수 없이 따라오는 요구예요
+
+---
+
+“두 벡터의 관계를 하나의 숫자로 요약하고 싶은데,
+그 숫자가 기하적으로 믿을 만한 의미를 가져야 한다.”
+
+(1) 합에 대해 잘 반응해야 해요
+벡터 u+v가 있으면, 그것이 w와 맺는 관계는
+u와 w의 관계, v와 w의 관계가 자연스럽게 합쳐진 것이어야 해요.
+
+즉 관계량은 additive해야 해요.
+그래서 선형성이 나와요.
+
+(2) 배율에 대해 잘 반응해야 해요
+벡터를 두 배 늘리면, 그 벡터가 다른 벡터와 맺는 관계량도 두 배가 되어야 자연스러워요.
+즉 관계량은 homogeneous해야 해요.
+
+(3) 자기 자신과의 관계는 길이를 낳아야 해요
+벡터 v와 v의 관계량은 음수가 되면 안 돼요.
+즉 자기 관계는 크기의 제곱 같은 역할을 해야 해요.
+
+---
+
+4-1. 길이
+dot product의 형태는 다음 원초적 개념들의 결합이에요
+
+||v|| = sqrt(<v,v>)
+
+즉 길이는 별도로 주어지는 것이 아니라,
+자기 자신과의 관계값에서 추출돼요
+
+4-2. 각도
+관계량 = 크기 × 정렬 정도
+u·v = ||u|| ||v|| cos θ
+
+길이 효과는 ||u|| ||v||,
+방향 일치 효과는 cos θ예요.
+
+4-3. 투영
+dot = 방향 일치도의 측정
+dot = 한 벡터 안에 다른 벡터 방향 성분이 얼마나 들어 있는가의 측정
+
+---
+
+“좌표축별 기여를 따로 계산한 뒤 더할 수 있어야 한다”는 요구
+
+관계량 <u,v>도 각 축 기여의 합으로 계산되어야 자연스러워요.
+그렇지 않으면 분해해서 계산하는 선형대수 전체가 무너져요.
+
+공간의 관계를 성분 분해와 조합이라는 선형적 사고와 호환시키려는 요구
+
+---
+
+실수 공간에서 <u,v> = <v,u>라는 대칭성은
+이 관계량이 “u가 v를 보는 값”과 “v가 u를 보는 값”이 같은 종류의 관계량임을 뜻해요
+
+길이와 각의 관계는 본질적으로 상호적이니까요.
+
+u가 v와 이루는 각
+v가 u와 이루는 각
+은 같은 각이에요.
+
+그래서 dot product는 대칭적이어야 해요
+복소수 공간에서는 위상이 개입해서 완전한 대칭 대신 켤레대칭이 필요해져요
+
+---
+
+<v,v>가 음수일 수 있다면,
+거기서 길이를 뽑아낼 수 없어요.
+
+<v,v> = 0인데도 v ≠ 0이 가능하면,
+“길이가 0인데 사라지지 않는 벡터”가 생겨요.
+그건 Euclidean 의미의 측정과 맞지 않아요.
+
+이 관계량이 실제로 길이의 근원이 되려면 필요한 최소한의 안전장치
+
+---
+
+좌표형 x1y1 + x2y2 + x3y3
+이 식은 본질이 아니고, 특별히 좋은 좌표계에서 본 표현이에요.
+
+직교정규기저를 잡으면,
+
+각 축은 서로 수직이고
+각 축의 길이는 1이에요.
+
+그래서 서로 다른 축끼리의 섞임은 사라지고,
+같은 축끼리의 기여만 남아요.
+
+기저가 바뀌면 이 단순한 모양은 깨질 수 있어요.
+그때는 Gram matrix가 끼어들어요.
+
+dot product의 좌표형은 좋은 기준틀에서의 단순화된 얼굴이에요
+
+---
+---
+---
+
+"얼마나 같은 방향인가"를 측정하는 함수 ⟨A, B⟩ → 스칼라를 설계한다고 해보자
+이것이 측정으로서 의미를 갖기 위해 어떤 조건이 필요한가?
+
+쌍선형성 (bilinearity)
+벡터를 2배로 늘리면 측정값도 2배가 되어야 해
+⟨2A, B⟩ = 2⟨A, B⟩
+스케일에 일관되지 않은 측정은 측정이 아니야
+두 벡터를 합쳤을 때 각각의 측정값의 합과 같아야 해
+
+대칭성 (symmetry)
+⟨A, B⟩ = ⟨B, A⟩. "A가 B 방향을 얼마나 향하는가"와 "B가 A 방향을 얼마나 향하는가"가 같아야 해
+순서가 결과를 바꾼다면, 그것은 방향들 사이의 관계가 아니라 방향에 할당된 무언가가 측정되는 거야
+대칭성은 측정의 대상이 "관계" 자체임을 보장해
+
+positive definiteness
+⟨A, A⟩ ≥ 0, 등호는 A = 0일 때만
+벡터가 자기 자신과 얼마나 같은 방향인가 — 이것이 길이의 제곱이야
+
+---
+
+코시-슈바르츠
+positive definiteness이 각도를 낳는다
+
+"길이는 항상 양수다"라는 조건 하나가, "⟨A, B⟩ / (‖A‖‖B‖)는 항상 [-1, 1] 안에 있다"를 강제해
+그리고 [-1, 1] 안의 값은 코사인으로 읽을 수 있어
+
+‖A - tB‖² ≥ 0
+‖A‖² - 2t⟨A, B⟩ + t²‖B‖² ≥ 0
+4⟨A, B⟩² - 4‖A‖²‖B‖² ≤ 0
+⟨A, B⟩² ≤ ‖A‖²‖B‖²
+|⟨A, B⟩| ≤ ‖A‖·‖B‖
+
+---
+
+거리와 각도는 하나다 — 편광 항등식 Polarization Identity
+
+거리와 각도는 하나의 구조의 두 얼굴이다
+거리만 알아도 각도를 복원할 수 있고, 
+각도와 하나의 길이만 알아도 모든 거리를 복원할 수 있다
+이 둘은 분리된 개념이 아니라 같은 것을 다른 방향에서 읽는 것이다.
+
+⟨A, B⟩ = ¼(‖A + B‖² - ‖A - B‖²)
+두 벡터의 내적은 네 개의 길이 — ‖A+B‖, ‖A-B‖, ‖A‖, ‖B‖ — 로부터 완전히 복원 가능해
+
+내적을 직접 계산하지 않아도, 길이들만 알면 내적을 알 수 있어
+내적을 알면 각도를 알 수 있어
+
+거리만 알면 → 내적을 알고 → 각도를 안다.
+
+반대 방향도 마찬가지야
+
+각도와 하나의 길이를 알면 → 내적을 알고 → 모든 거리를 안다
+
+더 일반적인 거리 공간 (metric space)에서는 이 복원이 불가능해
+거리가 있어도 각도가 정의되지 않는 공간이 있어
+Euclidean 공간은 거리가 내적으로부터 나오는 특별한 경우야
+
+‖A + B‖² + ‖A - B‖² = 2(‖A‖² + ‖B‖²)
+
+---
+
+Euclidean 거리는 가능한 많은 거리 구조들 중 특별한 하나다
+Euclidean은 그 중에서 내적에서 유도된, 그리고 모든 점에서 균일한 특수한 경우다
+
+거리 공간 (metric space)의 조건
+자기 자신까지의 거리는 0
+거리는 대칭적
+삼각 부등식: d(A, C) ≤ d(A, B) + d(B, C).
+
+택시 기하학 (격자를 따라 이동하는 거리), 구면 위의 대원 거리, 쌍곡면의 거리
+
+---
+
+Euclidean 공간의 내적은 어디서나 같아
+이것이 "평평함 (flatness)"의 수학적 정의야.
+
+구면 위에서는 내적 구조가 점마다 달라
+극점 근방과 적도 근방에서 "거리의 느낌"이 달라
+이것이 리만 계량 (Riemannian metric)이야
+각 점에서의 접평면에 내적이 있는데, 그 내적이 점에 따라 부드럽게 변해
+Euclidean은 이 리만 계량이 모든 점에서 동일한 특수 경우야
+
+---
+
+벡터 공간에 내적이 없어도 있는 것
+선형 독립, span, 부분 공간, 기저, 차원
+이것들은 측정이 아니라 구조의 언어야
+
+내적을 추가하면 새로 생기는 것
+길이, 각도, 수직성, 투영, 직교 기저
+
+더 나아가 topology만 있고 내적이 없는 공간
+연속성, 열린 집합, 닫힌 집합, 연결성
+변환이 "연속인가"는 말할 수 있지만 "얼마나 이동했는가"는 말할 수 없어.
+
+선형 독립은 내적 없이 있어 → 내적에 의존하지 않아 → 좌표 선택과 무관한 개념이야.
+수직성은 내적에 의존해 → 내적 없이는 정의 불가 → 어떤 내적을 선택하느냐에 따라 달라지는 개념이야.
+
+거울 반사가 가능한지는 내적 없이도 말할 수 있어 (orientation의 문제야). 
+그런데 "얼마나 회전했는가"는 내적이 있어야 말할 수 있어.
+
+---
+
+임의의 기저에서 좌표 계산은 연립방정식이다
+직교 기저에서 좌표 계산은 내적 하나다
+이 차이가 직교 기저를 "자연스러운" 기저로 만드는 이유다.
+
+임의의 기저 {v₁, v₂, v₃}가 있어. 벡터 w를 이 기저로 표현하고 싶어:
+w = a₁v₁ + a₂v₂ + a₃v₃
+
+a₁, a₂, a₃를 구하려면 세 개의 연립방정식을 풀어야 해. 
+기저 벡터들이 서로 얽혀 있기 때문이야
+
+기저가 직교하면: ⟨vᵢ, vⱼ⟩ = 0 (i ≠ j). 이 경우 양변에 vᵢ의 내적을 취하면:
+⟨w, vᵢ⟩ = aᵢ⟨vᵢ, vᵢ⟩ = aᵢ‖vᵢ‖²
+
+따라서 aᵢ = ⟨w, vᵢ⟩/‖vᵢ‖². 
+연립방정식 없이 내적 하나로 각 성분이 독립적으로 나와.
+
+기저가 정규 직교(orthonormal)하면 ‖vᵢ‖ = 1이니까 
+aᵢ = ⟨w, vᵢ⟩. 더 단순해져.
+
+이것이 Fourier 급수의 구조야
+함수를 사인/코사인 함수들의 선형 결합으로 표현할 때,
+각 계수가 내적 (적분) 하나로 나오는 이유
+sin과 cos이 직교 기저이기 때문이야
+
+---
+
+Gram-Schmidtt는 "아직 기존 방향들에 포착되지 않은 새로운 성분만 남긴다"는 반복이다
+각 단계가 직교 분해의 한 번 적용이야.
+
+첫 번째 벡터 v₁을 그냥 받아. 정규화해서 e₁ = v₁/‖v₁‖을 만들어.
+두 번째 벡터 v₂에서 "이미 e₁ 방향에 있는 성분"을 제거해:
+v₂' = v₂ - ⟨v₂, e₁⟩e₁
+남은 v₂'는 e₁에 수직이야. 정규화하면 e₂.
+세 번째 벡터 v₃에서 "이미 e₁, e₂ 방향에 있는 성분"을 제거해:
+v₃' = v₃ - ⟨v₃, e₁⟩e₁ - ⟨v₃, e₂⟩e₂
+
+각 단계에서 "이미 말해진 것"을 빼고 "아직 말해지지 않은 것"만 남겨
+직교성이 곧 독립성이기 때문에, 이 과정이 "진짜 새로운 정보"만 추출하는 거야.
+
+---
+---
+---
+---
+---
+---
+
+실재가 먼저 있고,
+그 실재 위에 구조가 얹히고,
+그 구조를 계산 가능하게 적기 위해 표현이 생기고,
+표현이 바뀌어도 살아남는 것이 불변량이에요.
+
+실재 Entity
+→ 구조 Structure
+→ 표현 Representation
+→ 불변량 Invariant
+→ 계산 Law
+
+벡터는 실재예요.
+inner product는 그 벡터들 사이에 길이와 각을 부여하는 구조예요.
+좌표는 특정 기저를 골랐을 때 생기는 표현이에요.
+길이, 각, 직교성은 기저를 바꿔도 의미가 살아남는 불변량이에요.
+dot product 공식은 그 구조를 수로 계산하는 법이에요
+
+---
+
+벡터는 수가 아니다.
+벡터는 수로 표현될 수 있는 실재다.
+좌표는 그 실재의 한 번역본이다.
+
+행렬은 그 T 가 각 basis vector를 어디로 보내는지를 선택된 기저에 대해 적어 놓은 기록물이에요
+similar matrices는 같은 선형변환을 서로 다른 기저에서 본 것
+
+즉 행렬 자체가 본체가 아니고,
+본체는 변환이에요
+
+---
+
+일반 기저에서는 중간에 Gram matrix가 끼어요
+직교정규기저에서는 Gram matrix가 항등행렬이 되어서 inner product가x1y1+x2y2+x3y3​같은 단순한 dot product 모양
+좋은 좌표계에서의 단순화된 얼굴
+
+---
+
+Dual space  𝑉 ∗ V  ∗   는  𝑉 V 에서 실수로 가는 선형함수들의 공간이에요
+
+---
+
+Dual space 𝑉∗는 𝑉에서 실수로 가는 선형함수들의 공간이에요
+즉 코벡터는 벡터를 입력받아 숫자를 내놓는 존재예요
+기저 v1,…,vn이 있으면, vi∗(vj)=δijvi∗​(vj​)=δij​ 를 만족하는 dual basis가 생겨요
+
+---
+---
+---
+
+내적의 본체는 ⟨·,·⟩
+
+임의의 기저 {e₁, e₂, e₃}를 선택한다. 이 기저 벡터들이 서로 수직이 아닐 수도 있고, 길이가 1이 아닐 수도 있어.
+그러면 내적값을 계산하기 위해 기저 벡터들 사이의 모든 내적을 미리 기록해둬야 해
+Gᵢⱼ = ⟨eᵢ, eⱼ⟩
+이것이 Gram 행렬이야. 3×3 행렬인데, 각 성분이 "기저 벡터 i와 기저 벡터 j 사이의 관계"를 담아
+
+벡터 u, v의 좌표가 이 기저에서 각각 (u¹, u², u³), (v¹, v², v³)이면:
+⟨u, v⟩ = uᵀGv = Σᵢⱼ Gᵢⱼ uⁱ vʲ
+
+직교정규기저에서는 Gᵢⱼ = δᵢⱼ (i=j이면 1, 아니면 0), 즉 G = I야.
+그래서 공식이 x₁y₁ + x₂y₂ + x₃y₃으로 단순해지는 거야
+
+---
+
+쌍대 공간
+
+열 벡터는 벡터의 좌표 표현이고, 
+행 벡터는 코벡터(선형 범함수)의 좌표 표현이다
+V → ℝ인 선형 함수
+벡터를 받아서 실수 하나를 내놓는 기계
+이것이 쌍대 공간 V*의 원소야.
+
+---
+
+텐서 — 패턴의 완전한 일반화
+"벡터를 여러 개 받아 스칼라를 내놓는 다중선형 함수"
+
+벡터, 코벡터, 행렬이 전부 텐서의 특수한 경우다
+
+스칼라는 (0,0)-텐서 — 아무것도 받지 않고 숫자 하나를 내놓아.
+벡터는 (0,1)-텐서 — 코벡터 하나를 받아 스칼라를 내놓아 (선형으로).
+코벡터는 (1,0)-텐서 — 벡터 하나를 받아 스칼라를 내놓아.
+행렬(선형 사상)은 (1,1)-텐서 — 벡터 하나를 받아 벡터 하나를 내놓아.
+내적 ⟨·,·⟩는 (0,2)-텐서 — 벡터 두 개를 받아 스칼라를 내놓아 (대칭적으로).
+관성 텐서는 (0,2)-텐서 — 각속도 두 개를 받아 스칼라(운동에너지)를 내놓아.
+
+추상: T(v₁, ..., vₚ, f₁, ..., fᵧ) → ℝ인 다중선형 함수.
+
+---
+
+외적(Outer Product)
+
+모든 행렬은 rank-1 행렬들의 합이다
+Rank-1 행렬은 열 벡터와 행 벡터의 쌍에서 만들어지는 가장 단순한 선형 사상이다
+
+(u⊗fᵀ)(v) = u · f(v) = u · (fᵀv)
+
+v를 받아 f(v)라는 스칼라를 계산하고, 그 스칼라를 u에 곱해서 내놓아. 
+이 사상은 "v를 f 방향으로 투영하고, 그 크기로 u를 스케일한다"는 의미야.
+
+---
+---
+---
+---
+---
+---
+
+같은 출력으로 가는 입력들의 묶음
+fiber
+
+예를 들어 norm ‖·‖ 에서 같은 길이를 가진 모든 벡터는 같은 fiber에 들어가요
+즉 길이 함수는 공간을 “반지름이 같은 껍질들”로 쪼개요.
+
+선형사상은 벡터공간의 문법을 존중하고
+등거리사상은 metric의 문법을 존중하고
+smooth map은 미분가능성의 문법을 존중하고
+Lie group homomorphism은 군 구조를 존중해요
+
+---
+
+두 집합 A, B가 있을 때, 관계는 그냥 A × B의 부분집합이야
+어떤 구조도 없어
+a가 여러 b와 관련될 수 있고, b가 여러 a와 관련될 수 있고, 아예 관련이 없을 수도 있어.
+
+함수는 이 무정부 상태에 하나의 규율을 추가한 것이야:
+A의 모든 원소 a에 대해, 정확히 하나의 b가 대응한다.
+
+함수는 "A를 알면 B가 완전히 결정된다"는 선언이다
+일반 관계에서 a는 여러 b와 관련될 수 있어 — a를 알아도 b가 하나로 좁혀지지 않아
+
+물리 법칙이 함수인 이유가 여기 있어
+"시간 진화가 함수다"라는 선언
+함수성은 예측 가능성의 수학적 조건이야.
+
+---
+
+함수는 비대칭이다 — 그 비대칭이 방향성을 낳는다
+f: A → B는 A에서 B로 가는 화살표야. 
+이 화살표는 방향이 있어. f: B → A는 다른 함수야.
+
+원인을 알면 결과가 결정되지만, 
+결과를 알아도 원인이 유일하게 결정되지 않는 경우가 대부분이야
+
+f: A → B가 단사가 아니면 — 즉 서로 다른 두 원소가 같은 값으로 보내진다면 — 역방향 결정이 불가능해.
+함수는 정의역을 동치류로 분할한다
+
+"같은 값으로 보내지는 것들"이 하나의 동치류를 이루고
+함수는 이 분할의 구조다
+
+행렬식 det: 같은 행렬식 값을 갖는 행렬들이 하나의 역상을 이루어. 
+이 역상 안에서 행렬들은 det에게 구분 불가능한 존재야. 
+det는 "부피 배율"이라는 관점에서 세상을 보는 함수야
+그 관점에서 보이지 않는 모든 차이를 망각해.
+
+---
+
+합성은 추론의 전달이야
+f: A → B, g: B → C가 있으면 g∘f: A → C가 존재해
+"A를 알면 B를 안다" + "B를 알면 C를 안다" = "A를 알면 C를 안다"
+
+항등 함수 id: A → A:
+"A를 알면 A를 안다"는 자명한 추론이지만, 이것을 명시적으로 표현해야 합성의 구조가 완성돼
+id가 없으면 함수들의 합성이 군이나 카테고리를 이루지 못해.
+
+---
+
+고정점은 f(x) = x를 만족하는 점
+함수가 공간 전체를 움직이려 해도 움직이지 않는 점
+Brouwer 정리
+컵 안의 커피를 아무리 저어도, 처음 있던 자리 그대로인 점이 최소 하나 존재해.
+연속적인 움직임은 공간 전체를 완전히 뒤섞을 수 없어
+
+다음 프레임에서도 같은 상태인 점. 모든 equilibrium이 고정점이야.
+
+---
+
+함수 공간
+A에서 B로 가는 모든 함수들의 집합 Bᴬ
+
+자기 참조
+f: A → 2^A. 집합 A에서 A의 부분집합들의 집합(멱집합)으로 가는 함수.
+칸토어의 정리: 이 함수는 전사일 수 없어
+괴델의 불완전성 정리, 튜링의 정지 문제 불가능성 정리가 모두 이 대각선 논법의 변주야
+"함수가 자기 자신을 완전히 기술할 수 없다"는 수학적 사실의 다른 얼굴이야.
+
+---
+
+길이 함수 ‖·‖
+벡터의 수많은 차이를 지워 버려요
+
+방향 차이: 대부분 사라져요
+부호 차이: 사라져요
+회전 차이: 사라져요
+오직 크기만 남아요
+
+입력 세계의 차이들을 선별해서
+어떤 차이는 보존하고, 어떤 차이는 붕괴시키는 기계
+
+이 벡터는 저 벡터와 다르다
+그런데 함수 f: X → Y가 생기면,
+이 차이들 중 일부는 살아남고 일부는 죽어요.
+
+
+---
+
+Pitch만 바꿨다
+→ 내부에서는 “새 회전 상태”가 만들어진다
+→ 그 회전 상태를 다시 Yaw, Pitch, Roll로 재분해해서 표시한다
+→ 그 과정에서 Yaw와 Roll 값도 같이 바뀐 것처럼 보일 수 있다
+
+즉 바뀐 것은 먼저 회전 자체이고,
+숫자 세 개는 그 회전을 사람이 읽기 좋게 다시 서술한 결과예요.
+
+회전도 오일러 각보다 먼저 있어요.
+오일러 각은 회전의 본체가 아니라, 
+회전을 특정 규칙으로 숫자화한 보고서예요.
+
+같은 회전
+→ 서로 다른 Euler triple로 표현 가능
+
+예를 들어 영상에서 보인 값처럼
+
+(Yaw, Pitch, Roll) = (0°, 50°, 0°) 와
+(180°, 130°, 180°)
+
+는 같은 orientation을 나타낼 수 있어요.
+즉 숫자는 크게 달라졌지만, 공간 속 자세는 같아요.
+
+오일러 각의 비유일성이에요.
+같은 회전을 여러 개의 (Yaw, Pitch, Roll) 삼중항으로 쓸 수 있어요.
+
+오일러 분해의 특이점/민감성
+
+같은 회전을 다시 Euler로 풀어 쓰는 과정에서 숫자가 그렇게 보인 것이에요
+회전은 SO(3) 위의 한 점 같은 것이고,
+오일러 각은 그 회전을 평평한 숫자 3개로 펴서 적는 좌표계예요.
+
+회전의 본체를 믿고
+Euler 숫자 세 개는 보조 표기로만 봐야 해요
+힌지/관절/뚜껑 같은 것은 “한 축 angle 변수”로 따로 관리하는 편이 직관적이에요
+
+Pitch를 바꿨는데 Yaw와 Roll도 바뀐다
+= 오브젝트가 실제로 세 축 다 따로 돈다는 뜻이 아니라
+= 같은 회전을 Euler 각으로 다시 적는 과정에서 다른 동치 표현으로 점프한 것
+
+Unreal의 TRotator는 각도를 degrees로 저장하고, 
+회전을 Yaw → Pitch → Roll 순서의 intrinsic rotation으로 해석해요
+
+반면 Transform의 회전은 내부적으로 quaternion으로 다뤄져요. 
+즉, 에디터는 사람이 보기 쉽게 Rotator를 보여주지만, 
+내부의 “진짜 회전 상태”는 quaternion 쪽에 더 가깝다고 보는 편이 맞아요
+
+
+---
+
+TRotator::Vector()는
+“Convert a rotation into a unit vector facing in its direction”
+그 회전이 만들어 내는 forward unit vector를 반환
+
+회전 R
+→ 기준 forward 축 e = (1, 0, 0)을 돌린다
+→ 결과 방향 벡터 v = R(e)
+
+회전은 공간 전체를 돌리는 사상이지만, 
+그 사상에 특정 기준축 하나를 집어넣으면 결과로 벡터 하나가 나오죠.
+
+
+
+EyeRotation.Vector()의 내부 공식:
+X = cos(Pitch) * cos(Yaw)
+Y = cos(Pitch) * sin(Yaw)
+Z = sin(Pitch)
+
+Roll이 없어. 사라졌어
+
+FRotator는 SO(3)의 원소야. 3개의 자유도를 가진 회전
+.Vector()는 이 회전을 단위 전방 벡터 (1, 0, 0)에 적용한 결과야
+
+R · (1, 0, 0) → S²
+
+결과가 단위 구면(S²) 위의 점이야
+
+---
+
+SO stands for Special Orthogonal
+mathematical object
+
+회전을 정의하려면 무엇을 보존하는 변환인가로 접근해야 해
+
+거리 — 회전하면 물체의 형태가 바뀌지 않아. 두 점 사이의 거리가 그대로야
+원점 — 회전은 원점을 제자리에 놓아둬. 평행이동은 원점을 움직이지만 회전은 안 움직여
+
+이 두 조건을 만족하는 선형 변환을 직교 변환(orthogonal transformation) 이라고 해
+
+⟨Rv, Rw⟩ = ⟨v, w⟩
+RᵀR = I
+
+전치행렬이 역행렬과 같은 행렬. 
+이것이 직교 행렬(orthogonal matrix)의 정의야.
+직교 행렬들의 집합을 O(n)이라고 써 — Orthogonal group.
+
+그런데 O(n)에는 두 종류가 있어
+RᵀR = I를 만족하는 행렬에는 두 가지 종류가 있어.
+
+det(RᵀR) = det(I) = 1
+det(Rᵀ)det(R) = 1
+det(R)² = 1
+det(R) = +1 또는 -1
+
+det = +1: 순수한 회전. 오른손 좌표계를 오른손 좌표계로 보내. Orientation을 보존해
+det = -1: 회전 + 거울 반사. 오른손 좌표계를 왼손 좌표계로 뒤집어.
+
+SO(n)은 O(n)에서 det = +1인 것들만 모은 집합이야.
+Special Orthogonal — Special이 "행렬식이 +1"이라는 뜻이야
+거울 반사를 제외하고 순수한 회전만 남긴 것.
+
+집합으로서: 3D 공간의 모든 순수 회전들의 모임. 원점을 고정하고 거리를 보존하며 orientation을 유지하는 모든 변환들.
+군(group)으로서: 두 회전을 합성하면 회전이야. 역회전이 있어. 항등 회전(아무것도 안 함)이 있어. 결합법칙 성립.
+다양체(manifold)로서: 회전을 "조금씩" 연속으로 할 수 있어. 0도에서 90도까지 매끄럽게 돌아가는 것처럼
+
+---
+
+Maya    : 1 unit = 1 cm (영화/VFX 업계 표준)
+Blender : 1 unit = 1 m (건축/시각화 업계 표준)
+3ds Max : 1 unit = 1 inch (미국 산업 설계 전통)
+UE      : 1 unit = 1 cm
+
+그래서 Blender에서 사람 키를 1.8 units로 모델링한 에셋을
+UE에 그냥 임포트하면 1.8cm 난쟁이가 돼. 
+Blender 1m = UE 1cm이니까. 
+반대로 Maya에서 만든 에셋은 단위가 같아서 바로 맞아.
+
+Blender 저작자는 "1 unit = 1m"라는 기저를 선택했어
+UE는 "1 unit = 1cm"라는 기저를 써
+
+원점은 의미 있는 지점에 
+유니티나 UE에서 배치할 때 자연스럽게 놓이는 위치. 
+건물 바닥 중앙, 무기 손잡이 중앙, 탈것의 무게중심.
+
+스케일은 실제 크기 기준
+문은 200cm, 사람은 180cm. 
+UE의 중력 -980 cm/s²이 올바르게 작동하려면
+실제 크기로 모델링되어야 해.
+
+FBX 익스포트 시 단위 변환을 명시
+"이 파일의 1 unit은 몇 cm인가"를 메타데이터로
+
+
+
+---
+
+
+
+
+---
+
+
+
+
+---
+
+
+
+
+---
+
+
+
+
+---
+
+
+
+
+---
+
+
+
+
+---
+
+
+
+
+---
+
+
+
+
+---
+
+
+
+
+---
+
+
+
+
+---
+
+
+
+
+---
+
+
+
+
+---
+
+
+
+
+---
+
+
+
+
+---
+
+
+
+
+---
+
+
+
+
+---
+
+
+
+
+---
+
+
+
+
+---
+
+
+
+
+---
+
+
+
+
+---
+
+
+
+
+---
+
+
+
+
+---
+
+
+
+
+---
+
+
+
+
+---
+
+
+
+
+---
+
+
+
+
+---
+
+
+
+
+---
+
+
+
+
+---
+
+
+
+
+---
+
+
+
+
+---
+
+
+
+
+---
+
+
+
+
+---
+
+
+
+
+---
+
+
+
+
+---
+
+
+
+
+---
+
+
+
+
+---
+
+
+
+
+---
+
+
+
+
+---
+
+
+
+
+---
+
+
+
+
+---
+
+
+
+
+---
+
+
+
+
+---
+
+
+
+
+---
