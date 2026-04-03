@@ -1,0 +1,1989 @@
+Unreal Engine 에디터를 만들려면 UI 프레임워크가 필요
+
+OS 네이티브 툴킷(Win32 API, Cocoa)에 의존하면 크로스 플랫폼이 불가능하고
+Qt 같은 외부 라이브러리를 쓰면 라이선스 문제와 엔진 빌드 파이프라인과의 통합 문제가 생긴다
+
+에디터뿐 아니라 게임 런타임에서도 디버그 콘솔, HUD, 메뉴 같은 UI가 필요
+에디터와 런타임이 동일한 UI 프레임워크를 공유하는 것이 합리적
+
+Immediate Mode vs Retained Mode
+
+Immediate Mode(Dear ImGui 스타일)는 매 프레임 전체 UI를 다시 기술한다
+코드가 단순하고 상태 동기화 문제가 없지만
+수천 개의 위젯이 있는 에디터 규모에서는 
+매 프레임 전체 트리를 재구성하는 비용이 감당이 안 된다
+
+레이아웃 캐싱도 불가능하고, 
+복잡한 위젯 간 상호작용(드래그 앤 드롭, 포커스 체인, 키보드 네비게이션)을 구현하려면 
+결국 프레임 간에 상태를 유지해야 한다.
+
+Retained Mode는 위젯 트리를 메모리에 유지하고
+변경이 있을 때만 해당 부분을 갱신한다
+하지만 전통적 Retained Mode(Qt 스타일)는 
+위젯을 생성하고 속성을 하나하나 설정하는 명령형 코드가 장황하고, 
+트리 구조가 코드에서 시각적으로 드러나지 않는다.
+
+위젯 트리는 Retained Mode로 메모리에 유지하되, 
+그 트리를 구성하는 문법은 Declarative하게 만든다
+
+SNew, SAssignNew 매크로와 operator+, operator[] 오버로딩을 조합해서, 
+마치 선언형 마크업처럼 보이는 C++ DSL을 만들어낸 것이다
+
+SNew(SHorizontalBox)
++ SHorizontalBox::Slot()
+  .AutoWidth()
+  [
+    SNew(STextBlock)
+    .Text(FText::FromString("Hello"))
+  ]
++ SHorizontalBox::Slot()
+  .FillWidth(1.0f)
+  [
+    SNew(SButton)
+    .OnClicked(this, &SMyWidget::OnButtonClicked)
+  ]
+
+실행되면 실제 SWidget 인스턴스들의 트리를 힙에 생성하고 유지한다.
+
+Pull 기반 속성 모델: TAttribute
+
+전통적 UI 프레임워크에서 상태 동기화는 가장 큰 골칫거리다
+게임 로직의 체력 값이 바뀌었을 때, 
+UI의 체력 바가 이를 반영해야 한다
+
+Push 모델(데이터가 바뀔 때 UI에 알림)은 
+바인딩 인프라가 복잡해지고, 
+알림을 빠뜨리면 UI가 stale해진다.
+
+Slate는 Pull 모델을 택한다
+TAttribute<T>는 값을 직접 들고 있을 수도 있고,
+매번 호출되는 델리게이트를 들고 있을 수도 있다
+
+위젯이 자신을 그리거나 레이아웃할 때 
+attribute를 폴링해서 현재 값을 가져온다. 
+데이터 소유자는 UI의 존재를 알 필요가 없고, 
+UI는 매 프레임 최신 값을 자동으로 반영한다
+
+게임 엔진이라는 맥락에서 어차피 매 프레임 Tick이 돌고 있다 
+Pull의 비용이 이미 존재하는 프레임 루프에 자연스럽게 흡수된다.
+
+2-Pass 레이아웃: Measure → Arrange
+
+화면에 위젯을 배치하려면 두 가지를 알아야 한다
+각 위젯이 "얼마나 크고 싶은지"와
+주어진 공간에서 "실제로 얼마나 크게, 어디에 배치되는지."
+
+첫 번째 패스는 Desired Size 계산
+리프 위젯부터 루트까지 bottom-up으로, 
+각 위젯이 자신이 원하는 크기를 부모에게 보고한다
+
+두 번째 패스는 Arrangement
+루트부터 리프까지 top-down으로, 
+부모가 자식들에게 실제 할당된 공간(geometry)을 나눠준다
+
+SHorizontalBox가 자식들의 desired width를 합산한 후 
+FillWidth 비율에 따라 남은 공간을 분배하는 것이 
+2-pass의 전형적 모습이다
+
+이 결과는 캐싱된다. 위젯의 속성이 바뀌지 않으면 레이아웃을 다시 계산하지 않는다
+변경된 위젯만 dirty 마크를 받고 해당 서브트리만 재계산한다. 
+이것이 수천 개 위젯의 에디터를 60fps로 유지하는 핵심이다.
+
+엔진의 3D 렌더러와 분리된 2D 경로
+
+Slate는 엔진의 Deferred Rendering 파이프라인을 타지 않는다
+FSlateDrawElement라는 2D draw command를 버퍼에 모으고, 
+FSlateRHIRenderer가 이를 RHI를 통해 GPU에 직접 그린다
+
+텍스트, 박스, 라인, 이미지, 스플라인 — 모두 배치(batch)로 묶어서 
+최소한의 draw call로 처리한다
+이 분리 덕분에 Slate는 월드 렌더링과 독립적으로 작동할 수 있고, 
+에디터가 뷰포트 위에 오버레이되는 구조가 자연스럽게 가능하다.
+
+이벤트 라우팅
+사용자 입력(마우스, 키보드)은 OS로부터 
+FSlateApplication을 거쳐 위젯 트리에 들어온다
+Reply 패턴
+FReply라는 반환 객체가 "내가 처리했다(Handled)"인지 "위로 넘겨라(Unhandled)"인지를 표현하며, 
+"마우스 캡처를 요청한다", "키보드 포커스를 이동한다" 같은 사이드 이펙트도 함께 기술한다
+
+Slate → UMG: 두 개의 레이어
+
+Slate는 순수 C++ 프레임워크다. 
+UObject에 의존하지 않고, TSharedPtr로 생명주기를 관리하며, GC 대상이 아니다
+게임플레이 UI를 블루프린트에서 만들려면 UObject 세계와 연결해야 한다.
+
+UMG가 이 브릿지다
+UWidget은 UObject 래퍼로, 내부에 SWidget을 소유한다
+UUserWidget은 디자이너에서 시각적으로 편집 가능한 컨테이너다
+핵심은 UMG는 Slate 위의 Facade라는 것이다
+
+---
+
+Layer 0 — 플랫폼: Slate가 존재하기 위해 OS에서 빌려오는 것
+
+UI 프레임워크가 존재하려면 
+OS로부터 두 가지를 빌려와야 한다
+
+픽셀을 그릴 수 있는 직사각형(윈도우)과, 
+사용자 입력의 스트림(메시지 루프)
+
+Slate의 최하층은 이 두 가지를 OS로부터 추상화하는 레이어다
+
+FGenericWindow & FGenericApplication
+
+FGenericWindow는 OS 윈도우의 추상이다
+Windows에서는 FWindowsWindow가 HWND를 감싸고, 
+Mac에서는 FMacWindow가 NSWindow를 감싼다
+
+핵심 인사이트는 Slate가 보는 윈도우는 
+"위치, 크기, GPU surface를 가진 직사각형"이라는 
+계약이라는 것이다
+
+타이틀바 스타일이나 최소화/최대화 같은 것들은 
+우연적으로/부수적으로 있는 것이지 본질이 아니다.
+
+FGenericApplication은 OS 메시지 루프의 추상이다
+FWindowsApplication은 Win32 메시지 펌프를 돌리면서, 
+WM_MOUSEMOVE, WM_KEYDOWN 같은 OS 이벤트를 
+Slate가 이해하는 형식으로 번역한다. 
+이 번역된 이벤트는 FSlateApplication에게 전달된다.
+
+FEngineLoop::Tick()이 매 프레임 
+FSlateApplication::Tick()을 호출하고, 이 Tick 안에서
+
+OS 메시지 펌프 → 입력 이벤트 수집
+위젯 트리에 이벤트 라우팅
+레이아웃 재계산 (dirty한 것만)
+페인팅 → draw element 수집
+렌더러에게 draw element 제출
+
+Layer 1 — SWidget
+
+Slate 위젯 트리의 모든 노드는 SWidget의 서브클래스다
+
+메모리 모델 ( = 이것은 어떤 "공간"에 살고 있는가?)
+SWidget은 UObject가 아니다
+TSharedPtr<SWidget>로 생명주기가 관리된다
+
+SWidget이 들고 있는 것들
+
+Desired Size 캐시 — 자신이 원하는 크기. Layout pass의 결과물
+EVisibility — 보이는지, 히트 테스트 대상인지, 레이아웃에 참여하는지
+Enabled state —  이벤트를 받을지
+RenderTransform — 레이아웃과 독립적인 시각적 변환(회전, 스케일)
+Tag, Metadata — 디버깅과 hit test 필터링용
+
+SWidget은 자식 목록을 직접 들고 있지 않다
+자식을 어떻게 보관하는지는 각 서브클래스가 결정한다
+SCompoundWidget은 자식을 하나만, SPanel은 여러 개를 Slot 배열로 들고 있다.
+**"자식을 가지는 것 자체가 위젯의 타입적 성격"**이라는 설계 판단이다
+Leaf 위젯(STextBlock, SImage)은 자식 관련 코드가 아예 없어서 메모리와 가상 함수 호출이 절약된다.
+
+SWidget의 가상 함수 인터페이스는 무엇을 요구하는가?
+위젯이기 위해 반드시 대답해야 하는 질문들
+
+ComputeDesiredSize(float LayoutScaleMultiplier) → "너는 얼마나 크고 싶니?"
+OnPaint(...) → "너 자신을 그려라."
+OnArrangeChildren(FArrangedChildren&, const FGeometry&) → "자식들을 배치하라."
+OnMouseButtonDown/Up/Move(...), OnKeyDown/Up(...) → "이 입력을 처리하겠니?"
+
+네 가지 축 — 크기, 그리기, 배치, 반응 
+Slate의 모든 복잡성은 이 네 가지 질문에 대한 답을 
+트리 구조 위에서 체계적으로 조합하는 과정에서 나온다.
+
+Layer 2 — 합성 모델
+
+SWidget의 서브클래스는 자식을 몇 개 가지느냐에 따라 세 가지 범주로 나뉜다
+
+SLeafWidget — 자식이 없다
+STextBlock, SImage, SSpinBox
+ComputeDesiredSize에서 자기 콘텐츠만 보고 크기를 결정한다
+OnArrangeChildren은 사실상 no-op이다
+
+SCompoundWidget SCompoundWidget 
+자식이 하나
+"내 콘텐츠를 감싸는 프레임" 패턴
+SBorder가 전형적 — 배경색과 패딩을 주고, 단일 자식을 내부에 배치한다
+ChildSlot이라는 단일 슬롯을 멤버로 보유
+
+SPanel 
+자식이 여럿
+SHorizontalBox, SVerticalBox, SOverlay, SCanvas
+Slate 레이아웃의 실질적 엔진
+복수의 자식을 어떤 전략으로 배치할지가
+각 Panel의 정체성을 결정
+자식들은 Slot 배열(TPanelChildren<SlotType>)에 보관
+
+위젯 자체(STextBlock)에 "나는 왼쪽 정렬되고 싶다"라는 정보를 넣지 않는다
+그 정보는 레이아웃 전략에 넣는다. 
+첫번째 이유. 분할과 조합의 원리.
+위젯 자체는 어디에든 어떻게든 정렬될 수 있는 가능성을 열고 있어야 한다.
+그것이 닫혀 있다면 축을 나누고 그것을 합성하는 시스템의 디자인 원리에 반대된다.
+
+두번째 이유. 조합 폭발. 
+같은 STextBlock이 SHorizontalBox에 들어가면 FillWidth가 의미가 있고, 
+SCanvas에 들어가면 절대 좌표가 의미가 있다. 
+이 부모-종속적 배치 정보를 자식 위젯에 넣으면 
+자식이 모든 가능한 부모 유형을 알아야 하므로 결합도가 폭발한다.
+
+해결책이 Slot
+부모와 자식 사이의 중간 객체
+"이 자식이 이 특정 부모 안에서 어떻게 배치되는지"를 기술
+SHorizontalBox::FSlot은 .FillWidth(), .AutoWidth(), .HAlign(), .VAlign(), .Padding()을 갖고
+SCanvas::FSlot은 .Position(), .Size()를 갖는다
+
+**Slot은 "부모의 레이아웃 언어로 쓰여진, 특정 자식에 대한 배치 지시서"**다
+
+Layer 3 — 선언적 DSL
+
+SNew(SHorizontalBox)
++ SHorizontalBox::Slot()
+  .AutoWidth()
+  .Padding(4.f)
+  [
+    SNew(STextBlock)
+    .Text(LOCTEXT("Label", "Name:"))
+  ]
+
+SNew(WidgetType)은 매크로다
+이것은 대략 다음으로 확장된다
+
+MakeTDecl<WidgetType>(#WidgetType, __FILE__, __LINE__, RequiredArgs::MakeRequiredArgs(...))
+이것은 TDecl이라는 빌더 객체를 반환한다
+이 빌더에 대해 .Text(), .OnClicked() 같은 체이닝 호출이 이어지고
+각 호출은 빌더 내부에 해당 속성을 기록한 뒤 자기 자신의 참조를 반환한다.
+
+operator+는 SPanel 계열에서 Slot을 추가한다
+SHorizontalBox::Slot()이 FSlot 빌더를 반환하고,
+.AutoWidth().Padding(4.f)로 슬롯 속성을 설정한 뒤
+operator[]가 자식 위젯을 슬롯에 꽂는다
+
+operator[] 안의 SNew(...)가 재귀적으로 자식 위젯의 빌더를 생성하고
+최종적으로 TSharedRef<SWidget>로 변환된다.
+
+빌더의 소멸자 또는 암시적 변환 시점에서
+빌더가 TSharedRef<SWidget>로 변환될 때
+내부적으로 SWidget::Construct()가 호출되어
+힙 할당과 초기화가 일어난다
+
+SLATE_BEGIN_ARGS(SMyWidget)
+    SLATE_ARGUMENT(FText, Label)
+    SLATE_ATTRIBUTE(float, Value)
+    SLATE_EVENT(FOnClicked, OnClicked)
+SLATE_END_ARGS()
+
+이 분리의 대가는 디버깅의 어려움이다
+
+Layer 4 — TAttribute
+
+위젯이 보여주는 데이터는 시시각각 바뀐다
+체력 바의 퍼센티지, 버튼의 활성화 여부, 텍스트 필드의 내용
+위젯과 데이터 소스 사이의 동기화 전략이 UI 프레임워크의 한 축을 정의한다.
+
+Push 모델: 데이터가 바뀔 때마다 UI에 알린다
+Observer/Signal/Binding 패턴
+바인딩 등록·해제·생명주기라는 축이 추가되고
+알림을 빠뜨리면 UI가 stale해진다
+이벤트 폭풍(한 프레임에 같은 속성이 열 번 바뀌면 열 번 UI를 갱신) 문제가 들어온다
+
+Pull 모델: UI가 그려질 때 데이터를 읽어온다
+단순하지만, 데이터가 바뀌지 않았어도 매번 읽는 낭비가 있다.
+그러나 게임 엔진이라는 맥락에서 그 낭비는 상쇄된다.
+게임 엔진은 어차피 매 프레임 Tick한다.
+
+TAttribute<T>의 구현
+내부에 TOptional<T> 값 하나와 TDelegate 하나를 갖는다
+값이 직접 설정되었으면 그 값을 반환하고, 
+델리게이트가 바인딩되어 있으면 매번 델리게이트를 호출해서 현재 값을 반환한다.
+
+// 정적 바인딩 — 값이 변하지 않는 경우
+SNew(STextBlock).Text(FText::FromString("Static Label"))
+
+// 동적 바인딩 — 매 프레임 최신 값을 가져옴
+SNew(SProgressBar).Percent_Lambda([this]() { return Health / MaxHealth; })
+
+Insight
+TAttribute는 "현재 값에 대한 질문"을 추상화한 것이지, "값 자체"가 아니다.
+정적 값은 "항상 같은 대답을 하는 질문"의 특수한 경우일 뿐이다
+이 관점에서 보면 TAttribute는 값(value)이 아니라 **계산(computation)**을 감싼 것이고, 
+정적 값은 항등 계산이다.
+
+Layer 5 — 레이아웃
+
+SHorizontalBox 안에 
+AutoWidth 슬롯 두 개와 FillWidth(1.0) 슬롯 하나가 있다고 하자. 
+FillWidth 슬롯의 실제 너비를 알려면 
+먼저 AutoWidth 슬롯들이 얼마나 차지하는지 알아야 한다. 남은 공간이 FillWidth의 몫이므로.
+즉 "요청된 크기"를 먼저 전부 수집한 후에야 "실제 배분"이 가능하다
+
+Pass 1: Desired Size (Bottom-Up)
+각 위젯이 ComputeDesiredSize를 호출받고, 자신이 원하는 크기를 FVector2D로 반환한다
+STextBlock은 텍스트의 measured extent를, SImage는 이미지 크기를, 
+Panel은 자식들의 desired size를 자신의 레이아웃 전략에 따라 합산해서 반환한다
+
+Pass 2: ArrangeChildren
+부모가 자신에게 할당된 FGeometry(위치 + 크기 + DPI 스케일)를 받고,
+이를 자식들에게 분배한다
+각 자식은 AllottedGeometry라는 이름으로 자신의 최종 위치와 크기를 받는다.
+
+Slate는 Invalidate(EInvalidateWidgetReason::Layout)으로 dirty 마크를 찍고, 
+dirty한 서브트리만 레이아웃을 재계산한다
+TAttribute의 값이 바뀌어 desired size가 달라지면 
+해당 위젯부터 루트까지의 경로가 dirty가 된다
+이 "변경 전파 경로"가 invalidation의 비용
+
+Layer 6 — Paint
+레이아웃이 끝나면 각 위젯은 자신의 FGeometry를 알고 있다
+이제 "그려라"라는 명령이 내려온다
+int32 SMyWidget::OnPaint(...)
+
+OnPaint의 본질은 "이 위젯을 구성하는 draw command들을 OutDrawElements에 적립하라"는 것이다.
+FSlateDrawElement::MakeBox, MakeText, MakeLines 같은 정적 함수로 
+draw element를 생성해서 FSlateWindowElementList에 넣는다
+이 리스트가 하나의 윈도우에 대한 전체 draw command 버퍼다
+
+LayerId가 z-order를 결정한다
+부모→자식 순서로 Paint가 진행되면서, 자식이 부모 위에 그려지는 z-order가 자연스럽게 보장된다
+SOverlay가 여러 자식을 겹쳐 그릴 수 있는 것은 각 자식에게 증가하는 LayerId를 넘기기 때문이다.
+
+MyCullingRect는 잘라내기(culling) 영역이다
+부모의 가시 영역 밖에 있는 위젯은 draw element를 생성하지 않는다
+SScrollBox가 보이지 않는 자식을 그리지 않는 것이 이 메커니즘이다
+
+Paint는 함수 호출이지만, 그 결과물은 데이터다
+OnPaint는 즉시 픽셀을 찍지 않고, draw element라는 데이터를 누적한다
+실제로 GPU에 제출하는 것은 다음 레이어(렌더러)의 일이다.
+batching이 가능해진다
+같은 텍스처, 같은 머티리얼, 같은 셰이더를 쓰는 draw element들을 모아서 하나의 draw call로 합칠 수 있다
+Paint가 "그린다"가 아니라 "그릴 것을 기술한다"이다
+
+Layer 7 — 렌더링
+FSlateWindowElementList에 모인 draw element들은 FSlateRenderer에게 넘어간다
+엔진의 RHI(Rendering Hardware Interface)를 통해 실제 GPU 명령을 발행한다.
+
+draw element가 같은 텍스처와 셰이더를 사용하면,
+이들의 버텍스를 하나의 버텍스 버퍼에 합쳐서 단일 draw call로 제출한다
+텍스처 아틀라싱(여러 아이콘을 하나의 텍스처에 모으는 것)이 Slate 성능 최적화의 고전적 기법인 이유가 여기에 있다.
+
+Slate는 Deferred Rendering 파이프라인, 라이팅, 포스트 프로세스를 거치지 않는다
+3D 씬을 먼저 렌더하고, 그 결과 위에 Slate가 2D로 덧그린다
+
+Layer 8 — 이벤트
+OS에서 들어온 입력 이벤트가 FSlateApplication에 도달
+"이 이벤트를 어떤 위젯에게 전달할 것인가?"
+
+마우스 이벤트: Hit Test
+마우스 좌표를 위젯 트리에 대해 hit test한다
+루트에서 시작해서 리프까지, 마우스 좌표가 위젯의 geometry 안에 들어오는지 확인하면서 내려간다. 
+가장 깊은(z-order가 가장 높은) 위젯이 hit test의 승자가 된다
+이 결과는 FWidgetPath — 루트에서 타겟 위젯까지의 경로 — 로 표현된다.
+
+버블링
+타겟 위젯에게 먼저 이벤트를 전달한다
+해당 위젯의 OnMouseButtonDown이 FReply::Handled()를 반환하면 이벤트 처리가 끝난다
+FReply::Unhandled()를 반환하면, FWidgetPath를 따라 부모에게 이벤트가 전파(bubble)된다
+이것이 반복되어 루트까지 가도 처리되지 않으면 이벤트가 소멸한다.
+
+FReply는 "처리했다/안 했다" 외에도:
+.CaptureMouse(this) — 마우스 캡처 요청 (드래그 시작)
+.ReleaseMouseCapture() — 마우스 캡처 해제
+.SetUserFocus(Widget) — 키보드 포커스 이동
+.SetNavigation(...) — 게임패드 네비게이션 방향
+.BeginDragDrop(DragDropOp) — 드래그 앤 드롭 시작
+이 모든 사이드 이펙트가 반환값 하나에 응축된다
+
+위젯이 "나는 이 이벤트를 처리했고, 그 결과로 이런 것들이 일어나야 한다"를 
+하나의 값으로 완전하게 기술하는 것이다
+이 패턴은 이벤트 처리 로직과 그 결과를 한 곳에서 볼 수 있게 한다.
+
+키보드 이벤트
+hit test가 아니라 포커스 체인을 따른다
+Tab 네비게이션은 위젯 트리의 순서에 따라 포커스를 이동시킨다
+
+Layer 9 — UMG
+UWidget(UObject)이 내부에 TSharedPtr<SWidget>를 들고 있고
+UWidget의 UPROPERTY들이 변경되면 내부의 SWidget에 전달한다
+UButton은 SButton을, UTextBlock은 STextBlock을, UImage는 SImage를 감싼다.
+
+UUserWidget은 블루프린트에서 디자이너를 통해 시각적으로 구성할 수 있는 컨테이너다
+내부적으로 SConstraintCanvas 위에 자식 UWidget들의 SWidget들을 배치한다
+디자이너의 앵커, 오프셋, 사이즈 박스는 모두 이 SConstraintCanvas의 슬롯 파라미터다.
+
+UMG가 노출하는 것은 Slate가 할 수 있는 것의 부분집합이다
+복잡한 커스텀 레이아웃, 고급 히트 테스팅 오버라이드, 
+성능 크리티컬한 위젯 풀링 같은 것들은 Slate 레벨에서만 가능하다
+
+UMG를 쓰다가 한계에 부딪히면, 그것은 Slate를 이해해야 하는 시점이 온 것이다.
+
+---
+---
+---
+---
+---
+---
+
+진입점
+
+FEngineLoop::Tick()이 매 프레임 FSlateApplication::Tick(float DeltaTime)을 호출한다
+이것은 외부에서 Slate에 들어오는 유일한 정규 호출이다
+Slate는 자체 스레드를 갖지 않고, 자체 타이머를 갖지 않으며, 비동기 콜백으로 스스로를 깨우지 않는다
+
+엔진의 게임 스레드가 "지금 네 차례다"라고 말할 때만 동작하는 순전히 수동적인 시스템이다.
+
+Slate 내부에서 일어나는 모든 일은 동기적이고 단일 스레드다
+
+OnMouseButtonDown에서 무거운 작업을 하면 그 프레임의 나머지 전체가 블록된다
+"Slate가 느리다"는 말의 정확한 의미는 "게임 스레드의 Slate 구간이 길다"이다
+Slate에는 "백그라운드에서 레이아웃을 계산하고 나중에 반영한다" 같은 것이 존재하지 않는다.
+
+Phase 1: 입력 수집
+
+FSlateApplication::Tick()이 시작되면 가장 먼저
+PollGameDeviceState()와 TickPlatform()이다
+이 안에서 FPlatformApplicationMisc::PumpMessages()가 호출되어 OS 메시지 큐를 비운다.
+
+Win32의 WM_MOUSEMOVE는 "화면 좌표 (x, y)에서 마우스가 움직였다"라는 OS의 언어다. 
+이것이 FWindowsApplication의 메시지 핸들러를 거쳐 
+FSlateApplication::OnMouseMove()라는 Slate의 언어로 바뀐다
+
+이 과정에서 스크린 좌표가 윈도우 로컬 좌표로 변환되고, 
+DPI 스케일이 적용되며, 
+어떤 SWindow 위에서 발생한 이벤트인지가 결정된다
+
+이 번역이 즉시 위젯에 전달되지 않는다
+메시지 펌프 단계에서는 이벤트를 큐에 적립한다. 
+왜냐하면 하나의 프레임에 OS 메시지가 여러 개 쌓일 수 있기 때문이다
+
+마우스가 움직이면서 동시에 버튼을 누르면 WM_MOUSEMOVE와 WM_LBUTTONDOWN이 동시에 큐에 있다. 
+이것들을 메시지 펌프 시점에 하나씩 즉시 처리하면, 
+각 이벤트 핸들러가 위젯 트리를 변경할 수 있고, 
+그 변경이 이후 이벤트의 hit test 결과를 바꿀 수 있다. 
+순서 의존성이 발생한다.
+
+Phase 2: 이벤트 라우팅
+트리를 Traverse하는 입력의 Journey
+
+마우스 이벤트: Hit Test → 타겟 결정
+타겟은 공간적으로 결정
+마우스 커서가 있는 좌표를 위젯 트리에 대해 hit test해서 찾는다
+
+Hit test는 루트 SWindow에서 시작해서, 
+각 위젯의 FGeometry를 이용해 "이 좌표가 내 영역 안인가?"를 검사하면서 깊이 우선으로 내려간다
+같은 부모 아래 여러 자식이 겹쳐 있을 때(SOverlay), z-order가 높은 자식부터 검사해야 한다
+hit test는 자식을 역순으로 순회한다 — Paint 순서(앞에서 뒤로)의 역방향이다.
+
+Hit test의 결과물이 FWidgetPath
+루트 SWindow부터 타겟 위젯까지의 경로 전체를 담고 있다.
+이후의 버블링에 이 경로가 필요
+
+FWidgetPath는 이벤트의 "운명"을 미리 결정한다
+이벤트가 거쳐갈 수 있는 모든 위젯의 목록이 확정된다
+이벤트가 버블링되면서 중간 위젯이 트리를 변경해도(자식을 추가하거나 삭제해도), 
+이미 캡쳐된 FWidgetPath를 따라 전파가 계속된다
+
+이것은 "이벤트 처리 중에 트리가 변하면 어떻게 되는가?"라는 질문에 대한 결정이다
+경로를 스냅샷해서 트리 변경으로부터 이벤트 전파를 격리한다.
+
+[SWindow] → [SOverlay] → [SVerticalBox] → [SButton] → [STextBlock]
+                                                              ↑ hit test 타겟
+STextBlock::OnMouseButtonDown()이 호출된다. 
+이 위젯이 FReply::Unhandled()를 반환하면, 한 칸 올라가서 SButton::OnMouseButtonDown()이 호출된다
+
+SButton이 FReply::Handled().CaptureMouse(SharedThis(this))를 반환하면, 
+버블링이 중단되고 FSlateApplication은 반환된 FReply에서 사이드 이펙트를 추출해서 실행한다
+
+FReply는 Slate 시스템의 후속 동작을 지시하는 명령이다
+.CaptureMouse()가 설정되면, 이후 프레임의 마우스 이벤트는 hit test를 건너뛰고 캡쳐된 위젯에게 직접 전달된다
+.SetUserFocus()가 설정되면, 키보드 이벤트의 라우팅 경로가 바뀐다
+즉 현재 이벤트의 처리 결과가 미래 이벤트의 제어 흐름을 변경한다
+
+마우스가 캡쳐된 상태에서의 이벤트 라우팅은 다른 경로를 탄다
+OS 이벤트 → 캡쳐된 위젯에 직접 전달 (hit test 생략)
+
+이 분기가 드래그 작업의 전제 조건이다
+드래그 중에 마우스가 버튼 영역을 벗어나도, 이벤트는 여전히 드래그를 시작한 위젯에게 간다
+캡쳐 없이는 마우스가 영역을 벗어나는 순간 다른 위젯이 hit test 타겟이 되어 드래그가 끊긴다
+캡쳐는 "이 위젯이 현재 입력 시퀀스를 독점한다"는 모드 전환이며, 
+FSlateApplication의 제어 흐름에 조건 분기를 만든다.
+
+키보드 이벤트: 포커스 체인
+공간이 아니라 포커스에 의해 라우팅
+FSlateApplication은 현재 키보드 포커스를 가진 위젯을 추적하고 있으며, 
+키 이벤트는 해당 위젯의 FWidgetPath를 통해 전달된다
+
+포커스 자체는 어떻게 이동하는가
+마우스 클릭 — 위젯이 FReply::Handled().SetUserFocus()를 반환해서 포커스를 자신에게 가져온다
+Tab 네비게이션 — FSlateApplication이 위젯 트리를 순회해서 다음 포커스 가능한 위젯을 찾는다
+
+두 입력 채널이 독립적으로 라우팅되지만, FReply를 통해 서로의 라우팅 상태를 변경할 수 있다
+
+Phase 3: 위젯 반응 
+OnMouseButtonDown 같은 핸들러가 실행
+그것이 시스템의 나머지에 미치는 제어 흐름 파급
+
+경로 A: 속성 변경 → 레이아웃 Invalidation 체인
+
+핸들러가 TextWidget->SetText(NewText)를 호출한다. 
+SetText 내부에서 STextBlock은 새 텍스트의 measured extent를 계산하고, 
+이전과 다르면 Invalidate(EInvalidateWidgetReason::Layout)을 호출한다.
+
+Invalidate는 자신을 dirty로 마크하고, 부모 방향으로 전파한다.
+부모의 desired size는 자식들의 desired size에 의존하므로, 
+자식의 크기가 바뀌면 부모도 재계산이 필요하다.
+하지만 이 시점에서 실제 레이아웃 재계산이 일어나지는 않는다 — dirty 마크만 찍힌다
+실제 재계산은 이번 Tick의 레이아웃 페이즈에서 일괄적으로 수행된다
+
+경로 B: 트리 변형 — 자식 추가/삭제
+EInvalidateWidgetReason::ChildOrder가 포함되어, 
+레이아웃뿐 아니라 hit test 캐시, 포커스 체인 등도 재구성되어야 함을 알린다
+Slate는 트리 변형을 즉시 적용하되, 해당 프레임의 남은 이벤트 처리에서는 이미 캡쳐된 경로를 사용한다.
+
+경로 C: 델리게이트 호출 → 외부 세계로의 탈출
+SButton의 OnClicked 델리게이트
+제어 흐름은 Slate를 벗어나 게임플레이 코드로 넘어간다
+이것이 Slate 제어 흐름에서 가장 위험한 지점이다
+이 문제에 대한 Slate의 방어 전략은 주로 참조 카운팅의 안전망이다
+하지만 이것은 댕글링 포인터 방지일 뿐, 
+논리적 일관성(이미 트리에서 제거된 위젯에 이벤트를 보내는 것)까지 보장하지는 않는다
+
+Phase 4: 레이아웃
+
+이벤트 처리가 끝나면, FSlateApplication::Tick()의 다음 단계로 넘어간다
+Phase 3에서 위젯들이 찍어놓은 dirty 마크를 이제 해소해야 한다.
+
+실제 레이아웃 전에, FSlateApplication은 TickWidgets()를 수행한다. 
+SWidget::Tick(const FGeometry&, double, float)은 
+위젯이 매 프레임 수행해야 하는 시간 기반 로직을 위한 것이다
+애니메이션 보간, 타이머 체크 등.
+이 Tick은 레이아웃 이전에 실행되므로, Tick에서 속성을 변경하면 직후의 레이아웃에 반영된다. 
+
+Desired Size Pass (Bottom-Up)
+dirty로 마크된 위젯부터 시작한다
+부모의 desired size는 자식들의 desired size에 의존한다. 
+따라서 반드시 자식이 먼저 계산되어야 한다 — bottom-up이 강제된다
+
+TAttribute
+데이터를 읽는 시점이 Slate가 결정하지만, 데이터를 생산하는 코드는 외부에 있다
+Slate의 제어 흐름이 TAttribute의 델리게이트를 호출하는 순간, 잠시 외부로 나갔다가 돌아온다
+
+Arrange Pass (Top-Down)
+루트 SWindow가 자신의 전체 영역을 FGeometry로 만들어서 자식에게 넘긴다.
+각 부모 위젯은 OnArrangeChildren()에서 자식들의 desired size와 슬롯 파라미터를 참조해, 
+자식 각각에 FArrangedWidget(위치 + 크기)을 할당한다.
+
+부모가 먼저 자신의 할당된 공간을 알아야 자식들에게 분배할 수 있으므로, top-down이 강제된다. 
+두 패스의 방향이 반대인 것은 정보 의존성의 방향에서 도출되는 자연스러운 한 설계다.
+
+Phase 5: Paint
+
+레이아웃이 끝나면 모든 위젯이 자신의 FGeometry를 확정적으로 알고 있다
+이제 FSlateApplication은 각 SWindow에 대해 Paint를 수행한다
+Paint의 제어 흐름은 루트에서 리프로의 재귀 호출이다.
+이 순회 순서가 곧 z-order다
+부모가 먼저 그려지고 자식이 나중에 그려지므로, 자식이 부모 위에 보인다
+Paint 순서와 hit test 순서가 역방향인 것은 이 때문이다
+마지막에 그려진(가장 위의) 것이 먼저 클릭되어야 한다.
+
+FSlateWindowElementList가 이 재귀 호출의 누적 결과물이다
+재귀가 끝나면, 이 리스트에는 해당 윈도우의 전체 시각적 표현이 순서대로 담겨 있다. 
+이 리스트가 이후 렌더러에 그대로 넘어간다.
+
+Culling
+OnPaint의 파라미터 중 MyCullingRect는 "이 위젯이 실제로 화면에 보이는 영역"이다
+위젯의 geometry가 culling rect 밖에 있으면, 그 위젯과 그 아래의 전체 서브트리에 대한 OnPaint 호출이 스킵된다
+이것은 제어 흐름의 가지치기다
+이 가지치기가 없으면 스크롤 가능한 리스트의 계산량이 아이템 수에 선형 비례한다.
+
+Phase 6: 렌더 제출
+FSlateWindowElementList가 FSlateRHIRenderer에 넘어간다
+입력, 레이아웃, 페인트 — 은 게임 스레드에서 일어났다
+렌더러는 draw element를 받아서 렌더 스레드에 명령을 넣는다
+Slate의 동기적 제어 흐름은 Paint까지다
+결과가 화면에 나타나는 것은 렌더 스레드와 GPU가 자기 타이밍에 처리한 후다
+
+위젯 생성의 흐름
+
+SNew(SButton)
+.Text(FText::FromString("Click"))
+.OnClicked(this, &SMyWidget::HandleClick)
+
+React의 VDOM처럼 선언적 기술이 먼저 완성되고 나중에 한꺼번에 실제 트리로 변환되는 것이 아니다. 
+`SNew`의 빌더 체인이 완료되는 즉시 실제 위젯 인스턴스가 생성된다
+
+---
+---
+---
+---
+---
+---
+
+이벤트 coalescing
+한 프레임에 WM_MOUSEMOVE가 다섯 번 쌓였다면
+"마우스 이동은 마지막 좌표만 의미 있다"는 판단으로 중간 것들을 버리고 한 번만 처리할 수 있다
+
+재진입(reentrancy) 방지
+OS 메시지 펌프의 콜백 안에서 이벤트를 즉시 처리하면, 
+그 핸들러가 모달 다이얼로그를 띄우거나 ProcessMessages를 다시 호출하는 순간, 
+메시지 펌프 안에서 메시지 펌프가 돌아가는 재진입이 발생한다. 
+이건 디버깅이 극도로 어려운 부류의 버그를 만든다
+
+처리 시점의 통제
+"입력 → 레이아웃 → 페인트"라는 위상 순서
+
+---
+
+즉시 재계산 방식: A가 바뀌면 → A의 desired size 재계산 → P의 desired size 재계산 → P의 부모 재계산 → ... 루트까지. 
+그 다음 B가 바뀌면 → B의 desired size 재계산 → P의 desired size 다시 재계산 → P의 부모 다시 재계산 → ... 루트까지
+
+일괄 재계산 방식: A를 dirty 마크, B를 dirty 마크. 
+레이아웃 페이즈에서 bottom-up으로 한 번 순회하면, A 계산, B 계산, P를 한 번만 계산, 루트까지 한 번만 올라간다.
+
+**"조상 경로의 중복 재계산"**
+
+---
+
+"무엇이" dirty인가의 스펙트럼
+
+Paint만 dirty일 수 있고(크기는 안 변했는데 색깔만 변한 경우 — 레이아웃 패스를 건너뛰고 paint만 다시 한다), 
+Visibility만 dirty일 수 있다. 
+Invalidation의 세분화가 곧 "건너뛸 수 있는 작업의 종류"를 결정한다. 
+단일 dirty bit가 아니라 이유별 dirty bit를 갖는 것은, "최소한의 작업만 다시 한다"는 원칙의 구현이다
+
+FSlateInvalidationRoot
+에디터의 한 패널에서 버튼을 눌렀을 때, 다른 패널의 레이아웃까지 dirty 전파가 올라가지 않게 하는 방화벽
+이것 없이는 모든 invalidation이 루트까지 올라간다
+
+---
+
+TAttribute Pull의 비용
+
+에디터에 수천 개의 위젯이 있고, 각 위젯이 평균 3-4개의 TAttribute를 가지면, 
+매 프레임 만 개 이상의 델리게이트가 호출된다. 
+대부분은 싸지만, 가끔 비싼 것(데이터 조회, 문자열 포맷팅)이 섞인다.
+
+FSlateAttributeBase와 invalidation 통합을 통해, 실제로 값이 바뀌었을 때만 반응하는 하이브리드 모델로 진화하고 있다
+순수 Pull에서 "Pull하되, 이전 값과 비교해서 바뀌었을 때만 invalidation을 트리거한다"로의 전환이다
+
+---
+---
+---
+---
+---
+---
+
+Slate의 1차 분기
+
+SWidget
+├── SLeafWidget          (자식 0개)
+│   ├── STextBlock
+│   ├── SImage
+│   ├── SSpinBox
+│   └── ...
+├── SCompoundWidget       (자식 1개)
+│   ├── SBorder
+│   ├── SButton
+│   ├── SWindow
+│   └── ...
+└── SPanel                (자식 N개)
+    ├── SBoxPanel
+    │   ├── SHorizontalBox
+    │   └── SVerticalBox
+    ├── SOverlay
+    ├── SCanvas
+    ├── SGridPanel
+    └── ...
+
+1차 분기 축이 "이 위젯이 무슨 일을 하는가"(버튼인가, 텍스트인가)가 아니라 
+"트리에서 이 노드의 구조적 역할이 무엇인가"(리프인가, 단일 래퍼인가, 분배자인가)다
+
+SButton이 SCompoundWidget을 상속하는 것은 
+"버튼은 컨트롤의 일종이다"라는 의미론적 판단이 아니라, 
+"버튼은 내부에 정확히 하나의 콘텐츠를 감싸는 구조물이다"라는 구조적 판단이다.
+
+Slate 위젯의 클래스 선언에서 부모가 SLeafWidget인지, SCompoundWidget인지, SPanel인지를 확인하는 것만으로, 
+그 위젯이 레이아웃에서 어떤 역할을 하는지 즉시 알 수 있다. 
+SCompoundWidget을 상속하면 → ChildSlot 하나를 갖고 → OnArrangeChildren에서 그 하나의 자식을 자기 geometry 안에 배치한다. 
+이것만 알면 Construct 함수에서 ChildSlot[SNew(...)] 패턴이 나오리라는 것이 따라 나온다
+
+SWindow는 SCompoundWidget이다
+즉 윈도우 자체가 위젯이다
+SWindow가 위젯 트리의 "바깥"에 있는 컨테이너가 아니라, 트리의 루트 노드다.
+
+SWindow (= 루트 위젯, 동시에 OS 윈도우의 Slate 측 대리인)
+└── ChildSlot
+    └── [사용자가 구성한 위젯 트리]
+
+SWindow는 동시에 FGenericWindow(OS 윈도우 추상)에 대한 참조를 들고 있다
+이것이 만드는 구조: Slate 위젯 트리의 루트 노드가 OS 윈도우와 1:1로 대응한다
+UE 에디터에서 독립 윈도우를 띄우면(SWindow를 하나 더 만들면), 
+그것은 별도의 위젯 트리이면서 동시에 별도의 OS 윈도우다
+
+FSlateApplication은 TArray<TSharedRef<SWindow>>를 관리한다
+Tick에서 레이아웃과 Paint를 수행할 때, 각 SWindow에 대해 독립적으로 수행한다
+윈도우 A의 위젯이 dirty해도, 윈도우 B의 레이아웃에는 영향이 없다
+
+FSlateApplication::Get().FindWidgetWindow(SomeWidget)이 나오면, 이것은 "이 위젯이 속한 SWindow를 찾아라"
+이 연산이 필요한 이유는, 이벤트의 OS 윈도우 귀속, 렌더 타겟 결정, 모달 다이얼로그 스코프 결정 등에서 
+"이 위젯이 어느 물리적 윈도우에 속하는가"를 알아야 하기 때문이다
+
+FSlateApplication은 싱글턴이다
+FSlateApplication::Get()으로 접근한다
+이 클래스가 소유하거나 추적하는 것들의 목록이 Slate의 전역 상태를 정의한다:
+
+윈도우 목록 (TArray<TSharedRef<SWindow>>) — 모든 최상위 윈도우.
+마우스 캡처 위젯 — 현재 마우스를 독점하는 위젯. nullptr이면 정상 hit test 경로.
+키보드 포커스 위젯 — 현재 키 이벤트를 받는 위젯.
+드래그 드롭 오퍼레이션 — 진행 중인 FDragDropOperation. 이것이 non-null이면 이벤트 라우팅이 드래그 모드로 전환된다.
+플랫폼 애플리케이션 (FGenericApplication*) — OS 추상화 레이어.
+렌더러 (FSlateRenderer*) — 렌더링 백엔드.
+메뉴 스택 — 열려 있는 풀다운/컨텍스트 메뉴들의 스택. 메뉴 바깥을 클릭하면 이 스택을 pop한다.
+툴팁 상태 — 현재 활성 툴팁, 타이머 등.
+네비게이션 설정 — Tab 순서, 게임패드 네비게이션 규칙.
+
+이 전역 상태들 각각이 이벤트 라우팅의 모드 분기를 만든다
+마우스 캡처가 있으면 hit test를 건너뛰고, 
+드래그 오퍼레이션이 있으면 OnDragOver/OnDrop으로 라우팅하고, 
+메뉴 스택이 비어있지 않으면 메뉴 바깥 클릭이 dismiss를 트리거한다
+
+FSlateApplication은 유한 상태 기계이며, 
+멤버 변수들이 상태를, 이벤트가 전이를 정의한다.
+
+Slate의 특이한 동작을 디버깅할 때, 위젯 코드를 보기 전에 
+FSlateApplication의 현재 상태(캡쳐, 포커스, 드래그, 메뉴 스택)를 먼저 확인하라
+FSlateApplication이 예상과 다른 모드 (상태) 에 있을 수 있다.
+
+Slot 클래스는 Panel 클래스에 커플링
+Slot 클래스가 Panel 클래스의 **내부 클래스(nested class)**로 정의된다
+
+SBoxPanel (SPanel), TPanelChildren<SBoxPanel::FSlot>
+멤버: FSizeParam (AutoWidth/FillWidth), HAlign, VAlign, Padding
+
+SCanvas (SPanel), TPanelChildren<SCanvas::FSlot>
+멤버: Anchors, Offsets, Alignment, bAutoSize, ZOrder
+
+SOverlay (SPanel), TPanelChildren<SOverlay::FSlot>
+멤버: HAlign, VAlign, Padding
+
+CRTP(Curiously Recurring Template Pattern)
+TSlotBase<FSlot>의 메서드들이 FSlot&을 반환해서, 
+.FillWidth(1.0f).Padding(4.f) 같은 체이닝이 
+파생 타입의 메서드를 계속 호출할 수 있게 한다. 
+이것이 DSL의 체이닝 문법을 가능하게 하는 기술적 기반이다.
+
+Slot의 멤버가 곧 그 Panel의 "레이아웃 언어"
+
+---
+
+SWidget::OnPaint()가 생성하는 것은 FSlateDrawElement
+discriminated union 스타일
+내부에 EElementType이 있고, 이 타입에 따라 어떤 데이터가 유효한지가 달라진다
+Box — 텍스처가 입혀진 직사각형. 버튼, 배경, 아이콘 등
+Text — 글리프 시퀀스. 폰트, 색상, 아웃라인.
+Line
+Spline — 베지어 스플라인. 블루프린트 노드 간 연결선.
+Gradient 
+Viewport — 3D 씬을 렌더하는 직사각형 (에디터 뷰포트).
+Custom 
+
+Slate의 모든 시각적 표현은 이 원자들의 조합이다.
+이 목록이 Slate의 "시각적 어휘(visual vocabulary)"다
+
+SButton의 시각적 표현은 Box(배경 텍스처) + Text(라벨)
+블루프린트 그래프의 노드는 Box(노드 배경) + Text(노드 이름) + Spline(와이어)
+복잡한 UI도 이 원자들로 분해된다.
+
+Viewport 타입
+이것이 Slate의 2D 세계 안에 3D 렌더링 결과를 임베딩하는 메커니즘이다
+에디터의 뷰포트가 Slate 위젯 트리 안에 자연스럽게 존재할 수 있는 이유가 이것이다
+3D 씬은 별도로 렌더 타겟에 그려지고, 
+그 렌더 타겟이 FSlateDrawElement::Viewport로 Slate의 draw element 스트림에 삽입된다.
+
+---
+
+Slate 위젯은 색상, 텍스처, 폰트를 직접 들고 있지 않다
+FSlateStyleSet에서 이름으로 조회한다
+
+// 스타일 정의 (보통 모듈 초기화 시점에 한 번)
+StyleSet->Set("MyButton", FButtonStyle()
+    .SetNormal(BOX_BRUSH("Button_Normal", 8.f/32.f))
+    .SetHovered(BOX_BRUSH("Button_Hovered", 8.f/32.f))
+    .SetPressed(BOX_BRUSH("Button_Pressed", 8.f/32.f)));
+
+수천 개의 버튼이 있는 에디터에서 "모든 버튼의 hover 색상을 바꾸고 싶다"면, 
+스타일 셋의 정의 한 곳만 바꾸면 된다
+
+위젯 코드에서 색상이 하드코딩되어 있다면, 
+그것은 스타일 시스템을 우회한 것이다.
+
+---
+
+UMG 클래스
+Slate와 `UObject` 세계의 접합부
+
+UObject
+└── UVisual
+    └── UWidget                    (추상 — 모든 UMG 위젯의 루트)
+        ├── UPanelWidget           (자식을 여러 개 가짐 — SPanel에 대응)
+        │   ├── UCanvasPanel       → 내부에 SConstraintCanvas
+        │   ├── UHorizontalBox     → 내부에 SHorizontalBox  
+        │   ├── UOverlay           → 내부에 SOverlay
+        │   └── UScrollBox         → 내부에 SScrollBox
+        ├── UContentWidget         (자식을 하나 가짐 — SCompoundWidget에 대응)
+        │   ├── UBorder            → 내부에 SBorder
+        │   ├── UButton            → 내부에 SButton
+        │   └── USizeBox           → 내부에 SSizeBox
+        └── [Leaf 위젯들]
+            ├── UTextBlock         → 내부에 STextBlock
+            ├── UImage             → 내부에 SImage
+            └── UProgressBar       → 내부에 SProgressBar
+
+---
+
+FSlateApplication → FSlateRenderer → RHI
+
+SWidget::OnPaint()
+  → FSlateDrawElement 생성
+    → FSlateWindowElementList에 적립
+      → FSlateRenderer::DrawWindows()
+        → FSlateRHIRenderer (구현체)
+          → FRHICommandList (RHI 명령)
+            → GPU
+
+---
+
+픽셀 뒤의 클래스 구조
+
+창을 위에서 아래로 잘라보면, 이것이 하나의 SVerticalBox의 슬롯들이다
+
+최상단: 메뉴 바. File | Edit | Window | Tools | Build | Select | Actor | Help
+SMenuBar — SHorizontalBox 안에 SMenuAnchor들이 나열된 구조
+각 메뉴 항목(File, Edit, ...)이 SMenuAnchor이고, 
+클릭하면 SMenuAnchor가 풀다운 SWindow(메뉴 팝업은 별도의 OS 윈도우다!)를 생성한다
+이 팝업 SWindow는 FSlateApplication의 메뉴 스택에 push된다. 
+메뉴 바깥을 클릭하면 스택이 pop되면서 팝업이 닫힌다.
+
+두 번째 줄: 툴바. Selection Mode, 트랜스폼 도구들(이동/회전/스케일 아이콘), 스냅 설정, Play 버튼, Platforms 드롭다운
+이것은 SToolBarButtonBlock 계열 — SHorizontalBox 안에 SButton들과 SComboButton들이 나열된다
+Play 버튼의 초록색 삼각형은 SButton 안의 SImage가 FSlateBrush로 아이콘 텍스처를 참조한 것이다
+
+세 번째: 뷰포트 + 사이드 패널 영역
+왼쪽에 3D 뷰포트, 오른쪽에 Outliner
+이 분할은 SSplitter가 담당한다
+SSplitter는 SPanel의 일종으로, 자식들 사이에 드래그 가능한 구분선을 배치하고, 
+사용자가 드래그하면 슬롯의 크기 비율을 동적으로 변경한다
+
+OnMouseButtonDown에서 FReply::Handled().CaptureMouse()를 반환
+→ 이후 OnMouseMove가 캡쳐 모드에서 직접 전달 
+→ 드래그 거리에 따라 슬롯 비율 변경 
+→ Invalidate(Layout) 
+→ 다음 레이아웃 패스에서 자식들의 geometry 재분배.
+
+하단: 상태 바. Content Drawer, Output Log, Cmd, 콘솔 명령 입력
+SHorizontalBox 안에 버튼들과 SEditableTextBox(콘솔 입력)가 배치된다
+
+---
+
+뷰포트: Slate 안의 3D 세계
+
+이 영역은 SViewport 위젯이다
+SViewport는 SCompoundWidget을 상속하고, 
+내부에 FSceneViewport(게임/에디터 뷰포트)에 대한 참조를 들고 있다
+
+SViewport::OnPaint()에서 일어나는 일
+
+3D 씬은 엔진의 렌더링 파이프라인(Deferred Rendering, 라이팅, 포스트프로세스)을 거쳐 렌더 타겟 텍스처에 그려진다
+이 텍스처가 Slate의 draw element 스트림에 직사각형으로 삽입된다
+3D 렌더링의 결과물이 Slate에게는 그냥 하나의 텍스처 사각형
+
+SViewport를 감싸는 SOverlay가 있고, 3D 씬 위에 이 2D 위젯들이 오버레이된다
+
+SOverlay
+├── Slot[0]: SViewport (3D 씬 → 렌더 타겟 텍스처)
+├── Slot[1]: 뷰포트 툴바 (Perspective, Lit, Show 등)
+├── Slot[2]: XYZ 기즈모 표시
+└── Slot[3]: FPS/해상도 표시
+
+SOverlay의 Paint 순서 — Slot[0]이 먼저, Slot[3]이 마지막 — 가 곧 시각적 레이어 순서
+
+---
+
+Details 패널의 재귀적 구조
+Parameter Groups, Global Vector, General, Phys Material, Parent, Lightmass Settings
+접이식(collapsible) 카테고리들
+
+Details 패널은 SDetailsView라는 Slate 위젯
+UObject의 UPROPERTY들을 리플렉션으로 순회해서, 
+각 프로퍼티에 대응하는 Slate 위젯을 동적으로 생성한다
+
+MI_GlobalColor_Orange라는 UMaterialInstanceConstant(UObject)의 프로퍼티 메타데이터를 읽어서
+
+Category가 "General"인 프로퍼티들 → "General" 접이식 헤더 아래에 모은다.
+Phys Material 프로퍼티의 타입이 UPhysicalMaterial*(오브젝트 참조)
+SObjectPropertyEntryBox 위젯을 생성 (드롭다운 + 찾아보기 버튼).
+그 옆에 썸네일(SImage가 머티리얼 미리보기 텍스처를 표시).
+
+Bool 프로퍼티 → SCheckBox
+Float 프로퍼티 → SSpinBox<float>
+FLinearColor 프로퍼티 → SColorBlock + 컬러 피커 팝업
+
+접이식 카테고리 SExpandableArea라는 SCompoundWidget
+헤더 클릭 시 OnMouseButtonDown → 내부 bool 토글 → ChildSlot의 자식 Visibility를 Collapsed로 변경
+Invalidate(Layout) → 다음 레이아웃 패스에서 접힌 자식의 desired size가 0이 되어 아래 카테고리들이 위로 올라온다
+
+머티리얼 미리보기(프리뷰)
+이것도 SViewport
+3D 씬(프리뷰 메시 + 머티리얼 + 라이트)이 렌더 타겟에 그려지고
+그 텍스처가 Slate의 draw element로 삽입
+
+Details 패널에서 "Parent"를 M_GlobalColor_Orange에서 다른 머티리얼로 바꾸면
+UMaterialInstanceConstant의 프로퍼티가 변경되고
+머티리얼이 재컴파일되고
+프리뷰 씬의 머티리얼이 갱신되고
+다음 프레임의 3D 렌더링에서 구체의 색상이 바뀌고
+SViewport의 렌더 타겟에 새 색상이 반영된다. 
+
+이 과정에서 Slate 자체는 아무것도 할 필요가 없다
+SViewport는 매 프레임 렌더 타겟의 현재 내용을 그대로 보여줄 뿐이므로
+
+---
+
+FEngineLoop::Tick() → FSlateApplication::Tick() → 두 SWindow 각각에 대해
+
+왼쪽 창: 메인 에디터의 SWindow가 레이아웃 패스를 수행한다
+Paint 패스에서 SMenuBar, 툴바, SSplitter, Outliner의 STreeView가 각각 draw element를 누적한다
+SViewport가 도달하면 3D 렌더 타겟을 FSlateDrawElement::Viewport로 누적한다
+전체가 FSlateWindowElementList로 모인다
+
+오른쪽 창: 동일
+
+두 FSlateWindowElementList가 FSlateRHIRenderer에 넘어가고, 
+각각 배칭되어 GPU에 제출된다
+
+---
+---
+---
+---
+---
+---
+
+양쪽이 각자의 결과물을 공유 가능한 포맷으로 교환한다
+그 교환 포맷이 텍스처다
+3D 씬을 텍스처에 렌더하고, 그 텍스처를 Slate의 draw element로 삽입한다
+
+---
+
+접합부의 클래스 체인
+
+[Slate 세계]
+    SViewport                    ← Slate 위젯. SCompoundWidget 상속.
+        ↓ 소유
+    FSceneViewport               ← "렌더 타겟을 가진 뷰포트" 구현체
+        ↓ 참조                      FViewportRHI (GPU 서피스) 소유
+    FViewportClient (인터페이스)   ← "이 뷰포트에 무엇을 그릴 것인가"
+        ↓ 구현
+[엔진 세계]
+    FEditorViewportClient        ← 에디터 3D 뷰포트용 (레벨 에디터)
+    UGameViewportClient          ← 게임 런타임용 (PIE / Standalone)
+    FMaterialEditorViewportClient ← 머티리얼 프리뷰용
+        ↓ 사용
+[렌더링 세계]
+    FSceneRenderer               ← Deferred/Forward 렌더링 파이프라인
+    FScene                       ← 렌더 스레드 측 씬 표현
+    FRHICommandList              ← GPU 명령 발행
+
+---
+
+첫 번째 경계: SViewport ↔ FSceneViewport
+
+SViewport는 SCompoundWidget을 상속하는 Slate 위젯이다
+생성 시점에 FViewport 계열 객체에 대한 참조를 받는다
+
+SViewport는 FViewport의 존재를 알지만, FViewport가 어떤 3D 씬을 렌더하는지는 모른다
+SViewport에게 FViewport는 "매 프레임 새로운 이미지가 나타나는 직사각형"일 뿐이다
+텍스처의 내용이 우주선인지, 머티리얼 구체인지, 아니면 블루프린트 노드 그래프인지 구별이 없다
+
+FSceneViewport는 FViewport를 Polymorphize하며
+RHI 렌더 타겟(FViewportRHI)을 소유한다
+이 렌더 타겟이 GPU 측 텍스처이며, 3D 렌더링이 여기에 출력된다
+
+Slate는 '언제, 어디에 보여줄지'를 소유하고, 
+FSceneViewport는 'GPU 리소스의 할당과 크기 조정'을 소유하고, 
+'무엇을 그릴지'는 제3자(FViewportClient)에게 위임된다
+
+---
+
+두 번째 경계: FViewport ↔ FViewportClient
+
+FViewport는 "그릴 수 있는 표면"이지, "무엇을 그릴지"를 결정하지 않는다
+이 결정은 FViewportClient 인터페이스에 위임된다
+
+class FViewportClient {
+    virtual void Draw(FViewport* Viewport, FCanvas* Canvas);
+    virtual UWorld* GetWorld() const;
+    virtual FSceneView* CalcSceneView(FSceneViewFamily* ViewFamily);
+};
+
+레벨 에디터 뷰포트
+`FEditorViewportClient`. 
+이것이 `GetWorld()`에서 현재 편집 중인 레벨의 `UWorld`를 반환한다.
+`CalcSceneView()`에서 에디터 카메라(자유 비행 카메라)의 위치, 회전, FOV를 기반으로 
+`FSceneView`를 구성한다. 
+화면에 보이는 회색 바닥, 산, 폭발 배럴들은 
+이 `UWorld`의 액터들이 `FScene`에 등록된 것이 렌더된 결과다.
+
+머티리얼 프리뷰
+FMaterialEditorViewportClient
+**별도의 프리뷰 전용 `UWorld`**를 가지고 있다
+그 안에 프리뷰 메시(구체), 라이트, 스카이라이트만 배치되어 있다
+Details 패널에서 "Preview Mesh"를 바꾸면 이 프리뷰 월드의 메시가 교체된다
+
+PIE
+UGameViewportClient
+`FViewportClient`를 구현하면서 동시에 `UObject`를 상속
+Play 버튼을 누르면, 게임 `UWorld`가 생성되고, `UGameViewportClient`가 그 월드를 `SViewport`에 연결한다
+
+뷰포트마다 다른 세계를 보여준다
+`FViewportClient`의 다형성이 같은 `SViewport` 위젯으로 레벨 에디터, 머티리얼 프리뷰, 게임 실행을 모두 처리할 수 있게 한다.
+
+`FViewportClient`는 Strategy 패턴이고, 
+이것이 의미하는 것은 `SViewport`와 3D 렌더링 사이에 **안정된 인터페이스**가 있어서, 
+한쪽을 변경해도 다른 쪽이 영향받지 않는다는 것이다
+
+---
+
+세 번째 경계: FViewportClient ↔ FSceneRenderer
+
+`FViewportClient::Draw()`가 호출
+그 안에서 `FSceneViewFamily`와 `FSceneView`를 구성하고
+`GetRendererModule().BeginRenderingViewFamily()`를 호출
+
+이 호출이 **게임 스레드에서 렌더 스레드로의 핸드오프** 시점
+
+`UGameEngine::Tick()` 안에서 
+`UGameViewportClient::Draw()`가 먼저 호출되어 렌더 스레드에 3D 렌더링 커맨드를 발행하고, 
+이후 `FSlateApplication::Tick()`이 Slate의 Paint를 수행한다.
+
+[게임 로직 Tick]
+    ↓
+[FViewportClient::Draw()]
+    → FSceneViewFamily 구성
+    → 렌더 스레드에 "이 씬을 이 렌더 타겟에 그려라" 커맨드 발행
+    (렌더 스레드가 비동기로 작업 시작)
+    ↓
+[FSlateApplication::Tick()]
+    → 입력 처리
+    → 레이아웃
+    → Paint
+        → SViewport::OnPaint()
+            → "렌더 타겟 텍스처를 draw element로 누적"
+    → FSlateRHIRenderer에 draw element 제출
+    (렌더 스레드에 Slate 렌더링 커맨드 발행)
+    ↓
+[렌더 스레드에서]
+    1. 3D 씬 → 렌더 타겟 텍스처에 그림
+    2. Slate draw elements → 백버퍼에 그림 (렌더 타겟 텍스처 포함)
+    3. Present (화면에 표시)
+
+3D 렌더링과 Slate 렌더링이 같은 렌더 스레드에서 순서대로 실행되고, 3D 결과가 텍스처를 통해 Slate에 합성된다
+
+게임 스레드는 렌더 스레드보다 최소 한 프레임 앞서 달리고, 두 스레드 사이에는 FRenderCommandFence로 동기화 포인트가 있다
+SViewport::OnPaint()가 렌더 타겟을 참조할 때, 
+그 텍스처에 아직 이번 프레임의 3D 렌더링이 완료되지 않았을 수 있다
+
+---
+
+SViewport::OnPaint()은 일반적인 Slate 위젯의 OnPaint와 구조적으로 다르다
+일반 위젯은 FSlateDrawElement::MakeBox()로 브러시 텍스처를 생성한다. 
+SViewport는 대신 뷰포트의 렌더 타겟을 직접 참조하는 draw element를 생성한다
+
+OnPaint`는 렌더 타겟 핸들을 draw element 스트림에 삽입하는 것이지, 렌더링 자체를 수행하지 않는다
+여기서의 핵심 설계 선택은 `SViewport`가 `FSlateRenderer`에게 `DrawViewport`를 위임하는 것이다
+
+`SViewport`가 직접 draw element를 구성하지 않는 이유는, 
+렌더 타겟의 포맷과 합성 방식이 
+렌더링 백엔드에 따라 다르기 때문이다. 
+D3D11, D3D12, Vulkan에서 텍스처 합성 방식이 다르고, 감마 보정 처리가 다르고, HDR 핸들링이 다르다. 
+이 플랫폼 분기를 `SViewport`에 넣으면 
+Slate이 RHI 디테일에 오염된다. 
+Polymorphic한 `FSlateRenderer`가 이 분기를 흡수하므로, 
+`SViewport`는 플랫폼 중립적으로 남는다.
+
+---
+
+RenderDirectlyToWindow(true)
+뷰포트가 OS 윈도우의 백버퍼에 직접 렌더
+풀스크린 모드
+
+RenderDirectlyToWindow(false)
+하나의 OS 윈도우 안에 여러 뷰포트가 공존할 수 있으므로(레벨 에디터 + 머티리얼 프리뷰)
+각각이 자기만의 렌더 타겟을 가지고, Slate가 이것들을 최종 백버퍼에 합성한다
+
+---
+
+Epic이 렌더러를 UE4의 Deferred Shading에서 UE5의 Nanite/Lumen으로 교체했을 때, 
+`FSceneRenderer`의 내부는 근본적으로 바뀌었다. 
+하지만 Slate는 한 줄도 바뀌지 않았다.
+`SViewport`는 여전히 렌더 타겟 핸들을 참조하고, 
+`FSlateRHIRenderer`는 여전히 그 텍스처를 쿼드에 매핑한다
+
+3D 렌더링과 Slate는 독립적인 시스템이고, 렌더 타겟 텍스처를 통해 합성된다
+Slate → 3D 렌더러 방향으로는 결합이 없다(Slate는 렌더러를 모른다). 
+3D 렌더러 → Slate 방향으로도 결합이 없다(렌더러는 Slate를 모른다).
+결합은 `FViewportClient`라는 **중개자**와 
+렌더 타겟이라는 **공유 리소스**를 통한 결합이다
+
+접합부의 설계 품질은 양쪽의 독립적 진화를 얼마나 허용하느냐로 측정된다
+
+---
+
+마우스 클릭
+  → FSlateApplication hit test
+    → SViewport가 이벤트를 받음
+      → SViewport::OnMouseButtonDown()
+        → FSceneViewport::OnMouseButtonDown()
+          → FEditorViewportClient::ProcessClick()
+            → 마우스 좌표를 3D 레이로 변환 (Deproject)
+              → 물리 씬에 레이캐스트
+                → 히트된 AActor 반환
+                  → GEditor->SelectActor()
+
+이 경로에서 좌표계 변환이 핵심이다.
+Slate의 마우스 좌표는 스크린 픽셀이다. 
+이것이 FSceneView::DeprojectFVector2D()를 통해 3D 월드의 레이(시작점 + 방향)로 변환된다. 
+이 변환이 가능하려면 카메라의 뷰 행렬과 투영 행렬이 필요하고, 
+이것은 FViewportClient가 알고 있다
+
+2D 마우스 좌표가 3D 레이로 변환되어 물리 씬에 레이캐스트된다
+
+3D→2D(렌더링)와 2D→3D(클릭)가 같은 행렬의 정방향/역방향 적용이라는 것이 수학적으로 보장되어 있다. 
+'클릭한 곳이 보이는 곳과 일치한다'
+FSceneView가 뷰 행렬과 투영 행렬을 모두 들고 있는 이유는 
+이 양방향 변환을 하나의 객체에서 보장하기 위해서다.
+
+---
+
+윈도우의 "client area"
+프레임/타이틀바를 제외한 "내용물이 그려지는 영역"
+애플리케이션이 자유롭게 사용하는 영역
+윈도우 시스템이 제공하는 서비스의 "고객"이 사용하는 공간
+
+너는 내 Client야 — 내가 표면과 이벤트를 제공할 테니, 너는 그걸 가지고 네가 원하는 것을 해
+FViewport가 적절한 시점에 Client->Draw()를 호출한다
+FViewportClient는 호출을 받을 뿐, 자기가 FViewport에게 "지금 나를 그려줘"라고 요청하지 않는다.
+
+FViewportClient
+제어권이 프레임워크 쪽에 있다
+그 프레임워크가 Server이다
+Inversion of Control
+
+X Window System(1984)에서 
+X Server는 모니터가 달린 로컬 머신이고, 
+X Client는 원격에서 실행되는 애플리케이션이다
+"디스플레이 하드웨어라는 서비스를 제공하는 쪽이 Server"라는 논리
+
+---
+
+Viewport
+
+선박과 항공
+배의 선체에 뚫린 둥근 창문
+바깥 세계를 볼 수 있는 제한된 구멍
+거대한 세계의 제한된 일부를 볼 수 있는 구멍
+구멍의 위치와 크기에 의해 잘려 나간 부분만 보인다
+
+수학적으로 정의된 2D 도형들(직선, 원호)의 좌표가 
+화면의 물리적 크기와 일치하지 않는다
+
+world coordinates에서 정의된 도형을 화면의 특정 직사각형 영역에 매핑해야 한다
+이 매핑의 목적지가 "viewport"다
+세계 좌표의 특정 영역이 투영되어 보이는 화면 위의 직사각형
+
+FSceneView가 Window(카메라의 frustum — 세계에서 보고 싶은 영역)를 정의하고
+FViewport가 Viewport(화면에서 결과가 나타나는 직사각형)를 정의한다
+
+UE 에디터에서 뷰포트를 패닝하거나 줌하는 것은, 이 창의 위치와 크기를 조절해서 세계의 다른 부분을 보는 것이다
+
+---
+
+picture element
+디스플레이 화면의 발광할 수 있는 최소 단위
+pixel의 정의 자체에는 물리적 크기가 없다
+이 물리적 점의 크기는 디스플레이마다 다르다
+
+17인치 CRT 모니터 1024×768
+한 픽셀의 물리적 크기는 대략 0.27mm
+
+27인치 4K 모니터 3840×2160
+한 픽셀은 대략 0.16mm
+
+5.5인치 스마트폰이 1920×1080
+한 픽셀은 0.06mm
+
+같은 "1 픽셀"이 물리적으로 4배 이상 차이가 난다
+
+"버튼을 20×40 픽셀로 그려라"라는 명령의 결과가 디스플레이마다 달라진다.
+
+CRT에서는 적절한 크기의 버튼이 되지만, 
+스마트폰에서는 손가락으로 누를 수 없는 미세한 점이 된다
+
+같은 픽셀 수가 같은 물리적 크기를 보장하지 않는다
+
+---
+
+PC 모니터가 사실상 96 DPI로 표준화되어 있던 1990-2000년대다
+"1 픽셀 ≈ 1/96 인치"라는 암묵적 가정이 통했고
+Windows API도 이 가정 위에 설계되었다
+2010년대에 Retina 디스플레이와 고해상도 모바일 스크린이 등장하면서 이 가정이 무너졌다
+
+DPI라는 개념이 "하드웨어 스펙"에서 "모든 UI 프레임워크가 풀어야 하는 핵심 문제"로 승격된 것이 이 시점이다.
+
+---
+
+DPI: 물리적 세계와 픽셀 세계의 환율
+
+DPI(Dots Per Inch)는 1인치에 몇 개의 픽셀이 들어가는가. 
+이것은 디스플레이의 물리적 속성이다
+패널의 크기와 해상도의 비율
+
+"DPI"라는 용어가 소프트웨어 맥락에서 사용될 때는 
+물리적 DPI가 아니라 OS가 보고하는 논리적 DPI를 의미하는 경우가 많다.
+
+Windows는 오랫동안 96 DPI를 "100%"로 정의했다
+사용자가 디스플레이 설정에서 "150%"를 선택하면,
+OS가 보고하는 논리적 DPI는 144 (96 × 1.5)가 된다
+
+하지만 실제 물리적 DPI는 디스플레이에 따라 다르다
+144와 일치할 수도 있고 아닐 수도 있다
+사용자가 설정하는 "스케일 퍼센트"는 물리적 DPI와 독립적이다.
+
+macOS는 다른 접근을 택했다
+"Retina"와 "non-Retina"라는 이분법으로, 
+스케일 팩터가 1x 또는 2x다
+1x에서 "1 포인트 = 1 픽셀", 2x에서 "1 포인트 = 2×2 = 4 픽셀"
+
+Apple이 이 단순화를 할 수 있었던 이유는 
+자사 하드웨어만 지원하면 되므로, 
+패널 해상도와 물리적 크기를 정확히 제어할 수 있기 때문이다.
+
+---
+
+좌표계의 분리: 세 개의 세계
+
+복수의 좌표계와 그 사이의 변환을 명시적으로 관리해야 한다
+이것이 Viewport라는 개념의 기원(세계 좌표 → 화면 좌표 매핑)과 구조적으로 동형인 문제
+
+물리적 픽셀 (Physical/Device Pixels)
+디스플레이 하드웨어의 실제 발광 단위
+GPU가 최종적으로 쓰는 프레임 버퍼의 해상도
+4K 모니터에서는 3840×2160개
+
+논리적 픽셀 (Logical/Device-Independent Pixels)
+애플리케이션이 "생각하는" 좌표계
+DPI 스케일이 150%면, 논리적 1 픽셀 = 물리적 1.5 픽셀
+macOS Retina에서 논리적 1 포인트 = 물리적 2 픽셀
+이 좌표계에서 "버튼 폭 100"은 DPI가 달라도 대략 같은 물리적 크기를 유지한다
+
+애플리케이션 단위 (Application Units)
+Slate가 내부적으로 사용하는 좌표계
+Slate의 모든 위젯 크기, 패딩, 마진은 이 단위로 기술된다
+이 단위와 물리적 픽셀 사이의 비율이 DPI Scale Factor다
+
+디자이너는 "이 버튼이 화면에서 대략 이만한 크기여야 한다"는 의도를 기술하고 싶다(애플리케이션 단위). 
+OS는 사용자의 시력과 선호에 따라 스케일을 조절한다(논리적 픽셀). 
+GPU는 실제 하드웨어 해상도로 그린다(물리적 픽셀)
+
+애플리케이션 단위 (Slate 위젯의 크기/위치)
+    × DPI Scale Factor
+        ↓
+논리적 픽셀 (OS가 보는 좌표)
+    × Device Pixel Ratio (macOS) 또는 ×1 (Windows는 이미 물리 해상도)
+        ↓
+물리적 픽셀 (GPU 프레임 버퍼)
+
+---
+
+FSlateApplication은 현재 DPI Scale Factor를 알고 있다.
+이것은 OS로부터 쿼리한 값이다
+Windows에서는 GetDpiForWindow() 또는 GetDeviceCaps(LOGPIXELSX)로 얻고, 
+이를 96으로 나누면 Scale Factor가 된다(150% DPI → 144/96 = 1.5).
+
+---
+
+STextBlock의 ComputeDesiredSize()는 텍스트의 measured extent를 반환해야 한다
+이 측정은 폰트 래스터라이저가 수행하며, 래스터라이저는 물리적 픽셀 단위에서 글리프를 렌더한다
+DPI가 높으면 같은 "12pt" 폰트라도 더 많은 물리적 픽셀을 차지한다
+
+---
+
+Resolution 
+"화면에 점이 몇 개 있는가"만 말하고, 
+각 점의 크기에 대해서는 아무 말도 하지 않는다.
+
+DPI (Dots Per Inch) 
+같은 해상도라도 화면 크기가 다르면 DPI가 다르다
+3840×2160이 27인치 모니터에 있으면 ~163 DPI
+3840×2160이 55인치 TV에 있으면 ~80 DPI
+해상도가 높다고 DPI가 높은 것이 아니다
+DPI = 해상도 / 물리적 크기
+
+Scale Factor
+소프트웨어적 선택
+같은 DPI에서도 사용자가 스케일을 125%나 200%로 설정할 수 있다
+
+"적절한 UI 크기"는 해상도, DPI, 스케일 세 변수의 조합으로 결정
+
+---
+
+4K 모니터의 물리적 해상도는 3840×2160.
+OS의 DPI 스케일이 100%
+Slate가 OS에서 Scale Factor를 쿼리하면 1.0을 받는다.
+Slate의 "버튼 폭 100"이 물리적 100 픽셀로 그려진다.
+4K에서 100 물리적 픽셀은 27인치 모니터 기준 약 15mm — 1080p에서의 100 픽셀(약 30mm)의 절반
+모든 UI 요소가 물리적으로 절반 크기.
+
+해결: OS에서 DPI 스케일을 200%로 설정
+
+---
+
+Zoom은 해당 콘텐츠를 담는 특정 위젯 내부에서 RenderTransform이나 별도의 줌 파라미터로 처리
+뷰포트 줌은 카메라의 FOV 또는 직교 투영 크기를 변경
+
+---
+
+게임은 그 해상도의 렌더 타겟에 그린다
+1920×1080, 2560×1440, 3840×2160.
+
+UMG 위젯은 이 렌더 타겟 위에 그려진다
+같은 UMG 레이아웃이 1080p에서는 적절하지만 4K에서는 작아진다
+게임이 자체적으로 UI 스케일을 관리해야 한다
+프로젝트 설정에서 해상도에 따른 UI 스케일 커브를 정의할 수 있다: 
+1080p → 1.0, 1440p → 1.33, 4K → 2.0
+
+---
+---
+---
+---
+---
+
+배의 선체에 뚫린 둥근 구멍. 선원은 그것을 통해 바깥 세계를 보았다
+구멍은 작고 세계는 넓었으므로, 선원이 보는 것은 언제나 세계의 일부였다.
+구멍의 위치가 바뀌면 보이는 것이 바뀌었다
+구멍의 크기가 커지면 더 많은 것이 보였다
+창은 세계를 담는 동시에 창은 세계를 잘라낸다.
+
+수백 년 뒤, 누군가가 유리판 위에 점을 찍기 시작했다. 
+점은 스스로 빛을 냈다. 
+점이 충분히 많아지자, 그 점들의 배열이 그림이 되었다
+점들이 빛나는 유리판을 screen이라 불렀다.
+
+점의 크기는 유리판마다 달랐다
+같은 수의 점이라도, 손바닥만 한 유리판에서는 점이 작았고
+벽만 한 유리판에서는 점이 컸다
+
+"점 백 개 너비의 문을 그려라"라는 명령은, 
+어떤 유리판에서는 손가락으로 두드릴 수 있는 문이 되었고, 
+어떤 유리판에서는 핀셋으로나 건드릴 수 있는 점이 되었다.
+
+같은 숫자가 같은 크기를 약속하지 못했다
+
+---
+
+첫 번째 좌표계에서는 설계자가 말한다
+"이 문은 이만큼 크다."
+물리적 세계를 아직 모르는, 비율과 관계의 세계다.
+
+두 번째 좌표계에서는 운영체제가 말한다
+"이 사용자의 눈은 이만큼 가까이 있고, 이만큼의 크기를 편안하게 느낀다."
+같은 설계도가 다른 사람, 다른 환경에서 다르게 펼쳐지게 하는 환율이다.
+
+세 번째 좌표계에서는 하드웨어가 말한다
+"나는 이 위치의 이 점을 켠다."
+
+---
+
+화면에 보이는 것은 평면이지만, 그 평면을 만들어내는 구조는 나무다
+뿌리에서 가지로, 가지에서 잎으로 뻗어나가는 위젯 트리
+모든 버튼, 모든 글자, 모든 아이콘이 이 나무의 잎이다
+잎을 감싸는 테두리가 가지이고, 
+가지들을 나란히 세우는 선반이 더 큰 가지이며, 
+그 모든 것을 품은 창이 뿌리다
+
+---
+
+나무가 살아 있으려면, 세계와 연결되어야 한다
+체력이 줄면 체력 바가 줄어야 하고, 이름이 바뀌면 이름표가 바뀌어야 한다
+위젯과 데이터 사이의 동기화
+
+위젯이 필요할 때마다 (자신을 그려야 할 때마다)
+매 순간 질문한다 — "지금 값이 뭐야?"
+이 질문을 감싸는 것이 TAttribute다
+
+---
+
+나무의 각 노드가 하는 일은 "나를 이렇게 그려달라"는 기술서를 작성하는 것이다
+"이 위치에 이 텍스처로 사각형을 그려라." "이 위치에 이 글리프들을 배열하라." "이 두 점 사이에 곡선을 그어라." 
+이 기술서들이 쌓여 하나의 목록이 된다
+이 목록이 화가(렌더러)에게 넘어간다
+화가는 기술서들을 훑으면서, 같은 재료를 쓰는 것들을 모아 한 붓질로 처리한다.
+
+같은 재료끼리 묶고, 보이지 않는 것은 버리고, 순서를 재배치할 수 있다. 
+즉시 그리면 이 기회가 사라진다.
+
+즉시 처리의 구조적 Challenge들
+첫째, 중복 작업
+둘째, 순서 오염
+셋째, 재진입
+
+---
+
+Slate 나무에는 특별한 잎이 하나 있다. 
+SViewport라 불리는 이 잎은, 다른 잎들과 달리 사각형이나 글자를 그리지 않는다. 
+대신, 다른 세계에서 온 그림을 자기 자리에 끼워넣는다
+
+3D 세계가 별도의 화가에 의해 캔버스에 그려지고
+그 캔버스가 Slate의 납작한 기술서 목록에 "여기에 이 캔버스를 붙여라"라고 삽입된다
+
+Slate와 3D 렌더러 사이에는 오직 텍스처라는 공유 포맷만 있다.
+3D 렌더러가 텍스처에 세계를 그리고, Slate가 그 텍스처를 자기 사각형에 붙인다
+
+엔진의 렌더러가 세대마다 근본적으로 바뀌었다
+Deferred에서 Nanite와 Lumen으로
+하지만 Slate는 한 줄도 바뀌지 않았다
+텍스처라는 계약이 안정적이었으므로
+계약의 양쪽이 독립적으로 진화할 수 있었다.
+
+---
+
+사용자가 화면을 클릭하면 
+2D 스크린 좌표에서 시작된 점이, 
+카메라의 투영 행렬의 역변환을 거쳐, 
+3D 세계로 날아가는 광선이 된다. 
+이 광선이 세계의 물체에 닿으면, 그 물체가 선택된다
+
+렌더링이 3D를 2D로 투영하는 것이라면, 클릭은 2D를 3D로 역투영하는 것이다
+같은 행렬의 정방향과 역방향이 "보는 것"과 "만지는 것"을 만든다
+
+---
+
+각자의 언어로 말하게 하라. 그리고 경계에서 번역하라.
+OS와 Slate
+FGenericWindow와 FGenericApplication
+
+Slate와 UObject
+UWidget, SWidget
+
+Slate와 3D 렌더러
+FViewportClient
+
+설계자의 의도와 물리적 픽셀
+FGeometry DPI 스케일을
+
+양쪽은 서로를 모르고, 경계 객체가 번역을 담당하며, 
+번역의 안정성이 양쪽의 독립적 진화를 보장한다
+
+양쪽이 서로의 존재를 의식하지 않고도 함께 작동할 수 있게 하는 것
+
+배의 선체에 뚫린 viewport는 선원과 바다 사이의 경계였다. 
+선원은 바다의 모든 것을 알 필요가 없었고, 
+바다는 선원의 존재를 몰랐다. 
+창이라는 경계를 통해, 필요한 만큼만 세계가 흘러들어왔다.
+
+---
+
+SViewport는 자신이 보여주는 세계가 무엇인지 모른다
+FSlateRHIRenderer는 위젯 트리의 존재를 모른다.
+STextBlock은 자신이 어떤 Panel 안에 놓여 있는지 모른다
+
+아는 것은 의존이고, 의존은 속박이다
+
+STextBlock이 부모의 종류를 알았다면, 새로운 Panel이 추가될 때마다 STextBlock이 수정되어야 했다
+SViewport가 렌더러의 내부를 알았다면, 렌더러가 Deferred에서 Nanite로 바뀔 때 SViewport도 바뀌어야 했다
+
+지식은 자유의 반대편에 있다.
+무지는 시스템의 각 부분에게 "나는 내 일만 하면 된다"는 자유를 부여한다.
+
+Invalidation이란 무엇인가. "이 위젯의 캐시된 레이아웃 결과를 잊어라." 
+Culling이란 무엇인가. "보이지 않는 위젯의 존재를 잊어라." 
+Dirty bit란 무엇인가. "바뀌지 않은 것에 대한 질문을 잊어라."
+
+기억은 잊음의 구조화다
+
+TAttribute의 Pull 모델은 위젯이 자신의 상태를 스스로 신뢰하지 않는 것이다. 
+"내가 가진 값이 아직 맞는지 모르겠으니, 매번 다시 물어보자." 
+자기 기억을 불신하고, 매 프레임 다시 확인한다. 
+이 불신이 일관성의 원천이다. 
+자신의 기억을 믿고 갱신을 기다리는 Push 모델에서는 한 번의 실수 — 알림 누락 — 가 영원한 불일치를 만든다
+
+---
+
+그 외의 시간에는 존재하지 않는 것이나 마찬가지다
+FEngineLoop가 "지금 네 차례다"라고 말할 때만 동작한다
+
+
+게임 로직과의 동기화 문제
+위젯 핸들러에서 게임 상태를 읽을 때 어떤 프레임의 상태를 읽는가?
+레이아웃 계산 중에 다른 스레드가 위젯을 변경하면 어떻게 되는가?
+
+수동성이 이 모든 문제를 제거한다
+게임 스레드의 한 구간에서만 동작하므로, 
+그 구간 동안에는 Slate가 세계의 유일한 주인이다.
+
+---
+
+선언과 실행의 분리가 만드는 것은 "중재의 공간"이다
+
+열 개의 위젯이 각각 "나는 이만큼 크고 싶다"라고 선언하면, 
+부모가 전체를 조망하면서 공간을 공정하게 분배할 수 있다
+
+시민은 분쟁에서 직접 힘을 행사하지 않고 법원에 청구를 선언한다. 
+법원이 전체를 고려해서 판결을 실행한다. 
+자의지의 선언자와 의지의 실행자가 분리되어 있을 때만, 
+전체의 일관성을 보장하는 중재가 가능하다.
+
+---
+
+Pass 1은 민주적이다
+결정은 아래에서 올라오는 정보에 의해 만들어진다
+"너는 얼마나 크고 싶니?" 자식이 대답하고, 부모가 대답들을 종합한다
+잎사귀가 "나는 100 픽셀이 필요해"라고 말하면 그 요청이 루트까지 올라간다.
+
+Pass 2는 권위적이다
+결정은 위에서 내려온다. 
+루트가 "전체는 800 픽셀이다"라고 선언하면 그것이 잎사귀까지 내려간다.
+
+요청을 모르는 상태에서 배분하면 — 공간이 남거나 모자라는 불일치가 발생한다.
+
+조직의 원리
+예산 편성 과정을 보라.
+먼저 각 부서가 bottom-up으로 "우리는 이만큼 필요하다"를 보고한다. 
+그 다음 경영진이 top-down으로 "전체는 이만큼이다, 나누어 가져라"를 선언한다
+"제한된 자원을 복수의 요청에 배분한다"는 문제 자체가 강제하는 구조다
+유한한 공간에서 복수의 의지를 조율하는 모든 시스템이 도달하게 되는 구조다.
+
+---
+
+Slate 나무의 질서
+
+첫 번째 분기를 결정하는 것은 "자식이 없는가, 하나인가, 여럿인가"라는 순수하게 구조적인 질문
+구조는 행동보다 근본적이다
+어떻게 연결되어 있는가는 바뀌기 어렵다
+관계의 형태가 가능한 행동의 범위를 규정한다
+
+행동에 의한 분류("버튼은 클릭 가능한 것이다")는 새로운 행동이 추가될 때마다 흔들린다. 
+구조에 의한 분류("버튼은 자식 하나를 감싸는 것이다")는 행동이 아무리 추가되어도 흔들리지 않는다.
+
+---
+
+경계는 경계가 분리하는 것들보다 오래 산다.
+가장 안정적인 것은 중심이 아니라 경계이다
+SWidget이라는 추상 인터페이스, FViewportClient라는 중개 계약, FSlateDrawElement라는 교환 포맷
+
+이것들은 "사이"에 있는 것들이다
+
+에디터의 위젯들은 매 버전마다 변한다
+3D 렌더러는 세대마다 근본적으로 바뀐다
+OS 플랫폼도 진화한다
+
+경계는 두 세계의 최소 공통 분모이기 때문이다
+이 교집합은 작기 때문에 안정적이다
+
+한국어와 영어는 각각 급격히 변해왔다
+새로운 단어가 생기고, 문법이 변하고, 용법이 진화한다
+하지만 번역이라는 행위의 구조 — 원문의 의미를 파악하고, 대상 언어의 표현으로 재구성한다 — 는 수천 년 동안 변하지 않았다. 
+번역은 두 언어 사이의 경계이며, 두 언어보다 오래 산다.
+
+상품의 종류는 끊임없이 바뀌고, 경제 체제도 바뀌지만, "교환의 매개"라는 화폐의 인터페이스는 수천 년 동안 안정적이다
+"가치를 저장하고 교환한다"는 계약은 변하지 않았다.
+
+"위젯은 크기를 선언하고 부모가 배치한다"는 계약, 
+"렌더링 결과는 텍스처로 교환한다"는 계약, 
+"이벤트 처리의 결과는 반환값으로 선언한다"는 계약 
+이 계약들은 구현이 몇 번을 갈아엎어져도 살아남을 것이다.
+ "여러 관심사가 하나의 화면을 공유한다"는 문제 자체의 구조에서 도출된 것이기 때문이다.
+
+위젯들이 화면을 나누어 갖는 것, 
+입력 이벤트가 올바른 수신자를 찾는 것, 
+2D 세계와 3D 세계가 하나의 화면에 합성되는 것, 
+설계자의 의도와 하드웨어의 물리가 하나의 픽셀에서 만나는 것 
+
+각자의 언어로 말하게 하라. 경계에서 번역하라
+
+---
+
+매 순간, 모든 것을 다시 그린다
+vs
+존재는 retained하게 두어라
+
+---
+
+스스로 하나의 표면으로 완결되는 것.
+하나를 감싸 의미를 더하는 것.
+많은 것을 배치하여 관계를 만드는 것.
+
+---
+
+어떤 배치에서는 정렬이 중요하고,
+어떤 배치에서는 절대 좌표가 중요하고,
+어떤 배치에서는 채움 비율이 중요하다.
+
+배치의 의미를 자식에게 넣는 것은,
+모든 아이가 모든 나라의 법을 태어날 때부터 외우고 있게 하라는 말과 같다.
+
+---
+
+값이 바뀔 때마다 소식을 전하라,
+전달을 빠뜨리지 말라,
+누가 누구를 구독했는지 잊지 말라,
+죽은 자에게 편지가 가지 않게 하라.
+
+그런 왕국은 점점 복잡해졌다.
+
+누가 누구에게 말해야 하는지,
+언제 해제해야 하는지,
+무슨 알림이 이미 갔는지
+그물처럼 엉켰다.
+
+상태 동기화의 지옥
+
+---
+
+위젯은 자신이 그려질 때 현재를 묻는다.
+엔진이라는 거대한 시간의 강물 속에서는
+매 프레임 모든 것이 다시 현재가 되므로,
+이 질문은 자연스럽게 흡수된다.
+
+---
+
+변화의 경계를 정확히 아는 것
+
+캐시
+Invalidate
+dirty mark
+
+---
+
+3D 세계는 자신을 렌더 타겟에 그린다.
+그리고 그 결과를 2D 제국에 하나의 직사각형으로 건넨다.
+2D 제국은 그 직사각형을
+다른 박스나 이미지처럼 다룬다.
+
+2D 제국은 여전히 말한다.
+“나에게 필요한 것은
+이번 프레임의 이미지가 담긴 직사각형뿐이다.”
+
+---
+
+3D는 2D로 드러나고,
+2D의 클릭은 다시 3D로 환원된다.
+
+사람이 3D 뷰포트를 클릭할 때,
+2D 좌표는 다시 3D 레이로 변환되어
+월드 안으로 들어가야 한다.
+
+---
+
+그러나 자신의 차례를 기다리는 시스템은
+더 큰 시간 질서 안에 들어갈 수 있다.
+
+오직 엔진 루프가
+“이제 네 차례다”라고 말할 때만 움직인다.
+
+그 수동성 덕분에
+입력, 레이아웃, 페인트, 렌더 제출이
+한 프레임의 질서 안에 묶인다.
+
+자율적으로 분주한 시스템은 종종 전체를 배반한다.
+
+UMG는 파사드다.
+이 점을 이해하지 못하면
+그림자를 실체로 착각한다.
+깊은 방까지 내려가 보면 Slate가 있다.
+
+겉에는 다루기 쉬운 얼굴이 있고,
+속에는 더 날것의 기계가 있다.
+
+---
+
+복잡성을 층으로 분해했다
+
+플랫폼은 플랫폼의 문제를 맡는다.
+위젯은 위젯의 문제를 맡는다.
+레이아웃은 레이아웃의 문제를 맡는다.
+
+복잡성은 세 개의 Term 의 곱셈으로 분해된다
+
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+
+C++ 선언을 여러 서브시스템으로 투사하는 규칙
+
+Blueprint, Details 패널, Config, 
+Serialization, Replication, Asset Registry 같은 여러 층위에 동시에 영향을 줘요
+
+metadata는 또 별개의 층으로, 주로 에디터/툴링 쪽 표현에만 영향을 미치는 정보예요
+
+---
+
+UCLASS(...)
+Blueprint 쪽
+
+Abstract
+그 타입의 액터를 레벨에 직접 추가하지 못하게
+
+Blueprintable / NotBlueprintable
+Blueprint 생성의 베이스 클래스로 허용할지
+기본은 NotBlueprintable
+상속으로도 전파돼요
+
+BlueprintType
+이 클래스를 BP 변수 타입으로 쓸 수 있나
+
+---
+
+UCLASS(...)
+Config / 클래스 기본값 저장 모델
+
+Config
+.ini 파일에 데이터를 저장할 수 있음
+
+defaultconfig
+기본 config 파일에 기록
+
+PerObjectConfig
+config를 클래스 단위가 아니라 인스턴스 단위로 저장
+
+Transient / NonTransient
+베이스 클래스에서 상속된 transient 성격을 무효화
+
+---
+
+UCLASS(...)
+소유/인스턴싱 모델
+
+DefaultToInstanced
+생성 시 복제
+
+EditInlineNew
+Editor의 property window 안에서 그 자리에서 새 오브젝트를 만들 수 있게 해요
+
+Within=OuterClassName
+지정한 Outer 타입의 인스턴스 바깥에서는 존재할 수 없다고 선언
+
+---
+
+UCLASS(...)
+에디터 표현과 모듈 export 범위
+
+ClassGroup
+에디터에서 클래스가 어떤 actor group으로 보일지
+
+HideCategories=(...) / ShowCategories=(...)
+Details 패널에서 카테고리를 숨기거나 보이게 해요
+
+AutoExpandCategories=(...) / AutoCollapseCategories=(...)
+디테일 패널 카테고리의 확장/접힘 기본 상태를 제어해요
+
+AdvancedClassDisplay
+이 클래스의 프로퍼티들을 기본적으로 advanced section에 몰아넣어요
+
+MinimalAPI
+다른 모듈에서 사용할 수 있도록 클래스의 type information만 export하게 하는 옵션
+
+---
+
+UCLASS(meta=(...))
+에디터/Blueprint UX
+
+meta=(BlueprintSpawnableComponent)
+컴포넌트 클래스를 Blueprint에서 spawn 가능한 컴포넌트로 취급
+
+meta=(DisplayName="...")
+meta=(ShortToolTip="...")
+
+---
+
+UPROPERTY
+GC 추적은 특히 UObject 참조를 담는 프로퍼티일 때 중요하다
+어떤 것은 Editor 노출 때문에, 
+어떤 것은 serialization/config/replication 때문에, 
+어떤 것은 Blueprint surface 때문에 붙는다
+
+UPROPERTY(...)
+Editor 노출: 보이기 vs 수정 가능
+
+EditAnywhere / EditDefaultsOnly / EditInstanceOnly
+EditDefaultsOnly는 archetype/defaults에서만, 
+EditInstanceOnly는 인스턴스에서만 편집 가능해요
+
+VisibleAnywhere / VisibleDefaultsOnly / VisibleInstanceOnly
+보이기만 하고 편집은 안 되게 해요. Visible 계열은 Edit 계열과 호환되지 않아요
+
+Category="..."
+Details 패널/Blueprint 쪽 분류
+
+NonTransactional
+이 필드에 대한 변경을 editor undo/redo history에 넣지 않아요
+---
+
+UPROPERTY(...)
+Blueprint
+그래프 언어에서 이 필드가 어떻게 보일까
+
+BlueprintReadOnly / BlueprintReadWrite
+BlueprintGetter=... / BlueprintSetter=...
+직접 필드 접근 대신 커스텀 accessor를 쓰게 할 수 있어요
+
+---
+
+UPROPERTY(...)
+Config / 저장 / 일시성
+
+Config / GlobalConfig
+.ini에 로드/저장되는 프로필
+
+Transient
+저장/로드되지 않고, load 시 zero-fill 되는 값이에요
+
+DuplicateTransient / NonPIEDuplicateTransient
+복제 시 기본값으로 리셋
+
+TextExportTransient
+텍스트 포맷으로 export되지 않아서 copy/paste 등에 쓰이지 않아요
+
+SaveGame
+checkpoint/save system에 필드를 명시적으로 포함시키는 단순한 방법
+transient와는 다른 축
+
+---
+
+UPROPERTY(...)
+네트워크/Replication 축
+“이 필드가 네트워크 상태 동기화의 일부인가?”
+
+Replicated
+서버 복사본이 해당 변수 값을 클라이언트들로 복제
+
+ReplicatedUsing=FunctionName
+값 복제 + 후처리 훅
+
+NotReplicated
+struct 멤버에서 복제를 건너뛰는 용도
+
+---
+
+UPROPERTY(...)
+에셋 인덱싱/검색 시스템
+
+AssetRegistrySearchable
+이 프로퍼티와 값이 Asset Registry에 자동 추가되어, asset 검색 키처럼 쓰일 수 있어요.
+
+---
+
+UPROPERTY(meta=(...))
+editor UX
+
+meta=(ExposeOnSpawn="true")
+생성 시 핀/입력으로 노출할지
+
+meta=(ClampMin="0", ClampMax="1", UIMin="0", UIMax="1")
+값의 범위와 UI 슬라이더 범위
+
+meta=(EditCondition="...")
+meta=(DisplayName="...")
+
+---
+
+USTRUCT(...)
+
+BlueprintType
+이 struct를 Blueprint 변수 타입으로 쓸 수 있게
+
+Atomic
+이 struct를 항상 단일 유닛으로 serialize해야 함
+
+NoExport
+자동 생성 코드를 만들지 않아요
+
+---
+
+USTRUCT는 상자이고,
+멤버 UPROPERTY가 그 상자에 핀을 뚫는 역할을 해요.
+
+---
+
+C++ 선언
+  ↓
+Reflection 등록
+  - UCLASS / USTRUCT / UPROPERTY / UFUNCTION
+  ↓
+서브시스템별 참여 여부
+  - Blueprintable / BlueprintType
+  - EditAnywhere / VisibleAnywhere
+  - Config / Replicated / SaveGame ...
+  ↓
+에디터/툴 UX 다듬기
+  - meta=(DisplayName, ClampMin, EditCondition ...)
+
+---
+
+리플렉션 데이터는
+
+Blueprint와 Details 패널
+serialization, config, replication, asset registry, object handling 같은 여러 시스템이 같이 써요
+
+---
+
+aspect
+표면
+
+various aspects를 제어
+각기 다른 표면을 제어
+
+interface
+aspect
+표면
+
+정다면체
+
+---
+
+
+
+
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
