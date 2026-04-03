@@ -1,0 +1,2193 @@
+"Visual Script"가 아니라 "Visual Class Definition"
+UClass의 시각적 정의다
+
+
+C++에서 UCLASS() class AMyActor : public AActor { ... };라고 쓰는 행위
+UObject 시스템에 등록되는 UClass를 하나 생성한다
+Blueprint를 만드는 행위
+
+Blueprint가 "스크립트"처럼 보이는 것은 
+함수 body를 노드 그래프로 표현하기 때문이지, 
+본질은 스크립트가 아니다
+
+Blueprint 에디터에서 하는 모든 작업 — 변수 추가, 함수 정의, 이벤트 바인딩, 컴포넌트 추가
+클래스 정의의 각 측면(멤버 변수, 멤버 함수, 이벤트 핸들러, 디폴트 서브오브젝트)에 대응한다
+
+이 정체성에서 Data-Only Blueprint의 존재가 자연스럽게 도출된다
+그래프가 단 하나도 없이 디폴트 값만 오버라이드한 Blueprint
+C++로 치면 파생 클래스를 만들어서 생성자에서 기본값만 바꾼 것
+"스크립트 없는 스크립트"가 아니라 "로직 없는 클래스 파생"이라 하면 이상할 것이 없다.
+
+Blueprint Class
+파생 클래스를 정의
+부모 클래스가 무엇이냐에 따라 에디터가 노출하는 기능이 달라진다
+Actor Blueprint에는 컴포넌트 패널과 Construction Script
+Widget Blueprint에는 비주얼 디자이너
+
+Level Blueprint
+레벨에 1:1로 종속된 싱글턴 클래스 정의
+인스턴스를 직접 스폰할 수 없고 해당 레벨이 로드될 때 자동으로 인스턴스화된다
+C++의 ALevelScriptActor에 대응
+특정 트리거가 밟히면 문이 열린다든가, 레벨 시작 시 시퀀스가 재생된다든가
+일반 Blueprint Class는 어떤 월드에 스폰될지 모르므로 특정 액터 인스턴스를 하드 레퍼런스할 수 없지만, 
+Level Blueprint는 "이 레벨의 이 문"을 직접 가리킬 수 있다.
+
+Blueprint Interface
+C++의 순수 가상 인터페이스(UINTERFACE/IMyInterface)
+구현 없이 함수 시그니처만 선언하며, 이를 구현하는 Blueprint는 해당 함수의 body를 각자 정의한다.
+"이 액터가 AMyDoor인지는 모르지만, Interactable 인터페이스를 구현하는지는 물어볼 수 있다"는 패턴을 가능하게 한다.
+
+Blueprint Function Library
+UBlueprintFunctionLibrary 파생 클래스의 static 함수들을 정의하는 것
+(컴파일 시 실제 함수가 됨)
+
+Blueprint Macro Library
+호출 지점에 인라인 확장되는 그래프 템플릿
+Macro는 함수와 달리 실행 핀을 여러 개 가질 수 있고 (예: Success / Fail 두 갈래), 
+latent 노드를 포함할 수 있다
+
+Animation Blueprint
+UAnimInstance를 부모로 하는 Blueprint Class의 특수화
+AnimGraph라는 고유한 그래프 타입을 포함
+실행 흐름이 아니라 포즈 합성 파이프라인 — State Machine, Blend 노드, IK 체인 등 — 을 정의하는 데이터플로우 그래프
+
+EventGraph
+Blueprint의 "반응적 행동"을 정의
+이벤트 노드로부터 실행 흐름이 독립적으로 뻗어나간다
+EventGraph 안의 각 이벤트-실행흐름은 컴파일 시 UFUNCTION으로 대응된다
+
+Function Graph
+명시적으로 이름 붙여진 멤버 함수를 정의
+(1) 정확히 하나의 진입점과 하나의 리턴 노드를 가짐
+(2) 로컬 변수를 가질 수 있음
+(3) Latent 노드(Delay 등)를 포함할 수 없음
+Function이 일반적인 콜스택 기반 호출 — 호출하면 완료될 때까지 실행되고 리턴
+Latent 동작은 프레임을 넘겨야 하므로 콜스택 기반 함수의 의미론과 양립할 수 없다
+EventGraph의 이벤트 핸들러는 "호출되어 리턴되는 함수"가 아니라 "트리거되어 필요하면 여러 프레임에 걸쳐 실행되는 흐름"
+
+Construction Script
+에디터에서 액터를 배치하거나 속성을 변경할 때마다 실행되며, 런타임에도 SpawnActor 시 실행된다
+"프로퍼티 값에 따라 컴포넌트 구성을 동적으로 결정하는" 패턴
+벽 길이 변수에 따라 메시 인스턴스를 N개 배치
+
+노드
+실행 흐름(Execution Flow)
+흰색 실행 핀으로 연결
+명령형 프로그래밍의 제어 흐름에 대응
+"이 노드 다음에 저 노드를 실행하라"는 순서 관계를 정의
+실행 핀이 있는 노드는 Impure Node라 불리며, 호출 시 부작용(side effect)을 일으킬 수 있다
+변수 설정, 액터 스폰, 사운드 재생 등
+
+데이터 흐름(Data Flow)
+타입별로 색상이 다른 데이터 핀으로 연결
+함수형/데이터플로우 프로그래밍에 대응
+"이 값을 저 입력으로 넘겨라"는 데이터 의존성을 정의
+Pure Node
+수학 연산, Get 노드, Make Struct 등이며, 
+참조될 때마다 매번 재평가된다는 것이 핵심 의미론이다
+"캐시된 값"이 아니라 "호출 시점의 표현식"이다
+비용이 높은 Pure 노드(예: Get All Actors of Class)가 
+여러 Impure 노드의 입력에 연결되어 있으면 "매 연결마다" 실행된다
+
+C++ 코드에서는 제어 흐름과 데이터 흐름이 텍스트 안에 뒤섞여 있지만
+Blueprint에서는 두 흐름이 물리적으로 분리되어 시각적으로 추적 가능하다
+
+흰색 선만 따라가면 "무엇이 어떤 순서로 일어나는지"가 보이고, 
+색상 선만 따라가면 "이 값이 어디서 오는지"가 보인다.
+
+Event 노드
+실행 흐름의 진입점이다
+엔진이 조건 충족 시 트리거한다
+빨간색 상단 바
+
+Function Call 노드
+객체의 UFUNCTION을 호출
+Target 핀이 있어서 어떤 객체에 대해 호출할지 지정 (self가 기본)
+입출력 파라미터가 데이터 핀으로 노출
+Impure 함수는 실행 핀을 갖고, 
+Pure 함수(UFUNCTION(BlueprintPure))는 실행 핀 없이 데이터 핀만 갖는다
+
+Flow Control 노드
+실행 흐름의 분기와 반복
+Sequence
+Blueprint의 시각적 특성상 하나의 흐름이 너무 길어지면 가독성이 떨어지므로 이를 논리적 단위로 분리하는 데 유용하다.
+
+Variable Get/Set 노드
+멤버 변수의 읽기/쓰기
+
+Cast 노드
+실패 시 nullptr 반환 대신 명시적인 실행 분기로 표현된다
+
+Make/Break 노드
+구조체의 조립/분해
+
+Latent 노드
+시계 아이콘
+실행을 프레임 경계 너머로 확장시킨다
+Delay, MoveTo, Timeline
+엔진의 Latent Action Manager에 등록되어 매 프레임 폴링된다
+
+가장 강한 결합은 직접 참조 + 캐스팅
+다른 액터에 대한 레퍼런스를 변수로 들고 있거나 
+Get 노드로 얻은 뒤, Cast 노드로 구체 타입을 확인하고 해당 타입의 함수/변수에 직접 접근한다. 
+
+Blueprint Interface
+구체 타입을 몰라도 "이 인터페이스를 구현하면 이 함수를 호출할 수 있다"는 계약 기반 통신을 가능하게 한다
+인터페이스 메시지는 구현하지 않은 객체에 보내도 조용히 무시되므로, 
+"구현했으면 반응하고 아니면 넘어간다"는 관대한 통신이 가능하다
+
+Event Dispatcher
+C++의 델리게이트/옵저버 패턴의 Blueprint 표현
+발신자가 이벤트를 선언하고, 수신자들이 구독(Bind)하며, 발신자가 Broadcast하면 모든 구독자가 통보받는다. 
+발신자는 수신자의 타입을 전혀 알 필요가 없으므로 결합이 약하다. 
+다만 수신자는 발신자의 타입을 알아야 바인딩할 수 있다.
+
+가장 약한 결합
+월드 쿼리
+Get All Actors of Class
+매 호출마다 월드를 순회하므로 성능 비용이 크고, 
+아키텍처적으로도 "누구든 아무 때나 아무 타입을 뒤진다"는 통제 불능의 의존성을 만들 수 있다.
+
+---
+---
+---
+---
+---
+---
+
+함수 호출(call)의 의미론은
+호출자는 피호출자가 해당 함수를 가지고 있다고 전제하며, 없으면 컴파일 에러(C++)이거나 런타임 크래시다
+Insight 
+이쪽의 한 핀에서 저쪽의 여러 핀 중 하나의 핀으로 
+직접 연결되는 점퍼 케이블. 
+
+Blueprint Interface의 "메시지 전송"의 의미론
+아무 객체에나 인터페이스 메시지를 보낼 수 있으며, 구현하지 않은 객체는 조용히 무시한다
+"나는 이 메시지를 보낸다, 네가 이해하든 말든"
+
+C++ 대응물
+Cast 후 직접 호출
+캐스트 실패 시 nullptr이므로 호출 자체가 일어나지 않고, 성공하면 vtable을 통한 확정적 함수 호출
+Insight 
+함수 호출로 번역 가능? => Y/N 이라는 중간계층
+
+Execute 정적 함수
+IInteractable::Execute_Interact(Actor)
+이것이 "메시지 전송"
+내부적으로 해당 객체가 인터페이스를 구현하는지 확인하고, 구현하면 호출하고 아니면 아무 일도 일어나지 않는다
+
+Latent 노드의 C++ 대응물
+FPendingLatentAction, FLatentActionManager 
+
+UFUNCTION(BlueprintCallable, meta=(Latent, LatentInfo="LatentInfo"))
+void MyLatentFunction(FLatentActionInfo LatentInfo);
+
+meta=(Latent)가 핵심 마킹
+FLatentActionInfo는 이 함수가 "나중에 실행을 재개할 지점"에 대한 정보를 담는 구조체
+
+{
+    FLatentActionManager& LatentManager = GetWorld()->GetLatentActionManager();
+    LatentManager.AddNewAction(
+      LatentInfo.CallbackTarget, 
+      LatentInfo.UUID,
+      new FMyCustomLatentAction(LatentInfo)
+    );
+}
+
+클래스 정의의 서로 다른 측면을 각각 담당하는 패널들의 합성
+각 패널이 C++ 클래스 정의의 어떤 부분에 대응하는지
+
+Components 패널은 액터의 컴포넌트 계층 구조
+C++ 생성자에서 CreateDefaultSubobject를 호출하고 SetupAttachment로 계층을 잡는 작업의 시각적 대응물이다
+여기서 추가한 컴포넌트들은 CDO의 서브오브젝트로 등록된다
+C++의 UPROPERTY 마킹에 따라 에디터에서의 편집 가능성이 결정되듯
+Blueprint에서도 컴포넌트의 변수 노출 여부를 설정할 수 있다.
+
+Blueprint 패널
+클래스의 멤버 목록 — 변수, 함수, 매크로, 이벤트 디스패처, Event Graph — 을 리스트로 보여준다
+C++ 헤더 파일의 클래스 선언부에 나열되는 멤버 변수와 멤버 함수의 목록에 대응한다
+여기서 변수를 추가하면 UPROPERTY가 추가되는 것이고, 함수를 추가하면 UFUNCTION이 추가되는 것이다.
+
+Details 패널
+현재 선택된 요소(변수, 컴포넌트, 노드)의 프로퍼티를 편집한다
+변수를 선택하면 타입, 기본값, 카테고리, 복제 설정, 노출 수준 등을 편집
+C++에서 UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Combat", Replicated) 같은 specifier를 설정하는 것
+
+Graph Editor
+C++의 함수 body 작성에 대응
+
+Class Settings 
+Class Settings는 부모 클래스, 구현할 인터페이스 등
+: public AActor, public IInteractable 부분
+
+Class Defaults
+CDO의 프로퍼티 기본값
+
+UEdGraph
+단일 그래프
+노드들의 배열(TArray<UEdGraphNode*>) 소유
+하나의 UBlueprint 에셋은 여러 UEdGraph를 갖는다
+EventGraph용 하나, 각 함수 정의용 하나씩, Construction Script용 하나
+
+UEdGraphNode
+그래프 내 노드
+위치 좌표(NodePosX, NodePosY), 소유 핀 목록(TArray<UEdGraphPin*>), 노드 제목/코멘트 등 속성을 정의
+
+UK2Node
+Blueprint 전용 노드
+Blueprint 컴파일러가 이 노드를 중간 표현(intermediate representation)으로 변환하는 데 필요한 인터페이스
+ExpandNode, GetMenuActions 등을 추가한다.
+
+UEdGraphNode                    ← 에디터 범용 기반
+  └─ UK2Node                    ← Blueprint 노드 기반 (Kismet 2)
+       ├─ UK2Node_Event         ← BeginPlay, Tick 등 이벤트
+       ├─ UK2Node_CustomEvent   ← Custom Event
+       ├─ UK2Node_CallFunction  ← UFUNCTION 호출
+       ├─ UK2Node_IfThenElse    ← Branch 노드
+       ├─ UK2Node_MacroInstance ← 매크로 호출
+       ├─ UK2Node_DynamicCast   ← Cast To 노드
+       ├─ UK2Node_VariableGet   ← 변수 읽기
+       ├─ UK2Node_VariableSet   ← 변수 쓰기
+       ├─ UK2Node_Tunnel        ← 매크로 진입/퇴출점
+       ├─ UK2Node_Timeline      ← Timeline
+       └─ ...
+
+UEdGraph/UEdGraphNode/UEdGraphPin은 에디터 범용 그래프 프레임워크
+UK2Node 이하가 Blueprint 도메인의 의미론을 주입
+머티리얼 에디터나 애니메이션 그래프가 동일한 그래프 UI 인프라를 재사용하면서 각자의 도메인 노드만 다르게 정의할 수 있다.
+
+핀은 노드 간 연결의 단위
+어떤 연결이 유효하고 어떤 연결이 불가능한지를 핀의 타입 시스템이 결정한다.
+Blueprint 그래프 "문법"의 역할
+
+**UEdGraphPin**
+PinName
+C++ UFUNCTION의 파라미터 이름에 대응
+UFUNCTION()에 float Damage라는 파라미터가 있으면 해당 노드에 "Damage"라는 이름의 입력 데이터 핀이 생긴다.
+
+Direction
+EGPD_Input 또는 EGPD_Output
+핀이 노드의 왼쪽(입력)에 있는지 오른쪽(출력)에 있는지
+
+LinkedTo
+이 핀이 연결된 상대방 핀들의 배열이다
+데이터 출력 핀은 여러 입력 핀에 연결될 수 있다 (하나의 값을 여러 곳에서 사용)
+
+DefaultValue
+C++에서 파라미터의 디폴트 인자(void Foo(float X = 1.0f))에 대응
+
+FEdGraphPinType
+PinCategory
+"bool", "int", "int64", "float", "double", 
+"name", "string", "text", 
+"struct", "object", "class", "interface", 
+"softobject", "softclass", 
+"enum", "byte", "delegate", "exec"
+
+"exec"도 그냥 핀 카테고리 중 하나
+
+ContainerType
+C++의 TArray<T>, TSet<T>, TMap<K,V>에 대응
+
+bIsReference는 값 전달(by value)인지 참조 전달(by reference)인지를 구분한다. 
+C++에서 UFUNCTION 파라미터에 UPARAM(ref) 또는 &를 쓰는 것에 대응하며, 
+Blueprint에서는 다이아몬드 모양 핀으로 시각적으로 구분된다.
+
+핀 색상 체계
+같은 색 핀끼리만 연결된다는 시각직관이 성립
+
+"데이터는 분배되고, 제어는 흘러간다"
+실행 입력 핀은 여러 출력으로부터 들어올 수 있다 (여러 경로가 한 곳으로 합류)
+데이터 출력 핀은 여러 입력 핀에 연결 가능하다 (fan-out — 하나의 값을 여러 곳에서 읽음)
+
+Wildcard 핀
+아직 구체 타입이 결정되지 않았음
+연결하는 순간 상대방의 타입으로 확정
+C++ 템플릿 함수에 대응
+TArray<T>::Add(const T& Item)에서 T가 사용 시점에 결정되듯, Wildcard 핀의 타입도 연결 시점에 결정된다
+Blueprint에는 실제 "템플릿"이 없으므로, 이 제네릭 동작은 에디터의 핀 타입 전파(propagation) 로직으로 시뮬레이션된 것이다
+UK2Node의 NotifyPinConnectionListChanged나 PinTypeChanged 등의 함수가 이 전파를 처리한다
+
+이벤트 노드
+입력 실행 핀이 없음
+"외부에서 트리거되는 진입점"
+출력 데이터 핀이 있는 경우(예: OnOverlap의 OtherActor)는 C++ 함수의 파라미터에 대응
+
+Custom Event는 EventGraph 안에서 다른 실행 흐름이 "Call"할 수 있으면서도, 
+Event Dispatcher에 바인딩하거나 Latent 노드를 포함할 수 있다는 점에서 이벤트 노드나 함수보다 유연하다
+
+UFUNCTION(BlueprintCallable)
+float ApplyDamage(float BaseDamage, AActor* DamageCauser);
+
+이 함수는 Blueprint에서 UK2Node_CallFunction ApplyDamage 노드
+입력 실행 핀 하나, 출력 실행 핀 하나, 
+Target 입력 데이터 핀(self), BaseDamage 입력 데이터 핀(float, 연두색), DamageCauser 입력 데이터 핀(AActor*, 파란색), 
+ReturnValue 출력 데이터 핀(float, 연두색)
+
+UFUNCTION(BlueprintPure)
+float GetHealthPercentage() const;
+
+UHT는 const 멤버 함수를 기본적으로 Pure로 추론하지만, 
+명시적으로 BlueprintPure 또는 BlueprintCallable을 지정하여 이 추론을 오버라이드할 수 있다
+
+UK2Node_DynamicCast
+"Cast 실패"라는 런타임 상황이 실행 핀의 분기로 시각화
+
+UEdGraphSchema_K2
+핀 연결의 유효성 규칙
+어떤 핀끼리 연결 가능한지
+컴파일이 아니라 연결 시도 시점에 즉시 검증된다
+
+---
+---
+---
+---
+---
+---
+
+BeginPlay()도 함수이고, GetHealth()도 함수이고, IInteractable::Execute_Interact()도 함수다
+"특정 주소로 점프하여 명령어들을 실행하고 돌아온다"는 동일한 메커니즘
+
+이 구현적 동일성에 충실하게 단일 어휘("function")로 지각된다.
+virtual이든 static이든 콜백이든
+배후의 의미론, 시스템이 무엇이든
+
+기계에게는 전부 CALL/RET이다
+
+Blueprint는 동일한 메커니즘을 의도적으로 세 개의 다른 이름으로 분열시킨다
+C++가 단일 어휘 아래 숨겨버린 **세 가지 서로 다른 상호작용 양식(interaction modality)**을 명시적으로 드러낸다.
+<-> 동일한 단어(프레이밍) 속에 차이들이 침묵 속에 묻힌다
+
+"호출자와 피호출자 사이의 관계"를 두 축으로 Analyze
+
+첫째 축은 "누가 시작하는가" — 주체성의 방향이다
+둘째 축은 "상대방에 대해 얼마나 아는가" — 타입 지식의 정도다
+
+Function은 "내가 시작하고, 상대방이 누구인지 안다"
+내가 주체적으로 호출하며, 상대방의 타입과 시그니처를 완전히 알고 있다
+호출자가 피호출자에 대해 완전한 지식을 가지며, 피호출자는 반드시 응답한다 (명령)
+
+Event는 "내가 시작하지 않았고, 무언가가 나에게 일어났다"이다
+내가 이것을 호출한 적이 없다
+엔진이, 월드가, 물리 시스템이 나에게 이것을 발생시킨다
+주체성이 바깥으로 위임되어 있다
+
+Message는 "내가 시작하지만, 상대방이 누구인지 모른다"이다
+인터페이스 메시지를 보낼 때, 보내는 쪽은 상대방의 구체 타입을 모른다
+
+세계로부터 나에게 찾아오는 것
+후자는 내가 세계에 대해 질문하는 것
+빨간색 바의 Event 노드를 보면 "이건 내가 호출하는 게 아니라 일어나는 것"이라는 인식이 즉각적으로 형성
+녹색 바의 Function 노드는 "이건 내가 능동적으로 실행하는 것"이라는 인식이 즉각적으로 형성
+
+Alan Kay의 Smalltalk에서 시작된 메시지 패싱 패러다임
+
+Kay의 원래 OOP 비전에서 객체 간 상호작용은 "함수 호출"이 아니라 "메시지 전송"이었다
+객체 A가 객체 B에게 메시지를 보내면, B가 그 메시지를 이해하면 반응하고 이해하지 못하면 doesNotUnderstand로 처리한다
+
+시간적 불확정성
+Function은 내가 호출하므로 언제 실행되는지 내가 안다
+Event는 언제 발생할지 내가 모른다
+
+OnActorBeginOverlap이 이번 프레임에 올지, 100프레임 뒤에 올지, 영원히 오지 않을지 알 수 없다
+내가 정의하는 것은 "그 일이 일어났을 때 무엇을 할 것인가"뿐이다
+
+이 "언제"의 불확정성이야말로 "이벤트"라는 어휘가 "함수"와 결정적으로 다른 지점이다
+
+---
+---
+---
+---
+---
+---
+
+Function Graph
+하나의 진입점, 하나 이상의 퇴출점
+C++의 early return 패턴 — 조건을 검사해서 일찍 빠져나가는 — 에 대응
+
+함수는 단일 진입점을 갖는 추상화
+Macro는 "복수 진입 + 복수 퇴출이 가능한 인라인 확장 그래프"
+
+컴파일 시 EventGraph 전체가 하나의 UberGraph 함수로 통합되고, 
+각 이벤트 노드는 이 UberGraph 안의 서로 다른 **진입 오프셋(entry point)**이 된다.
+각 이벤트에 대해 UFUNCTION이 생성되긴 하지만, 이 함수는 UberGraph의 해당 오프셋으로 점프하는 **스텁(stub)**이다.
+
+Construction Script는 "이 객체를 초기화하라"가 아니라 
+**"이 프로퍼티 값들이 주어졌을 때, 이 액터는 어떤 모습이어야 하는가"**를 선언하는 것
+생성자가 **일회성 초기화(initialization)**라면, 
+Construction Script는 선언적 구성(declarative configuration) — "항상 이 상태로 수렴해야 한다"는 규격
+Construction Script 안에서 이전 실행의 잔여물을 정리하지 않으면 컴포넌트가 중복 생성되는 버그가 생긴다
+
+Blueprint 에디터의 "Private" 체크박스는 해당 변수를 자기 Blueprint 안에서만 접근 가능하게 만든다
+자식 Blueprint도 접근 불가
+
+"Instance Editable" 체크박스는 레벨에 배치된 인스턴스에서 이 값을 수정할 수 있는지를 제어
+
+Comment Box
+노드들을 시각적으로 묶는 색상 있는 영역
+
+Reroute Node
+선의 경로를 꺾는 순수 시각적 중계점
+
+Collapsed Graph
+여러 노드를 선택해서 하나의 복합 노드로 접는 것
+함수 추출과 비슷하지만 실제 함수를 생성하지 않는다
+순수하게 시각적 정리
+내부적으로는 동일한 그래프에 인라인으로 존재
+코드를 #pragma region으로 접는 것과 개념적으로 가장 가깝다
+
+제어 흐름은 본질적으로 배타적 자원이다
+실행 포인터는 한 순간에 한 곳에만 있을 수 있다
+따라서 하나의 실행 출력이 두 곳으로 동시에 가는 것은 의미론적으로 불가능하다
+반면 여러 경로가 한 점으로 합류하는 것은 자연스럽다 — "어떤 경로를 거쳤든 결국 여기에 도달한다."
+
+데이터는 본질적으로 복제 가능한 자원이다
+하나의 값을 여러 곳에서 읽는 것은 자연스럽다
+값은 읽힌다고 소모되지 않는다
+반면 하나의 입력이 두 소스에서 동시에 값을 받는 것은 의미론적으로 모호하다
+"둘 중 어느 값을 쓸 것인가?"
+
+---
+---
+---
+---
+---
+---
+
+리플렉션 시스템이 노출하는 메타데이터를 각각 다른 방식으로 시각화하고 편집하는 도구들의 연합체
+
+Slate
+OS의 네이티브 UI 툴킷(Win32 컨트롤, Cocoa 등)을 사용하지 않는
+즉시 모드(immediate-mode) 렌더링 기반의 UI 시스템
+
+UObject 세계와는 완전히 별개의 메모리 관리 체계에 속한다.
+TSharedPtr/TSharedRef 수명 관리
+
+UObject 세계(에셋, 액터, 컴포넌트)와 Slate 세계(에디터 UI)는 직접 참조로 연결될 수 없다. 
+UObject가 SWidget을 UPROPERTY()로 소유할 수 없다
+이 두 세계를 잇는 브릿지 패턴들이 필요하다
+
+에셋 타입 하나, 에디터 하나
+도메인별 에디터
+FAssetEditorToolkit: 에셋 에디터의 기반
+
+에셋 로드/세이브 통합, 탭 매니저 초기화, 툴바/메뉴 프레임워크, Undo/Redo 트랜잭션 통합, 에셋 변경 알림
+
+FAssetEditorToolkit
+  ├─ FBlueprintEditor           ← Blueprint 에디터
+  ├─ FMaterialEditor            ← 머티리얼 에디터
+  ├─ FPersonaToolkit (IAnimationEditor 등) ← 애니메이션 에디터(Persona)
+  ├─ FSoundCueEditor            ← 사운드 큐 에디터
+  ├─ FNiagaraSystemToolkit      ← Niagara 이펙트 에디터
+  └─ ...
+
+UObject 파생 클래스
+에셋의 데이터 자체
+UMaterial, UBlueprint, USoundCue
+이것이 직렬화되어 .uasset 파일로 저장
+
+UFactory 파생 클래스
+에셋의 생성 방법 정의
+Content Browser에서 "우클릭 → New Asset"으로 새 에셋을 만들 때 어떤 UFactory가 호출될지
+UMaterialFactoryNew는 빈 머티리얼을 생성하고, 
+UTextureFactory는 이미지 파일로부터 텍스처를 임포트한다
+
+UFactory::FactoryCreateNew(create from scratch)
+UFactory::FactoryCreateBinary(외부 파일로부터 임포트)
+
+FAssetTypeActions_Base 파생 클래스
+Content Browser에서 이 에셋 타입이 어떻게 보이고 어떻게 상호작용하는가
+에셋의 색상, 카테고리, 우클릭 메뉴 항목, 
+더블클릭 시 어떤 에디터를 열 것인지. OpenAssetEditor 함수가 이 연결을 만든다
+
+FAssetEditorToolkit 파생 클래스
+에디터 UI 자체
+탭, 툴바, 그래프 등을 정의
+
+Details 패널
+어디서든 무언가를 선택하면 Details 패널에 그 프로퍼티가 나타난다.
+Details 패널은 특정 에셋 타입에 종속되지 않고, 
+UObject의 리플렉션 메타데이터를 읽어서 UI를 생성한다
+어떤 UObject든 넘겨주면, 그 클래스의 UProperty(실제로는 FProperty, UE5에서 리팩터링됨)들을 순회하며 
+각 프로퍼티 타입에 맞는 편집 위젯을 자동으로 배치한다
+
+FPropertyEditorModule* PropertyModule = FModuleManager::LoadModule("PropertyEditor");
+
+IDetailsView* DetailsView = PropertyModule.CreateDetailView();
+
+// 편집할 객체 지정 — 이것만으로 UI가 자동 생성된다
+DetailsView->SetObject(MyUObject);
+
+해당 UObject의 UClass로부터 모든 FProperty를 열거하고, 
+각 프로퍼티의 타입(FFloatProperty, FObjectProperty, FStructProperty 등)에 따라 
+적절한 위젯(슬라이더, 드롭다운, 색상 선택기, 에셋 참조 선택기 등)을 동적으로 생성한다
+
+UPROPERTY 메타데이터가 Details 패널을 제어하는 방식
+EditDefaultsOnly는 CDO 편집에서만
+EditInstanceOnly는 인스턴스 편집에서만
+VisibleAnywhere는 읽기전용
+
+meta = (EditCondition = "bIsEnabled") → 해당 표현식이 true일 때만 편집 가능
+
+특정 UClass에 대한 Details 패널의 표현을 커스터마이즈
+
+class FMyActorDetails : public IDetailCustomization
+{
+    virtual void CustomizeDetails(IDetailLayoutBuilder& DetailBuilder) override
+    {
+        // "Combat" 카테고리를 맨 위로
+        IDetailCategoryBuilder& CombatCategory = DetailBuilder.EditCategory("Combat");
+
+        // Health 프로퍼티에 커스텀 위젯 부착
+        CombatCategory.AddCustomRow(LOCTEXT("HealthBar", "Health Bar"))
+            .WholeRowContent()[ SNew(SHealthBarWidget) ];
+    }
+};
+
+SGraphEditor 
+Blueprint 에디터의 그래프 캔버스, 머티리얼 에디터의 노드 그래프, 사운드 큐 에디터의 노드 그래프, 애니메이션 그래프, Niagara 에디터
+
+SGraphEditor가 제공하는 것
+노드 드래그, 핀 연결/분리, 줌/팬, 선택, 복사/붙여넣기, 코멘트 박스
+
+도메인별 차이는 Schema와 Node 클래스에서 온다
+
+SGraphEditor (Slate 위젯, 범용)
+  ↕ 시각화
+UEdGraph (데이터 모델, 범용)
+  ├─ UEdGraphNode들 (범용 기반)
+  │    └─ UK2Node (Blueprint), UMaterialGraphNode (머티리얼), ...
+  └─ UEdGraphSchema (연결 규칙, 범용 인터페이스)
+       └─ UEdGraphSchema_K2 (Blueprint), UMaterialGraphSchema (머티리얼), ...
+
+컴파일 타겟(VM 바이트코드, HLSL, 포즈 파이프라인)
+
+레벨 에디터 뷰포트의 구조
+
+SLevelViewport → SEditorViewport → Slate 위젯 계층
+내부적으로 게임의 렌더링 파이프라인과 동일한 경로를 통해 씬을 그린다
+SViewport → FViewport → FSceneViewport
+
+에디터 뷰포트가 게임 뷰포트와 다른 점
+FEditorViewportClient가 카메라 제어, 기즈모 표시, 액터 선택/변환 등 에디터 고유의 상호작용을 처리한다
+게임에서는 APlayerController가 입력을 받지만, 에디터에서는 FEditorViewportClient가 마우스/키보드 입력을 해석
+
+FEdMode(UE5에서는 UEdMode로 리팩터링 진행 중)
+뷰포트에서 무엇을 클릭하면 무슨 일이 일어나는지는 현재 활성화된 Editor Mode에 의해 결정된다
+뷰포트 상호작용의 전략 패턴
+
+기본 모드에서 클릭하면 액터가 선택되고 기즈모가 나타나지만, 
+Landscape 모드에서 클릭하면 지형이 조각되고, Foliage 모드에서 클릭하면 식생이 페인팅된다
+
+각 모드가 FEdMode 서브클래스이며, HandleClick, InputKey, Render(오버레이 그리기) 등을 오버라이드하여 
+뷰포트의 입력 해석과 시각적 피드백을 완전히 교체한다.
+
+FEdMode는 APlayerController의 에디터 버전이라고 볼 수 있다
+
+Content Browser: 에셋 레지스트리의 시각적 프론트엔드
+
+FAssetRegistry(에셋 메타데이터 데이터베이스)
+디스크의 모든 .uasset 파일을 로드하지 않고도 에셋의 타입, 경로, 태그, 의존성 등을 빠르게 조회할 수 있는 것은 
+FAssetRegistry가 이 메타데이터를 인메모리 인덱스로 유지하기 때문이다
+
+에셋 목록/썸네일 표시 → FAssetRegistry에서 메타데이터 쿼리, UThumbnailManager가 썸네일 렌더링.
+필터링/검색 → FAssetRegistry의 태그/클래스 기반 필터, FARFilter 구조체가 필터 조건을 표현.
+더블클릭으로 에디터 열기 → FAssetTypeActions의 OpenAssetEditor가 적절한 FAssetEditorToolkit을 인스턴스화.
+우클릭 컨텍스트 메뉴 → FAssetTypeActions의 GetActions가 이 에셋 타입에 가능한 행동들(복제, 리임포트, 머지 등)을 반환.
+드래그 앤 드롭 → 에셋을 뷰포트로 드래그하면 UActorFactory가 해당 에셋에 맞는 액터를 자동 생성
+(예: 스태틱 메시를 드래그하면 AStaticMeshActor 생성).
+
+트랜잭션 시스템
+
+에디터의 모든 수정 가능한 작업은 **FTransaction**으로 감싸진다
+
+// 에디터 코드에서의 전형적 패턴
+GEditor->BeginTransaction(LOCTEXT("MovedActor", "Move Actor"));
+MyActor->Modify();          // 현재 상태 스냅샷
+MyActor->SetActorLocation(NewLocation);
+GEditor->EndTransaction();  // 트랜잭션 완료, Undo 스택에 푸시
+
+Modify() 호출이 이 시스템의 진입점이다
+
+---
+---
+---
+---
+---
+---
+
+UCLASS(), UPROPERTY(), UFUNCTION() 등 매크로들은 C++ 전처리기 수준에서는 거의 아무것도 하지 않거나 최소한의 코드만 남긴다
+이 매크로들의 소비자는 UHT이며, UHT가 이 마크업을 읽고 .generated.h와 .gen.cpp 파일을 생성하며, 
+이 생성된 코드가 리플렉션 시스템의 런타임 데이터 구조를 등록한다
+
+각 마크업이 UHT를 거쳐 최종적으로 어떤 C++ 클래스의 인스턴스로 런타임에 존재하게 되는가?
+
+UCLASS() → UClass 인스턴스
+UCLASS()를 쓰면 해당 C++ 클래스를 기술하는 UClass 객체 하나가 런타임에 존재하게 된다
+
+UCLASS(Blueprintable, BlueprintType)
+class AMyActor : public AActor { ... };
+
+이 선언은 런타임에 UClass 인스턴스 하나를 낳고, 
+AMyActor::StaticClass()로 접근 가능하다
+
+UClass는 UStruct를 상속하고, UStruct는 UField를 상속하고, UField는 UObject를 상속한다
+클래스 기술자 자체가 UObject
+리플렉션 메타데이터가 GC의 관리를 받고, 직렬화 가능하다
+
+UClass의 멤버들
+
+ClassFlags (EClassFlags)
+UCLASS() 괄호 안의 specifier들
+Abstract, Transient, NotPlaceable 등이 비트 플래그로 저장
+
+Blueprintable이나 BlueprintType 같은 specifier는 
+ClassFlags가 아니라 ClassMetaData(TMap<FName, FString>)에 키-값 쌍으로 저장된다
+ClassFlags는 엔진 핵심 동작에 영향을 주는 하드 플래그이고, 
+메타데이터는 에디터/Blueprint 같은 소비자가 읽는 소프트 어노테이션이다
+
+ClassDefaultObject 
+이 클래스의 기본값 인스턴스
+GetDefaultObject<T>()로 접근
+
+SuperStruct
+부모 클래스의 UClass를 가리킨다
+C++의 상속 관계를 런타임에 순회 가능하게 만든다
+IsChildOf(), IsA() 같은 함수가 이 포인터를 따라 올라가며 검사한다
+
+Interfaces 
+이 클래스가 구현하는 인터페이스 목록
+
+PropertyLink 
+이 클래스가 소유하는 프로퍼티와 함수들의 링크드 리스트
+
+ClassConstructor 
+이 클래스의 인스턴스를 생성하는 함수 포인터
+NewObject<T>()가 내부적으로 이것을 호출한다
+
+UPROPERTY() → FProperty 인스턴스
+UE4 초기에는 프로퍼티 기술자가 UProperty(UObject 파생)였지만, 
+UE 4.25에서 FProperty(비-UObject)로 리팩터링되었다
+
+클래스 하나에 프로퍼티가 수십~수백 개 있을 수 있고, 각각이 UObject이면 GC 오버헤드가 무시할 수 없었다
+
+UPROPERTY()
+float Health;
+
+이 선언은 런타임에 FFloatProperty 인스턴스 하나를 낳는다
+이 인스턴스는 소유 UClass의 PropertyLink에 등록되며, 다음을 담고 있다
+
+NamePrivate 
+프로퍼티 이름 ("Health")
+
+Offset_Internal 
+이 프로퍼티가 객체 메모리 내에서 어디에 위치하는가
+(float*)((void*)Object + Property->Offset_Internal)
+C++에서 멤버 변수 접근이 컴파일 타임에 오프셋으로 해소되는 것의 런타임 재현이다.
+
+EPropertyFlags
+EditAnywhere, BlueprintReadWrite, Net(복제) 등의 specifier가 비트 플래그로 인코딩된다
+Details 패널이 이 플래그를 읽어서 "편집 가능한가? 읽기전용인가?"를 결정하고, 
+네트워크 시스템이 이 플래그를 읽어서 "복제 대상인가?"를 결정한다
+
+MetaDataMap 
+meta=() 안의 키-값 쌍들
+ClampMin, EditCondition, DisplayName 등
+
+C++ 타입 시스템의 리플렉션 사영(projection)
+
+FProperty                          ← 기반
+  ├─ FNumericProperty
+  │    ├─ FFloatProperty           ← float      (= UPROPERTY() float X)
+  │    ├─ FDoubleProperty          ← double
+  │    ├─ FIntProperty             ← int32
+  │    ├─ FInt64Property           ← int64
+  │    └─ FByteProperty            ← uint8 / enum
+  ├─ FBoolProperty                 ← bool (특수: 비트필드 지원)
+  │
+  ├─ FStrProperty                  ← FString
+  ├─ FNameProperty                 ← FName
+  ├─ FTextProperty                 ← FText
+  │
+  ├─ FObjectProperty               ← !UObject* 계열
+  │    └─ FClassProperty           ← TSubclassOf<T>
+  ├─ FSoftObjectProperty           ← TSoftObjectPtr<T>
+  ├─ FWeakObjectProperty           ← TWeakObjectPtr<T>
+  │
+  ├─ FStructProperty               ← USTRUCT() 타입 (FVector 등)
+  │
+  ├─ FArrayProperty                ← TArray<T>
+  ├─ FSetProperty                  ← TSet<T>
+  ├─ FMapProperty                  ← TMap<K,V>
+  │
+  ├─ FDelegateProperty             ← 싱글캐스트 델리게이트
+  ├─ FMulticastDelegateProperty    ← 멀티캐스트 델리게이트
+  │
+  ├─ FInterfaceProperty            ← TScriptInterface<I>
+  └─ FEnumProperty                 ← UENUM() 타입
+
+각 서브클래스가 SerializeItem, CopyCompleteValue, Identical 등의 가상 함수를 오버라이드하여 자기 타입에 맞는 연산을 구현한다
+타입마다 직렬화/복제/비교/복사의 방법이 다르다. 
+FArrayProperty는 원소 타입을 알아야 각 원소를 직렬화할 수 있고, 
+FObjectProperty는 포인터를 에셋 경로로 변환해야 직렬화할 수 있으며, 
+FBoolProperty는 비트필드 팩킹을 처리해야 한다.
+
+FProperty는 "이름과 타입"이 아니라 "이름과 오프셋과 연산들"이다
+리플렉션 시스템에서 타입이란 "이 바이트들을 어떻게 해석하고 조작하는가"를 아는 객체이다
+이것이 리플렉션이 런타임에 "타입이 없는 언어"처럼 동작할 수 있는 이유다
+void*와 오프셋만으로 임의의 프로퍼티에 접근하되, FProperty 서브클래스가 타입 안전성을 런타임에 제공한다.
+
+UFUNCTION() → UFunction 인스턴스
+
+UFUNCTION()
+float ApplyDamage(float BaseDamage, AActor* DamageCauser);
+
+UFunction은 UStruct를 상속한다
+**함수도 "멤버를 소유하는 구조"**로 취급된다
+함수가 소유하는 "멤버"란 무엇인가? 
+파라미터와 리턴 값이다
+
+BaseDamage와 DamageCauser와 ReturnValue는 각각 FProperty 인스턴스로서 
+이 UFunction 안에 등록된다
+
+UFunction의 멤버들
+
+EFunctionFlags
+UFUNCTION() specifier들
+
+FNativeFuncPtr
+C++ 구현을 가리키는 함수 포인터
+C++로 작성된 UFUNCTION의 경우 실제 컴파일된 코드의 주소이며, 
+Blueprint 전용 함수의 경우 UObject::ProcessInternal(Blueprint VM 실행기)을 가리킨다
+
+Script (TArray<uint8>)
+Blueprint에서 정의된 함수의 경우, 컴파일된 바이트코드가 여기에 저장된다.
+C++ 전용 함수는 이 배열이 비어 있다
+
+FirstPropertyToInit 
+함수의 "스택 프레임"에 해당하는 메모리 영역(FFrame)을 설정할 때 사용
+함수 호출 시 초기화
+
+**함수의 시그니처는 구조체와 동형(isomorphic)**이다.
+함수는 일종의 Data 스키마이고, Body는 Data 스키마를 계산하는 표현식이다. (Pure)
+**함수의 시그니처는 함수 콜 프레임과 구조적으로 동형이다**
+
+float ApplyDamage(float BaseDamage, AActor* DamageCauser)
+struct { float BaseDamage; AActor* DamageCauser; float ReturnValue; }
+
+USTRUCT() → UScriptStruct 인스턴스
+
+USTRUCT()
+struct FDamageInfo
+{
+    GENERATED_BODY()
+    
+    UPROPERTY()
+    float Amount;
+    
+    UPROPERTY()
+    AActor* Instigator;
+};
+
+UScriptStruct도 UStruct를 상속
+Amount는 FFloatProperty로, Instigator는 FObjectProperty로 등록된다.
+
+UScriptStruct는 CDO가 없고, 인스턴스가 UObject가 아니다.
+구조체 인스턴스는 값 타입(value type)이며, 
+다른 UObject의 프로퍼티로 내장(embed)되거나 스택에 생성된다
+
+GC의 대상이 아니다
+
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnHealthChanged, float, NewHealth);
+FOnHealthChanged라는 C++ 클래스를 생성
+이 클래스는 FMulticastScriptDelegate를 상속하며, 
+ProcessMulticastDelegate를 통해 바인딩된 모든 함수를 호출하는 Broadcast 메서드를 갖는다
+이것이 Blueprint에서 Event Dispatcher로 표현된다
+
+C++ 컴파일러가 컴파일 타임에 아는 모든 것 — 클래스 계층, 멤버 오프셋, 함수 시그니처, 상속 관계 — 을 
+리플렉션 시스템이 런타임 데이터 구조로 투영(Project)한다
+
+**마크업은 그림자에 무엇을 포함시킬지를 결정하는 조리개(aperture)**다
+
+리플렉션 관점에서 클래스, 구조체, 함수는
+"이름 붙은 FProperty들의 순서 있는 집합을 소유하는 것"이라는 공통 구조를 가진다
+클래스의 멤버 변수, 구조체의 필드, 함수의 파라미터 — 전부 "오프셋을 가진 타입 있는 데이터 조각"이다.
+
+---
+---
+---
+---
+---
+---
+
+데이터베이스 용어에서 "field"가 "레코드의 한 칸"을 의미하듯, 
+UField는 "리플렉션 데이터베이스에 이름으로 등록되어 조회 가능한 Entry"라는 단위를 나타낸다.
+
+UField = "리플렉션 시스템에 이름을 갖고 등록된 요소." 
+프로퍼티일 수도 있고, 함수일 수도 있고, 구조체일 수도 있고, 클래스일 수도 있고, enum일 수도 있다
+이들의 공통점 "FName으로 식별 가능"
+
+UStruct = "다른 UField들을 소유하는 UField."
+자기 안에 FProperty들(멤버)을 갖는 복합 요소.
+
+UClass = "인스턴스화 가능한 UStruct." 
+CDO를 갖고, 생성자가 있고, 인터페이스 목록이 있다.
+
+UObject
+  └─ UField           "이름으로 조회 가능한 리플렉션 항목"
+       ├─ UEnum       "열거자 목록을 갖는 항목"
+       └─ UStruct     "하위 항목(프로퍼티)들을 소유하는 항목"
+            ├─ UScriptStruct  "값 타입인 복합 항목"
+            ├─ UClass         "인스턴스화 가능한 복합 항목"
+            └─ UFunction      "실행 가능한 복합 항목(파라미터를 '멤버'로 소유)"
+
+프로퍼티가 UObject 계층에서 빠져나간 것은 앞에서 다룬 GC 오버헤드 문제 때문인데, 
+이로 인해 "모든 리플렉션 요소가 UField를 상속한다"는 원래의 단일 계층이 깨지고 
+이중 계층(UObject 기반의 UField + 비-UObject 기반의 FField)이 되었다.
+성능과 설계 단순성 사이의 트레이드오프
+
+C++에서 생성자의 주소를 취하는 것은 불가능하다
+해법은 static 래퍼 함수를 생성하여 그 래퍼의 주소를 저장하는 것이다
+
+static void __Constructor(const FObjectInitializer& X)
+{
+    new ((EInternal*)X.GetObj()) AMyActor(X);
+}
+
+placement new
+이미 할당된 메모리 위에 생성자를 호출
+X.GetObj()가 이미 할당된 메모리 블록의 주소를 반환하고
+placement new가 그 주소에서 AMyActor의 생성자를 실행한다.
+
+NewObject<AMyActor>(Outer)
+  → StaticConstructObject_Internal(AMyActor::StaticClass(), Outer, ...)
+    → UClass* Class = AMyActor::StaticClass();
+    → void* RawMemory = FMemory::Malloc(Class->GetProperSize());
+    → UObject* Obj = new (RawMemory) UObject(...)
+    → Class->ClassConstructor(...);
+      → __Constructor가 호출됨
+      → placement new로 AMyActor 생성자 실행
+
+긴급 전화를 받아서 적절한 소방서/경찰서로 라우팅하는 교환원
+택시를 적절한 승객에게 배차하는 관제사
+화물을 적절한 트럭에 배정하는 물류 담당자
+
+하나의 신호/요청이 들어오면, 등록된 수신자들에게 분배한다
+발신자는 수신자를 모르고, dispatcher가 중개한다.
+
+---
+---
+---
+---
+---
+---
+
+"AActor를 부모로 하는 BP_Gears라는 이름의 파생 클래스."
+class ABP_Gears : public AActor
+
+Compile 버튼
+Blueprint가 "독립적 스크립트"가 아니라 항상 어떤 클래스로부터의 파생된 클래스라는 정체성이 상기된다
+Blueprint 그래프를 수정하고 Compile을 눌러야 UBlueprintGeneratedClass가 갱신된다
+
+Class Settings
+: public IInteractable에 대응하는 클래스 수준 설정
+
+Class Defaults
+CDO의 프로퍼티 기본값
+C++ 생성자에서의 초기화
+
+Components 패널 — 서브오브젝트 계층
+BP_Gears (Self) // C++에서 this에 대응
+  └─ Base          // 루트 컴포넌트, 아이콘이 USceneComponent(빈 씬 노드)을 지시
+       ├─ Gear 3   (선택됨, 하이라이트)
+       ├─ Gear 2
+       └─ Gear 1
+
+이 Actor의 컴포넌트 계층 구조
+계층 관계(들여쓰기)는 SetupAttachment의 시각적 표현
+Gear들의 아이콘은 UStaticMeshComponent(메시를 가진 씬 노드)
+
+// C++ 대응물
+ABP_Gears::ABP_Gears()
+{
+    Base = CreateDefaultSubobject<USceneComponent>(TEXT("Base"));
+    SetRootComponent(Base);
+    
+    Gear1 = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("Gear 1"));
+    Gear1->SetupAttachment(Base);
+    
+    Gear2 = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("Gear 2"));
+    Gear2->SetupAttachment(Base);
+    
+    Gear3 = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("Gear 3"));
+    Gear3->SetupAttachment(Base);
+}
+
+My Blueprint 패널
+
+C++ 헤더 파일의 클래스 선언부를 시각적으로 펼쳐놓은 것
+
+GRAPHS: EventGraph
+이 클래스의 이벤트 핸들러들(BeginPlay, Tick 등)이 정의된 공간
+컴파일 시 UberGraph 함수로 통합
+
+FUNCTIONS 
+"22 OVERRIDABLE"이라는 표시는 부모 클래스(AActor)로부터 상속받은 오버라이드 가능한 함수가 22개 있다는 뜻이다. 
+C++에서 virtual 함수로 선언되고 BlueprintImplementableEvent 또는 BlueprintNativeEvent로 마킹된 함수들이다
+
+Construction Script가 여기에 함수로 분류되어 있다
+이것은 AActor::OnConstruction()이라는 가상 함수의 Blueprint 대응물이다
+
+INTERFACES: Toggle
+UCLASS()
+class ABP_Gears : public AActor, public IToggle
+Class Settings에서 인터페이스를 추가하면 여기에 나타난다
+
+VARIABLES
+변수 목록이 두 섹션으로 나뉘어 있다
+Components 섹션
+Components 패널에서 추가한 컴포넌트들이 자동으로 멤버 변수로 노출
+
+UPROPERTY(VisibleAnywhere)
+USceneComponent* Base;
+
+UPROPERTY(VisibleAnywhere)
+UStaticMeshComponent* Gear1;
+
+일반 변수들
+Rotation Speed 옆에 눈 아이콘이 보인다
+이것은 이 변수가 Instance Editable(인스턴스별 편집 가능)하다는 표시
+EditAnywhere 또는 EditInstanceOnly에 대응한다
+이 변수를 레벨에 배치된 각 BP_Gears 인스턴스마다 다른 값으로 설정할 수 있다는 뜻이다
+
+EVENT DISPATCHERS
+FMulticastDynamicDelegate 타입의 멤버 변수들이 나열된다
+
+이 에디터가 Blueprint를 개념화하는 방식: 6면체 모델
+하나의 Blueprint를 **6개의 면(facet)**으로 분해하여 각각을 별도의 패널에 배치하고 있음이 보인다
+
+면 1
+물리적 구성
+Components 패널
+"이 Actor는 어떤 부품들로 조립되어 있는가?"
+C++ 생성자 CreateDefaultSubobject + SetupAttachment
+
+면 2
+멤버 선언
+My Blueprint 패널
+"이 클래스는 어떤 변수, 함수, 이벤트, 인터페이스를 갖는가?"
+C++ 헤더의 UPROPERTY, UFUNCTION 선언들
+
+면 3
+시각적 형상(Viewport)
+"이 Actor는 세계에서 어떻게 보이는가?"
+런타임 렌더링 결과의 에디터 타임 프리뷰
+
+면 4
+실행 로직(EventGraph/Function Graph)
+"이 Actor는 무엇을 하는가?"
+C++ 함수 body의 구현
+
+면 5
+프로퍼티 상세(Details 패널)
+"현재 선택된 요소의 세부 설정은 무엇인가?"
+UPROPERTY specifier에 의해 노출된 편집 가능한 값들
+
+면 6
+클래스 정체(Class Settings/Defaults, 툴바)
+"이 클래스의 구조, 원형은 무엇인가?"
+부모 클래스, 인터페이스, CDO 기본값.
+
+C++에서는 이 6개 면이 전부 하나의 .h/.cpp 파일 쌍 안에 섞여 있다.
+생성자에 컴포넌트 생성 코드, 헤더에 멤버 선언, 함수 body에 로직, 
+"이건 이렇게 보인다"는 암묵적 사실, UPROPERTY specifier에 에디터 설정
+전부 텍스트 안에 선형으로 나열된다. 
+
+Blueprint 에디터는 이 선형 텍스트를 2차원 공간에서 관심사별로 분리하여 동시에 보여준다.
+
+C++ 코드는 이 모든 의미의 측면들이 하나의 표현 측면에 납작하게 통합되어 있지만
+Blueprint 에디터는 **모든 측면을 동시에 병치(juxtapose)**한다
+이 삼자 연동이 텍스트 코드 (그리고 IDE)에서는 불가능한 **동시적 다면 인식(simultaneous multi-faceted awareness)**을 제공한다
+
+---
+---
+---
+---
+---
+---
+
+Blueprint 에디터에는 Compile 버튼이 있었지만, 
+머티리얼 에디터에는 Apply 버튼이 있다.
+
+Blueprint는 명시적으로 Compile을 눌러야 바이트코드가 생성되지만, 
+머티리얼은 Live Update 토글이 켜져 있으면 노드를 수정할 때마다 자동으로 셰이더가 재컴파일된다. 
+"Apply"는 "현재 변경사항을 확정하여 에셋에 반영하라"는 의미이며, 
+컴파일 자체는 이미 백그라운드에서 일어나고 있다. 
+이 차이는 피드백 루프의 속도 때문인데 — 셰이더 컴파일은 수 초 이내이므로 실시간 업데이트가 가능하지만, 
+Blueprint 컴파일은 더 무거울 수 있다.
+
+Stats, Platform Stats
+컴파일된 셰이더의 명령어 수, 텍스처 샘플러 수, 보간자(interpolator) 사용량 등 
+GPU 비용 지표
+
+Hierarchy 
+머티리얼 인스턴스 체인
+UMaterial(마스터) → UMaterialInstanceConstant(인스턴스) → UMaterialInstanceDynamic(런타임 인스턴스) 체인
+오버라이드의 단위가 "함수"가 아니라 "파라미터 값"
+
+Material Result Node
+셰이더의 계약
+머티리얼 그래프에서 다른 모든 노드는 이 노드의 입력 핀들로 데이터를 공급하기 위해 존재한다. 
+이 노드의 각 입력 핀이 렌더링 파이프라인이 요구하는 표면 속성을 정의한다:
+머티리얼은 **"이 픽셀의 각 속성은 이 표현식의 결과다"**라는 선언적 정의
+
+Blueprint의 이중 레일(exec + data)과 달리, 
+머티리얼 그래프는 순수 데이터플로우다
+"이 값이 저 입력으로 흘러간다"는 데이터 의존성만 존재한다.
+
+
+Base Color          ← 표면의 기본 색상 (albedo)
+Metallic            ← 금속성 (0.0 = 비금속, 1.0 = 금속)
+Specular            ← 반사 강도 (기본 0.5)
+Roughness           ← 거칠기 (0.0 = 거울, 1.0 = 완전 무광)
+Emissive Color      ← 자체 발광 색상
+Opacity             ← 투명도
+Normal              ← 법선 맵 (표면 디테일)
+World Position Offset ← 정점 위치 오프셋
+Ambient Occlusion   ← 환경광 차폐
+
+Details 패널에서 "Deferred Decal" + "Translucent"가 선택되어 있으므로, 
+데칼에 적용 불가능한 속성들이 자동으로 비활성화된다.
+
+UE의 Deferred Shading 파이프라인이 요구하는 GBuffer 데이터의 계약(contract)을 시각적으로 선언한 것
+GBuffer가 "Base Color를 담는 버퍼, Normal을 담는 버퍼, Metallic+Roughness를 담는 버퍼..."로 구성되어 있고
+머티리얼의 역할은 각 버퍼에 기록할 값을 제공하는 것이다
+
+머티리얼에서는 정해진 출력 슬롯에 값을 채우는 것만 할 수 있다.
+출력의 형태가 고정되어 있고(Result Node의 핀 목록은 엔진이 결정)
+개발자가 결정하는 것은 각 출력에 도달하는 표현식의 구성뿐이다
+
+---
+---
+---
+---
+---
+---
+
+UMaterial* Mat = NewObject<UMaterial>();
+Mat->GetExpressionCollection().AddExpression(Color);
+Mat->PostEditChange();
+
+머티리얼 구성은 본질적으로 시각적 피드백이 필수적인 작업
+
+머티리얼의 파라미터를 C++ 런타임에서 제어하기
+
+// 1. Dynamic Material Instance 생성
+UMaterialInstanceDynamic* DynMat = UMaterialInstanceDynamic::Create(SourceMaterial, this);
+    
+// 2. 메시에 적용
+MyMeshComponent->SetMaterial(0, DynMat);
+
+// 3. 파라미터 변경 (이름은 머티리얼 에디터에서 정의한 파라미터 이름)
+DynMat->SetScalarParameterValue(TEXT("Opacity"), 0.5f);
+DynMat->SetVectorParameterValue(TEXT("Color"), FLinearColor::Red);
+DynMat->SetTextureParameterValue(TEXT("MainTexture"), MyTexture);
+
+
+UMaterial은 마스터 정의
+
+UMaterialInstanceConstant(MIC) 에디터에서 만드는 인스턴스
+셰이더 재컴파일 불필요. 에셋으로 저장
+
+UMaterialInstanceDynamic(MID) 런타임에서 만드는 인스턴스
+에셋으로 저장되지 않는 임시 객체.
+
+머티리얼은 GPU에서 실행되는 셰이더로 컴파일된다
+GPU는 CPU 메모리에 직접 접근할 수 없다
+GPU가 아는 것은 셰이더에 바인딩된 uniform 버퍼, 텍스처, 구조화 버퍼 안의 데이터뿐이다
+엔진이 매 프레임 GPU에 전달하는 데이터(카메라 위치, 시간, 액터 트랜스폼 등)만이 셰이더에서 접근 가능하며
+"저 액터의 Health 값"은 엔진이 기본적으로 GPU에 전달하는 데이터가 아니다.
+
+임의의 월드 상태를 머티리얼에 전달하는 유일한 경로는 파라미터를 통한 간접 전달이다
+CPU 측 코드(C++ 또는 Blueprint)가 월드 상태를 읽어서, MID의 파라미터 값으로 설정하면,
+엔진이 그 값을 셰이더 uniform으로 GPU에 전달하고
+머티리얼 그래프가 그 파라미터를 사용한다
+
+머티리얼과 게임플레이를 연결하는 표준 패턴
+
+머티리얼 에디터 측 (사전 준비)
+Scalar Parameter 또는 Vector Parameter 노드를 배치하고 이름을 붙인다
+이름을 통해 외부에서 값을 주입할 수 있는 슬롯
+C++에서 UPROPERTY(EditAnywhere)로 외부에 노출하는 것과 같은 역할
+머티리얼의 "공개 인터페이스"를 정의하는 것이다.
+
+Blueprint 측 (런타임 제어)
+
+[Event AnyDamage]                          ← 이벤트 수신
+    │ (exec)
+    ▼
+[Create Dynamic Material Instance]         ← MID 생성 (최초 1회)
+    │ Source Material: M_Character
+    │ → Return Value (Material Instance Dynamic)
+    │ (exec)
+    ▼
+[Set Material]                             ← 메시에 적용
+    │ Target: Mesh Component
+    │ Material: (위의 Return Value)
+    │ (exec)
+    ▼
+[Set Scalar Parameter Value]               ← 파라미터 변경
+    │ Target: (저장해둔 MID 참조)
+    │ Parameter Name: "DamageFlash"
+    │ Value: 1.0
+    │ (exec)
+    ▼
+[Delay 0.2s]                               ← Latent — 0.2초 대기
+    │ (exec)
+    ▼
+[Set Scalar Parameter Value]               ← 원래 값으로 복원
+    │ Parameter Name: "DamageFlash"
+    │ Value: 0.0
+
+C++
+
+void AMyCharacter::OnAnyDamage(float Damage, ...)
+{
+    if (!DynamicMaterial)
+    {
+        DynamicMaterial = MeshComp->CreateDynamicMaterialInstance(0);
+    }
+    
+    DynamicMaterial->SetScalarParameterValue(TEXT("DamageFlash"), 1.0f);
+    
+    // 0.2초 후 복원 (타이머 사용)
+    GetWorldTimerManager().SetTimer(FlashTimerHandle, [this]()
+    {
+        DynamicMaterial->SetScalarParameterValue(TEXT("DamageFlash"), 0.0f);
+    }, 0.2f, false);
+}
+
+---
+---
+---
+---
+---
+---
+
+이 노드가 프로그램의 어떤 측면을 표현하는가
+프로그래밍 언어가 갖는 기본 요소들 — 진입점, 제어 흐름, 데이터 조작, 함수 호출, 타입 연산
+
+범주 1: 이벤트 노드 — Control Flow의 진입점
+
+"누군가가 나를 트리거한다"는 수동적 대기 상태
+Hollywood Principle의 시각화
+"action" 신호가 떨어질 때까지 대기하라
+"action" 신호가 떨어지면 script를 perform해라
+
+엔진 라이프사이클 이벤트
+Event BeginPlay
+액터가 월드에서 처음 활성화될 때 한 번 호출
+BeginPlay 시점에는 월드가 완전히 구성되어 있고 다른 액터를 참조할 수 있다
+생성자 시점에는 월드가 없을 수 있다
+
+Event Tick
+출력 데이터 핀으로 Delta Seconds(이전 프레임으로부터의 경과 시간)를 제공
+프레임 독립적 로직을 표현
+BP_Gears에서 기어 회전 속도를 Delta Seconds에 곱하는 것
+
+입력 이벤트
+InputAction 이벤트
+C++ UEnhancedInputComponent::BindAction
+출력 데이터 핀으로 FInputActionValue(축 값, 트리거 상태) 제공
+
+InputKey / InputAxis 이벤트
+C++ UInputComponent의 BindKey, BindAxis 
+
+충돌/오버랩 이벤트
+Event ActorBeginOverlap / Event ActorEndOverlap
+콜리전 오버랩 시작/종료
+C++ NotifyActorBeginOverlap, OnComponentBeginOverlap 델리게이트
+출력 데이터 핀으로 Other Actor를 제공
+
+Event Hit
+물리적 충돌
+C++ OnComponentHit 델리게이트
+Hit Result 출력 핀이 충돌 지점, 법선, 물리 머티리얼 등의 정보를 담은 구조체 제공
+
+사용자 정의 이벤트
+Custom Event
+Custom Event는 EventGraph에 속하므로 Latent 노드를 포함할 수 있고, Event Dispatcher에 바인딩될 수 있다
+다른 그래프에서 "Call" 노드로 호출 가능
+
+다른 액터의 Event Dispatcher에 Bind Event로 구독하면 생기는 이벤트 노드
+C++ AddDynamic 패턴
+
+범주 2: 흐름 제어 노드 — 실행 경로의 결정
+프로그래밍 언어의 제어 구조(if, for, while, switch)의 시각적 대응물
+입력 실행 핀과 복수의 출력 실행 핀
+"하나의 흐름이 들어와서 여러 갈래 중 하나로 나간다"
+
+조건 분기
+Branch (UK2Node_IfThenElse)
+if (Condition) { ... } else { ... }
+입력 데이터 핀 Condition
+출력 실행 핀 True / False
+
+Switch on Int / Switch on String / Switch on Enum
+switch (Value) { case ...: ... }
+입력 값에 따라 다수의 출력 실행 핀 중 하나로 분기
+Enum Switch는 UENUM()의 열거자 목록을 읽어서 각 열거자에 대응하는 출력 핀을 생성
+
+Select 
+이것은 흐름 제어가 아니라 데이터 선택
+exec 핀이 없는 Pure 노드
+Condition ? A : B
+
+반복
+For Loop
+for (int i = First; i <= Last; i++)
+출력 실행 핀이 Loop Body(매 반복 실행)와 Completed(루프 종료 후 실행) 두 개
+Index 출력 데이터 핀이 현재 반복 인덱스. 
+Macro로 구현되어 있다
+
+For Each Loop
+for (auto& Element : Array)
+Array Element 출력 핀이 현재 원소, Array Index가 인덱스
+
+For Each Loop with Break
+조건부 조기 탈출이 가능한 변형
+for (...) { if (cond) break; }
+Break 입력 실행 핀이 추가
+
+While Loop, Reverse For Each Loop
+배열을 역순으로 순회. 
+반복 중 배열 원소를 제거할 때 인덱스 밀림을 방지하기
+
+순서 및 병렬
+
+Sequence 
+하나의 입력 실행을 받아 Then 0, Then 1, Then 2... 순서대로 실행
+2차원 공간에서 하나의 실행 체인이 시각적으로 길어지는 것을 방지
+레이아웃 도구
+각 출력 핀이 하나의 논리적 "단락(paragraph)"을 시작한다.
+
+Flip Flop
+호출될 때마다 A와 B를 번갈아 실행
+static bool bToggle = false; 
+if (bToggle = !bToggle) { A } else { B }
+내부에 상태를 갖는 흐름 제어
+
+Do Once
+static bool bDone = false; 
+if (!bDone) { bDone = true; ... }
+Reset 입력 핀으로 상태를 초기화할 수 있다
+
+Gate 
+if (bGateOpen) { ... }
+Open, Close, Toggle 입력 실행 핀으로 게이트 상태를 제어
+상태 기반 흐름 제어의 시각적 표현
+
+Do N
+N번 실행
+Counter 출력 핀이 현재 카운트
+
+Multi Gate
+호출될 때마다 순차적으로(또는 랜덤으로) 다른 출력 핀을 활성화
+C++ 인덱스를 증가시키며 switch하는 패턴
+Random 옵션, Loop 옵션으로 동작을 변경 가능
+
+C++에서는 별도의 언어 구조가 아니라 변수+조건의 조합으로 구현하는 패턴들이며, 
+Blueprint가 이들을 재사용 가능한 Named Pattern으로 격상시킨 것이다
+
+범주 3: 함수 호출 노드
+
+자기 자신의 메서드 호출
+Target 핀이 연결되지 않으면 self가 대상
+this->Method()
+
+다른 객체의 메서드 호출
+Target 핀에 다른 객체 참조를 연결
+OtherActor->Method()
+
+Static / 라이브러리 함수
+UGameplayStatics::SpawnActor, UKismetMathLibrary::Sin
+
+Spawn Actor from Class
+UWorld::SpawnActor<T>(), UGameplayStatics::BeginDeferredActorSpawnFromClass()
+Class 입력이 런타임에 결정 가능한 UClass*
+Blueprint 클래스를 지정할 수 있다. 
+즉, 컴파일 타임에는 존재하지 않는 타입을 지정할 수 있다.
+
+UGameplayStatics::GetAllActorsOfClass()
+"Pure 노드가 매 연결마다 재평가된다"
+
+Line Trace (Raycast)
+UWorld::LineTraceSingleByChannel()
+물리 월드에 광선을 쏘아 충돌을 검사
+시선 추적, 총알 궤적, 인터랙션 감지
+
+UKismetSystemLibrary::PrintString()
+UE_LOG + GEngine->AddOnScreenDebugMessage
+
+범주 4: 변수 접근 노드
+
+Promote to Variable
+핀에 바인딩 된 값을 우클릭하여 "Promote to Variable"하면 
+해당 타입의 멤버 변수가 자동 생성되고 Get/Set 노드가 연결된다
+C++에서 "이 인라인 표현식을 변수로 추출하기" 리팩터링에 대응.
+
+범주 5: 타입 연산 노드
+입력: UObject* 타입의 객체
+출력: 실행 핀 두 개(성공/실패) + 캐스팅된 타입의 출력 데이터 핀
+실패 경로가 노드에 시각적으로 박혀 있다
+
+Is Valid (Pure)
+Object != nullptr
+bool 출력
+
+IsValid (Exec)
+Branch가 내장된 형태
+Pure는 "유효한가?"라는 질문의 답을 데이터로 받고, 
+Exec는 "유효하면 이쪽, 아니면 저쪽"이라는 흐름 분기를 표현한다
+
+Object->GetClass()->ImplementsInterface(UMyInterface::StaticClass())
+Cast와 달리 타입을 변환하지 않고 구현 여부만 확인
+
+범주 6: 수학/유틸리티 Pure 노드
+표현식의 구성 블록
+
+Add / Subtract / Multiply / Divide
+float, int, vector 등 타입별로 오버로드
+
+Lerp 
+FMath::Lerp(A, B, Alpha)
+두 값 사이를 Alpha(0~1)로 보간
+색상 전환, 위치 보간, 부드러운 움직임
+
+FMath::GetMappedRangeValueClamped().
+한 범위의 값을 다른 범위로 재매핑
+체력 0~100을 머티리얼 파라미터 0~1로 변환
+
+Sin / Cos / Atan2
+회전, 주기적 움직임
+
+FMath::FInterpTo()
+현재 값에서 목표 값으로 매 프레임 일정 속도로 접근
+부드러운 카메라 추적
+
+범주 7: 컨테이너 연산 노드
+
+Add / Remove / Insert / Clear
+배열을 변이시킴
+
+범주 8: 타임라인과 Latent 노드
+FTimeline + UCurveFloat / UCurveLinearColor
+시간에 따른 값 변화를 커브로 정의
+커브 에디터를 내장
+입력 실행 핀으로 Play, Play from Start, Stop, Reverse, 
+출력 실행 핀으로 Update(매 틱), Finished(재생 완료)
+컴파일 시 전용 UTimelineComponent가 액터에 추가되고, 
+여러 함수(Play, Stop 등)와 델리게이트(OnUpdate, OnFinished)가 바인딩되는 복합 구조
+
+Latent 노드 (시계 아이콘)
+FDelayAction + FLatentActionManager
+지정 시간 후 실행 재개
+
+FInterpolateComponentToAction
+컴포넌트를 목표 위치/회전으로 지정 시간에 걸쳐 이동
+Duration 동안 매 프레임 보간
+
+FStreamableManager::RequestAsyncLoad()
+에셋을 비동기로 로드하고 완료 시 실행 재개
+
+UAnimInstance::Montage_Play()
+몽타주 재생이 완료되거나 중단될 때 각각 다른 출력 실행 핀으로 분기
+On Completed, On Blend Out, On Interrupted, On Notify
+복수의 시간적 결과를 출력 실행 핀으로 분화하는 것이 이 노드의 표현력
+
+범주 10: 통신 노드
+내부적으로 IMyInterface::Execute_MyFunction(Target)을 호출
+구현하지 않은 객체에 보내면 아무 일도 안 일어남
+
+Call [DispatcherName] 
+OnHealthChanged.Broadcast(NewHealth)
+
+Bind Event to [DispatcherName]
+Other->OnHealthChanged.AddDynamic
+
+전역 접근자
+월드의 핵심 싱글턴 객체들에 대한 접근
+결합도가 높음
+Get Player Controller / Get Player Character / Get Game Mode
+
+---
+---
+---
+---
+---
+---
+
+GetSafe 패턴
+퇴화 입력(degenerate input)에 대해 크래시 대신 합리적 기본값을 반환한다
+
+GetSafeNormal()의 "Safe"는 영벡터(zero vector) 입력에 대한 방어
+GetSafeNormal()은 내부적으로 크기가 허용 오차(tolerance) 이하인지 검사하고, 그렇다면 영벡터를 반환한다
+V / |V|
+두 액터가 같은 위치에 있으면 방향 벡터가 영벡터가 된다
+
+Divide (Safe Division)
+Blueprint의 나누기 노드는 기본적으로 0으로 나누기를 검사한다. 0이면 0을 반환.
+
+FMath::SafeInverse() 
+행렬 역변환에서 특이 행렬(singular matrix) 방어
+
+수동(manual)
+이 작업을 위한 전용 추상화를 제공하지 않으므로
+프로그래머가 더 낮은 수준의 프리미티브(루프, 조건문, 배열 접근)를 직접 조합하여 원하는 동작을 구성해야 한다
+
+수준 1 — 명령적(Imperative, "수동 manual")
+수준 2 — 고차 함수(Higher-order)
+수준 3 — 선언적(Declarative)
+
+"수동 manual"이라는 단어는 더 높은 추상화가 존재함을 암시한다
+
+Blueprint에서 Timeline 노드 하나를 배치하면, 컴파일 시 다음이 일어난다
+
+첫째, UTimelineComponent가 액터에 추가된다
+UBlueprintGeneratedClass의 SimpleConstructionScript에 UTimelineComponent 생성을 등록한다.
+즉 Timeline은 단순한 "함수 호출"이 아니라 컴포넌트를 액터에 물리적으로 추가하는 행위다
+Components 패널에는 나타나지 않지만 컴포넌트가 존재한다
+
+둘째, 커브 데이터가 UCurveFloat / UCurveLinearColor / UCurveVector로 저장된다
+
+셋째, 델리게이트 바인딩이 생성된다
+Timeline의 Update, Finished 출력 핀이 UberGraph의 해당 진입점에 바인딩된다.
+
+C++에서 컴포넌트 선언, 커브 에셋 참조, 두 개의 UFUNCTION 콜백 정의, 바인딩 설정이라는 보일러플레이트로 확장
+
+UTimelineComponent* DoorTimeline;
+UCurveFloat* DoorCurve;
+
+void OnDoorTimelineUpdate(float Value);
+void OnDoorTimelineFinished();
+
+FOnTimelineFloat UpdateDelegate;
+UpdateDelegate.BindUFunction(this, FName("OnDoorTimelineUpdate"));
+DoorTimeline->AddInterpFloat(DoorCurve, UpdateDelegate);
+
+FOnTimelineEvent FinishedDelegate;
+FinishedDelegate.BindUFunction(this, FName("OnDoorTimelineFinished"));
+DoorTimeline->SetTimelineFinishedFunc(FinishedDelegate);
+
+DoorTimeline->SetLooping(false);
+DoorTimeline->SetTimelineLength(2.0f);
+
+UTimelineComponent는 UActorComponent의 서브클래스
+TickComponent에서 매 프레임
+
+현재 재생 위치(PlaybackPosition)를 DeltaTime만큼 전진시키고,
+등록된 각 커브(InterpFloats, InterpVectors, InterpLinearColors)를 현재 시간에서 평가(Evaluate)하고, 
+평가된 값을 바인딩된 델리게이트에 전달(Update 콜백 호출)하고, 
+재생 위치가 끝에 도달하면 Finished 델리게이트를 호출한다.
+
+이것은 본질적으로 시간을 독립 변수로 하는 함수 평가기다
+
+커브가 f(t) → value라는 수학 함수이고, 
+Timeline 컴포넌트가 매 프레임 t를 증가시키며 f(t)를 평가하여 결과를 보고한다
+
+TimerManager는 "N초 후에 이 함수를 호출하라" 또는 **"N초 간격으로 이 함수를 반복 호출하라"**를 수행한다.
+Timer의 콜백에는 경과 시간이나 보간 값이 전달되지 않는다
+
+Timeline은 연속적 보간이다
+매 프레임 커브 값을 평가하여 연속적 변화를 생산한다
+시간의 매 순간에 값이 정의되어 있다
+
+TimerManager는 이산적 스케줄링이다
+"3초 후 폭발하라", "0.5초마다 틱 사운드를 재생하라." 
+호출 사이의 시간은 "아무 일도 안 일어나는" 빈 구간이다
+
+Timeline은 아날로그 시계의 초침
+매 순간 연속적 위치를 갖는다
+
+TimerManager는 알람 시계
+설정된 시각에 울리고, 그 사이에는 아무것도 하지 않는다
+
+게임 시간 일시정지
+게임이 일시정지되면 Timeline의 재생도 멈추고, TimerManager의 타이머도 정지한다.
+UTimelineComponent::SetIgnoreTimeDilation, 타이머의 bIgnorePause 플래그
+
+---
+---
+---
+---
+---
+---
+
+콜백 기반 비동기 통신
+다른 메타포적 세계
+
+Delegate 
+agency by proxy
+내가 직접 하지 않고, 누군가를 내 대리인으로 지정하여 그가 나 대신 행위한다
+하나의 콜백을 바인딩
+이 일이 일어나면 이 함수를 호출하라
+위임자 ──[위임 관계]──→ 대리인
+"이 일을 맡긴다"        "맡은 일을 수행한다"
+
+Multicast Delegate
+Delegate의 1:1이 1:N으로 확장
+여러 콜백을 바인딩 
+
+Dispatcher 
+중앙 집중식 배분(centralized distribution)
+시스템의 주체(Core)는 중개자(dispatcher)
+Delegate에서 주체는 위임하는 쪽이지만
+Dispatcher에서 주체는 배분을 수행하는 중간 장치
+
+Blueprint 사용자의 시점에서, Event Dispatcher은 내 Actor에 설치된 방송 장치다
+이 장치에 Broadcast를 보내면 등록된 모든 청취자에게 전달된다
+
+Delegate 관점
+소유자 ── [바인딩]──→ 콜백 함수 A
+          [바인딩]──→ 콜백 함수 B
+
+"나는 이 함수들에게 위임했다"
+
+
+Dispatcher 관점 
+Dispatcher 장치 ←──[구독]── 리스너 A
+                ←──[구독]── 리스너 B
+
+"이 장치가 모든 구독자에게 배분한다"
+
+동일한 바인딩 행위를 어느 쪽의 관점으로 서술하느냐
+(어느 쪽을 주체로 놓고 서술하느냐) (그 주체의 관점)
+
+Handle 
+손으로 잡는 부분
+문의 handle은 "문 전체를 조작하기 위해 잡는 작은 부분."
+CS에서 추가되는 요소: 불투명한 참조 토큰(opaque reference token)
+내부 구조를 노출하지 않는다
+
+Handle은 행위자가 아니라 식별자다
+Delegate는 "누군가가 일을 대신한다"는 행위의 메타포이고
+Handle은 "이것으로 저것을 가리킨다"는 참조의 메타포다
+
+Handle은 시스템에게 "이 타이머를 취소해줘"라고 요청할 때 "이 타이머"를 지칭하는 수단
+
+publish-subscribe
+자발적 등록
+AddDynamic, BindEvent, Event Dispatcher에 Bind하는 쪽이 전부 구독자
+
+시나리오: 액터 A가 체력 변화를 외부에 알린다
+
+A의 관점:
+  "OnHealthChanged라는 Event Dispatcher[배분 장치]를 선언했다.
+   Broadcast를 호출하면 Dispatcher가 알아서 배분한다."
+
+B의 관점 (Subscriber/구독자):
+  "A의 OnHealthChanged에 Bind[구독]했다.
+   A가 Broadcast할 때 내 HandleHealthChanged 함수가 호출될 것이다."
+
+C++의 관점:
+  "OnHealthChanged는 FMulticastDynamicDelegate[다중 위임]이다.
+   B가 AddDynamic으로 자신의 UFUNCTION을 바인딩했고,
+   A가 Broadcast 시 바인딩된 모든 함수가 순차 호출된다."
+
+---
+
+FLatentActionManager와 FTimerManager는 별개의 시스템이다
+
+FTimerManager의 설계 모델은 **"시간 기반 콜백 스케줄러"**
+FLatentActionManager의 설계 모델은 **"중단된 실행의 재개기(resumption manager)"**
+
+UE 5.4부터 실험적으로 C++ 코루틴 기반 Latent Action 지원이 도입되었다
+C++20의 코루틴(co_await)을 사용하여 Blueprint의 Latent 흐름과 유사한 코드를 C++에서 작성
+
+UE::Tasks::TTask<void> AMyActor::DoSequence()
+{
+    UE_LOG(LogTemp, Log, TEXT("Phase 1"));
+    
+    co_await UE::Latent::Seconds(2.0f);  
+    
+    UE_LOG(LogTemp, Log, TEXT("Phase 2"));
+    
+    co_await UE::Latent::NextFrame();  
+    
+    UE_LOG(LogTemp, Log, TEXT("Phase 3"));
+}
+
+코루틴의 스택 프레임이 힙에 보존되므로 로컬 변수가 재개 시에도 유효하다.
+
+상태 머신 수동 구현
+
+void Tick(float DeltaTime)
+{
+    switch (CurrentState)
+    {
+    case ESequenceState::Phase1:
+        DoPhase1();
+        WaitTimeRemaining = 2.0f;
+        CurrentState = ESequenceState::Waiting;
+        break;
+        
+    case ESequenceState::Waiting:
+        WaitTimeRemaining -= DeltaTime;
+        if (WaitTimeRemaining <= 0.0f)
+            CurrentState = ESequenceState::Phase2;
+        break;
+        
+    case ESequenceState::Phase2:
+        DoPhase2();
+        CurrentState = ESequenceState::Done;
+        break;
+        
+    case ESequenceState::Done:
+        break;
+    }
+}
+
+Blueprint에서는 네 개의 노드를 이어 그으면 끝인 것이, 
+C++에서는 상태 enum 정의, 상태 변수 관리, Tick에서의 switch문이 필요하다
+
+Blueprint VM은 UberGraph라는 상태 머신적 실행 모델을 갖고 있다. 
+실행 위치가 "현재 어느 노드에 있는가"라는 상태로 표현되며, 
+이 상태를 저장하고 나중에 복원하는 것이 구조적으로 가깝다
+
+**C++**는 콜스택 기반 실행 모델이다.
+함수가 실행 중일 때 로컬 변수는 스택에 있고, 함수가 리턴하면 스택 프레임이 소멸한다
+"2초 후 여기서부터 이어서 실행하라"를 구현하려면 스택 프레임을 어딘가에 retain 해야 한다
+
+---
+---
+---
+---
+---
+---
+
+Delegate
+본체와 Delegate는 같은 세계에 있다
+
+Proxy
+주주총회에 참석하지 못하는 주주가 다른 사람에게 투표권을 위임
+위임자는 회의장에 없지만, 대리인이 그의 의사를 대표한다
+내가 갈 수 없는 곳에서 너는 나다
+경계를 넘을 수 없기 때문에 Proxy가 필요하다
+본체와 Proxy는 서로 다른 세계에 있다
+**경계를 넘는 대표(representation across a boundary)**
+
+경계가 없으면 Proxy가 필요 없다
+본체가 직접 가면 된다
+"여기서 저기로 직접 건너갈 수 없는 경계가 있다"는 신호
+
+UE에서의 Proxy
+
+본체: UPrimitiveComponent (Game Thread에 존재)
+Proxy: FPrimitiveSceneProxy (Render Thread에 존재)
+
+UStaticMeshComponent가 월드에 존재하면, 렌더러가 이것을 그리기 위해 메시 데이터, 머티리얼, 트랜스폼 등을 알아야 한다. 
+그러나 렌더러(Render Thread)가 UStaticMeshComponent(Game Thread 소유)를 직접 읽으면 동기화 문제가 생긴다. 
+해법: FStaticMeshSceneProxy를 생성하여 렌더러가 필요한 데이터의 스냅샷을 복사해둔다
+
+// UPrimitiveComponent가 Proxy를 생성하는 가상 함수
+FPrimitiveSceneProxy* UStaticMeshComponent::CreateSceneProxy()
+
+FStaticMeshSceneProxy의 생성자에서 컴포넌트로부터 필요한 데이터(메시 참조, 머티리얼, LOD 설정 등)를 복사한다.
+이 순간 이후 Proxy는 본체와 독립적으로 존재하며 (Metaphor: Forked, Divergence)
+Render Thread가 동기화 Tearing 문제에서 자유롭게 읽을 수 있다.
+본체의 상태가 변경되면 새 Proxy를 생성하거나 스레드 안전한 업데이트 메커니즘을 통해 동기화한다
+
+본체: UMaterialInterface (Game Thread)
+Proxy: FMaterialRenderProxy (Render Thread)
+
+UMaterialInstanceDynamic에서 SetScalarParameterValue를 호출하면 Game Thread에서 값이 변경되고, 
+이 값이 FMaterialRenderProxy에 전파되어 
+Render Thread가 셰이더 uniform으로 바인딩한다.
+
+본체: UAnimInstance (Game Thread)
+Proxy: FAnimInstanceProxy (Worker Thread에서 포즈 평가)
+
+FAnimInstanceProxy가 평가에 필요한 데이터의 스냅샷을 들고 Worker Thread로 건너간다
+"AnimInstance의 데이터를 Proxy에 복사하고, Worker Thread에서 Proxy로 포즈를 평가하고, 결과를 다시 Game Thread로 가져온다"
+
+1단계 생성
+본체가 Proxy를 생성하며
+본체의 현재 상태를 Proxy에 복사
+이 복사가 "경계 횡단"이다
+이 순간 이후 Proxy는 본체의 세계와 독립적으로 존재한다
+
+2단계 커맨드 큐를 통한 소유권 이전
+// Render Thread에서 실행될 커맨드를 큐에 등록
+ENQUEUE_RENDER_COMMAND(AddPrimitiveCommand)(
+    [this, Proxy](FRHICommandListImmediate& RHICmdList)
+    {
+        // ↓ 이 코드는 Render Thread에서 실행된다
+        this->AddPrimitiveSceneInfo(Proxy);
+        // Proxy를 FScene의 내부 자료구조에 등록
+    }
+);
+
+Game Thread는 "이 작업을 해라"라는 명령을 큐에 넣고 즉시 돌아간다
+Render Thread는 자기 타이밍에 큐에서 명령을 꺼내 실행한다.
+
+3단계 동기화 
+본체의 상태가 변경되면 Proxy에 반영
+경계를 안전하게 넘는 메커니즘
+UPrimitiveComponent::MarkRenderStateDirty()
+다음 프레임 시작 시 Render Thread에서 Proxy가 업데이트되거나 재생성된다
+적절한 동기화 지점에서 Render Thread가 업데이트를 수행
+
+**"데이터를 복사하여 소유권을 분리하면, 락 없이 두 스레드가 독립적으로 전속력으로 달릴 수 있다"**
+60fps에서 한 프레임은 16.6ms인데, 양쪽 스레드가 매 프레임 수천 개의 Proxy에 대해 락을 주고받으면 성능이 붕괴한다.
+
+Lock-Free
+뮤텍스/세마포어 같은 블로킹 락(blocking lock)을 쓰지 않는다
+원자적 연산(atomic operation)을 사용한다
+CPU가 하드웨어 수준에서 보장하는 원자적 읽기-수정-쓰기(Compare-And-Swap, CAS) 명령을 이용
+두 스레드가 동시에 접근해도 데이터 일관성이 보장
+
+동시 삽입-소비가 안전한 이유
+SPSC(Single Producer, Single Consumer) 큐
+생산자가 하나(Game Thread), 소비자가 하나(Render Thread)
+
+[   ][   ][ C ][ D ][ E ][   ][   ][   ]
+           ^              ^
+           Read            Write
+           (RT가 관리)      (GT가 관리)
+
+
+ENQUEUE_RENDER_COMMAND( AddPrimitiveCommand )
+                        ↑ 커맨드의 이름 (디버깅/프로파일링용 식별자)
+(
+    [this, Proxy]       ← Game Thread에서 값 복사
+                          포인터가 복사되는 것이지, 포인터가 가리키는 객체가 복사되는 것이 아니다
+
+    (FRHICommandListImmediate& RHICmdList)  ← Render Thread가 전달하는 컨텍스트
+    {
+        // 이 블록은 Render Thread에서 실행된다
+        this->AddPrimitiveSceneInfo(Proxy);
+    }
+);
+
+매크로 확장 후 발견되는 것
+GRenderCommandQueue.Enqueue(Task)
+
+Game Thread 코드
+    │
+    ▼
+ENQUEUE_RENDER_COMMAND(Name)(Lambda)
+    │
+    ▼
+FRenderCommandQueue (lock-free 큐)
+    │                              
+    ▼                              
+FRenderThread::Run()               
+    │                              
+    ▼                              
+큐에서 커맨드 꺼냄                  
+
+메모리 배리어는 자기 자신의 CPU에게 내리는 명령이다.
+내가 위에서 한 쓰기가 메모리에 확실히 반영된 후에 아래의 쓰기를 해라
+다른 스레드를 전혀 기다리지 않는다
+상대하는 것은 다른 스레드가 아니라 자기 CPU의 파이프라인과 캐시다.
+
+CPU는 성능을 위해 메모리 연산을 **재배치(reorder)**한다
+메모리 배리어는 CPU에게 "이 지점을 넘어서 재배치하지 마라"라고 말하는 것이다
+  1. Buffer[5] = data
+  ─── release barrier ───   ← "위의 쓰기가 아래로 넘어가지 마라"
+  2. WriteIndex = 6
+
+이 배리어의 비용은 CPU 파이프라인 플러시 수준이며, 수 나노초(ns) 정도다
+락의 대기 시간(마이크로초~밀리초)과 비교하면 수백~수천 배 빠르다
+
+인덱스 자체는 내부적으로 계속 증가하는 정수일 수 있다
+uint64가 오버플로우하려면 초당 10억 개의 커맨드를 큐잉해도 수백 년이 걸리므로 실무적으로 무한이다.
+실제 배열 접근 시에만 모듈러 연산으로 버퍼 내 위치를 구한다
+
+엔트리 "삭제"의 의미: 삭제가 아니라 덮어쓰기
+Read 인덱스가 지나간 슬롯은 논리적으로 비어 있는 것이며, 다음에 Write 인덱스가 돌아오면 새 데이터로 덮어쓴다
+
+"큐가 꽉 찼는가?"의 판단은 Write가 Read를 한 바퀴 돌아서 따라잡았는가로 결정된다
+꽉 찼으면 Game Thread는 삽입을 할 수 없다
+이 경우 Game Thread가 잠시 대기하거나, 큐를 더 큰 것으로 재할당하는 전략을 취한다.
+
+시점 1: Game Thread가 트랜스폼 업데이트 커맨드를 큐에 넣음
+  큐: [..., {Proxy*, NewTransform_A}, ...]
+
+시점 2: Game Thread가 또 트랜스폼을 변경하여 새 커맨드를 큐에 넣음
+  큐: [..., {Proxy*, NewTransform_A}, {Proxy*, NewTransform_B}, ...]
+
+시점 3: Render Thread가 첫 번째 커맨드를 실행
+  Proxy->SetTransform(NewTransform_A);  ← RT가 Proxy에 쓴다
+
+시점 4: Render Thread가 두 번째 커맨드를 실행
+  Proxy->SetTransform(NewTransform_B);  ← RT가 Proxy에 쓴다
+
+Game Thread는 Proxy를 생성 한 이후 Proxy의 내부 데이터를 직접 변경하지 않는다. 
+Game Thread가 하는 것은 "새 값을 큐에 넣는 것"뿐이며, 그 값은 람다에 캡처된 복사본이다
+
+---
+---
+---
+---
+---
+---
+
+컴파일이 끝나면 클래스 이름은 사라지고, 
+멤버 오프셋은 기계어 상수로 녹아들고, 
+상속 관계는 vtable의 포인터 배열로 Reduce된다
+
+UHT — 소각 이전에 작동하는 기록자
+UCLASS(), UPROPERTY(), UFUNCTION() — 이 마크업들은
+복사본을 만들어 지하에 묻어두라는 지시이다
+UHT가 .gen.cpp를 생성하는 행위는 컴파일러의 앎을 런타임 데이터로 번역하여 보존하는 것이다
+UHT는 컴파일러가 곧 잊어버릴 모든 것을 .gen.cpp라는 기록물에 옮겨 적는다
+기록의 내용은 런타임 데이터 구조(UClass, FProperty, UFunction)로 부활한다.
+그리고 이 기억이 에디터를 가능하게 한다
+
+Blueprint 클래스는 에디터에서 만들어지므로 컴파일 타임에 존재하지 않는다. 
+이 타입들이 런타임에 "실존"하려면, 
+타입 자체가 런타임에 로드, 합성, 수정 가능한 형태의 데이터여야 한다.
+
+UClass가 UObject인 이유는 컴파일 타임에서 태어나지 않은 타입을 수용하기 위해서이다. 
+
+Blueprint 컴파일러는 시각적 그래프를 바이트코드로 번역한다
+머티리얼 컴파일러는 노드 그래프를 HLSL로 번역한다
+
+FBodyInstance는 게임플레이 속성을 물리 파라미터로 번역한다
+FAnimInstanceProxy는 게임 상태를 포즈 평가 입력으로 번역한다
+
+Details 패널은 FProperty 메타데이터를 슬라이더와 체크박스로 번역한다.
+
+번역이 필요하다는 것은 두 언어가 다르다는 것이고, 
+두 언어가 다르다는 것은 두 세계가 다르다는 것이다.
+
+게임플레이 세계에서 "기둥"은 의미를 가진 존재다 — 이름이 있고, 체력이 있고, 파괴 가능하며, 퀘스트와 연관된다. 
+
+렌더링 세계에서 같은 기둥은 삼각형 메시, 텍셀 배열, 뷰스페이스 좌표일 뿐이다.
+FPrimitiveSceneProxy는 컴포넌트의 게임플레이 데이터(체력, 소유자, 게임플레이 태그)를 복사하지 않는다 — 렌더러에게는 무의미하므로
+
+물리 세계에서는 볼록 껍질(convex hull)과 질량과 마찰 계수이다
+FBodyInstance는 메시의 시각적 머티리얼을 물리 세계에 전달하지 않는다 — 물리 엔진에게는 무의미하므로.
+
+각 모듈은 문맥 안에서 반복되는 문제를 기술하고, 
+그 해결의 핵심을 제시하되, 그 해결이 다른 맥락에서도 사용될 수 있도록, 다른 맥락에서 사용될 수 있는 방식으로 나머지를 생략한다
+
+서로 분리된 모듈 사이를 정보가 건너는 데 시간이 걸리고, 
+그 시간 동안 원본은 이미 변해 있을 수 있다
+"결과적 일관성(eventual consistency)"이라는 개념의 본질
+분산 시스템, 
+인간의 감각 처리(눈이 본 것이 의식에 도달하기까지 수십 밀리초가 걸린다), 
+사회적 소통(발화와 이해 사이의 시간차)
+
+Game Thread가 프레임 N의 시뮬레이션을 계산하고 있을 때, 
+Render Thread는 프레임 N-1의 화면을 그리고 있다. 
+두 "현재"는 항상 한 프레임만큼 어긋나 있다
+
+Sapir-Whorf hypothesis
+언어가 사고를 결정한다
+언어가 사고의 Granularity를 조형한다
+
+사고의 granularity (Level of Abstraction)
+"Do Once" 노드
+"bool 변수를 선언하고, if문으로 검사하고, true로 설정하고..."라는 절차적 사고
+
+Chomsky
+문법적으로 완벽하지만 의미적으로 무의미한 문장이 가능하다
+문법과 의미가 분리 가능한 독립적 층위라는 것을 증명한다.
+
+SGraphEditor/UEdGraph/UEdGraphPin은 문법이다
+UEdGraphSchema_K2와 UMaterialGraphSchema는 의미론이다
+
+문법은 하나, 의미론은 여럿. 
+하나의 통사적 기계 위에 다른 의미론적 세계들이 올라탄다. 
+이것은 프로그래밍을 넘어서 인간 인지의 구조와 공명한다
+우리는 동일한 시각 피질로 글자도 읽고 풍경도 보고 악보도 읽는다
+하드웨어(시각 처리 파이프라인)는 하나이지만, 
+그 위에 올라가는 해석 프레임워크(문자 체계, 공간 인지, 음악 표기법)가 입력에 의미를 부여한다
+
+"노드를 연결한다"는 상호작용 양식이, 
+명령형 프로그래밍에도, 함수형 데이터플로우에도, 포즈 합성 파이프라인에도 적용 가능한 
+보편적 문법이라는 발견이다
+"마우스로 선을 긋는 행위"는 특정 패러다임에 종속되지 않는 범 패러다임적(trans-paradigmatic) 상호작용이다.
+
+하나의 백색광(C++ 클래스 정의)이 Blueprint 에디터라는 프리즘을 통과하면 여섯 색깔로 분산된다 
+Components(컴포넌트 트리), My Blueprint(멤버 목록), Viewport(시각적 형상), 
+EventGraph(실행 로직), Details(멤버 상세), Class Settings(클래스 구조)
+
+C++에서는 하나의 .h/.cpp 표면에 압착되어 있던 입체적 의미들의 차원이 
+2차원 공간에서 분리되어, 비로소 각각의 독립적인 측면들로 인식 가능해진다.
+
+하나의 "게임 오브젝트"가 Engine의 프리즘을 통과하면 세 세계로 분산된다
+Game Thread의 상태(의미)
+Render Thread의 SceneProxy(기하)
+Physics Thread의 BodyInstance(역학)
+
+프리즘
+하나의 통합된 것을 다수의 관점/측면으로 분해
+
+분신은 기사의 외모(메시), 갑옷의 빛깔(머티리얼), 서 있는 위치(트랜스폼)를 복사하여 담았지만, 
+기사의 이름도, 검술 실력도, 충성 서약도 알지 못했다
+즉, 이 분신은 기사의 어느 한 측면의 투영이었다.
+본체의 한 측면을 투영한 이 분신은 오직 수의 나라가 필요로 하는 것 — 기하학적 사실들 — 뿐이었다.
+
+분신은 강을 건너 쪽배에 실려 갔다. 
+기사가 쪽배에 분신을 태우면, 강 이쪽에서는 더 이상 분신을 바꿀 수 없었다. 
+쪽배는 강 저편에서 기다리는 화가(Renderer)가 자기 시간에 받아갈 때까지 물 위(Command Queue) 에 떠 있었다.
+
+화가는 분신을 모델 삼아 캔버스(Frame Buffer)에 그렸다
+기사가 새 갑옷을 입으면 새 쪽배가 떠났고, 화가는 다음 그림에서 새 갑옷을 그렸다
+때로 기사가 쓰러져 사라져야 할 때가 있었다. 그러면 기사는 마지막 쪽배를 보냈다
+"이 분신을 불태워라."
+쪽배는 강물 위에서 순서대로 도착하므로, 분신이 그려지는 도중에 불태워지는 일은 결코 일어나지 않았다.
+
+C++에게 물었다: "BeginPlay와 GetHealth와 Interact는 무엇인가?"
+C++이 답했다: "함수다."
+virtual이건 static이건, 콜백이건 직접 호출이건, 프로세서가 보는 것은 동일한 명령어 시퀀스다.
+
+Blueprint에게 같은 질문을 했다. Blueprint는 셋을 세 개의 다른 동사로 구분했다
+한쪽은 인위적, 임의적 의미경계 보다 기계 관점의 불변의 사실을 이름에 새겼고
+다른 쪽은 인지적 명료함을 위해 차이를 드러낸다.
+
+같은 SGraphEditor, 같은 UEdGraph, 같은 핀 연결 UI 위에 
+Blueprint Schema를 끼우면 명령형 언어가 되고, 
+Material Schema를 끼우면 함수형 언어가 된다
+하나의 문법 기계(grammar engine)가 두 개의 전혀 다른 의미론적 세계를 표현한다
+Chomsky, 보편 문법(Universal Grammar) 위에 개별 언어가 올라가는 구조.
+
+시간의 세 가지 형상
+Function은 점(point)이다
+호출하고, 실행되고, 리턴한다
+시작과 끝이 같은 프레임 안에 있다
+수학의 함수처럼 — f(x)는 시간이 걸리지 않는다 (논리적으로)
+콜스택이라는 동기적 시간 모델 위에 존재
+함수가 리턴하기 전에 프레임이 넘어가는 것은 콜스택의 계약 위반이다
+
+Event는 미래의 불확정적 점이다
+내가 정의하는 것은 "그것이 올 때 무엇을 할 것인가"뿐이다
+
+Latent Node는 구간(interval)이다
+시작은 지금이지만 완료는 미래에 있다
+"지금부터 3초 후까지"라는 시간의 두께를 가진다
+매 순간 값이 변하는 연속적 시간을 가진다
+
+EventGraph의 UberGraph는 상태 머신이라는 비동기적 시간 모델 위에 존재
+"현재 어느 노드에 있는가"라는 상태를 저장하고 복원할 수 있다
+
+C++에서 같은 세 가지 시간을 표현하려면
+점은 함수 호출로, 
+불확정적 점은 델리게이트 바인딩으로, 
+구간은 상태 머신의 수동 구축으로
+
+알람 시계(Timer)가 이산적 점을 찍는 반면, 
+Timeline은 아날로그 시계의 초침처럼 매 순간 연속적 위치를 갖는다
+
+Check는 세계가 올바르다고 확신하되, 혹시 아닐 경우 즉시 멈추는 태도다
+세계에 대한 강한 신뢰 + 배신에 대한 무관용
+
+Safe는 세계가 적대적일 수 있음을 인정하고, 어떤 입력이 와도 넘어지지 않는 태도다
+세계에 대한 불신 + 관대한 수용
+
+Try는 세계에 질문을 던지되, 답이 없을 수 있음을 인정하는 태도다
+"이 키가 맵에 있는가? 있으면 값을 주고, 없으면 없다고 알려줘라." 
+세계에 대한 중립적 호기심
+
+"GetUnsafeNormal은 호출자가 입력의 유효성을 보증한다"는 것은 **계약(contract)**
+
+---
+---
+---
+---
+---
+---
+
+개념 1: 경계
+
+가장 밑바닥에는 언제나 경계가 있어요.
+경계는 이렇게 말하는 장치예요.
+여기의 존재 방식과 저기의 존재 방식은 다르다.
+
+C++ 선언의 세계와 Reflection의 세계는 다르다
+Reflection의 세계와 Blueprint 표면의 세계는 다르다
+Game Thread와 Render Thread는 다르다
+UObject 세계와 Slate 세계는 다르다
+CPU 세계와 GPU 세계는 다르다
+
+같은 존재는 모든 세계에 같은 몸으로 들어갈 수 없다.
+
+개념 2: 그림자
+
+그림자는 복사본이 아니에요.
+그림자는 실체의 전부가 아니라, 특정 세계가 필요로 하는 측면만 남긴 투사예요
+즉, 실체 세계의 그림자는 저쪽 세계에서는 실체예요
+
+게임 스레드의 실체는 가장 풍부한 실체예요
+여기에는 수많은 세계의 측면들이 합쳐져 있어요
+그리고 이 측면들은 강을 건널 때 분리되어 저쪽 세계의 실체가 되어요.
+
+개념 3: 자리
+
+함수 파라미터는 호출자가 채워야 할 자리
+Blueprint 핀은 노드 사이를 잇는 자리
+Slate Slot은 특정 부모 안에서 자식이 어떻게 배치될지를 담는 자리
+머티리얼 Result Node의 입력은 렌더링 파이프라인이 요구하는 자리예요
+
+개념 4: Latent
+
+끝나지 않은 행위를 객체화한다
+즉 실행은 더 이상 휘발성인 스택 프레임 안에만 있지 않아요
+끝나지 않은 실행 조각이 바깥으로 꺼내져
+월드 어딘가에 등록되고,
+나중에 다시 이어질 수 있는 보류된 존재가 돼요
+
+UE는 끝나지 않은 것들을 바깥에 보존하는 기술을 많이 갖고 있어요
+
+타이머 핸들,
+타임라인,
+델리게이트 바인딩,
+트랜잭션,
+렌더 큐에 아직 실행되지 않은 커맨드.
+
+개념 5: 대리
+
+본체가 직접 갈 수 없는 곳에, 누가 대신 가는가?
+
+Game Thread의 컴포넌트는 Render Thread로 직접 갈 수 없어요
+→ FPrimitiveSceneProxy
+
+본체는 모든 구독자를 알지 못해도 신호를 보내고 싶어요
+→ Dispatcher / Multicast Delegate
+
+어떤 작업을 나중에 취소하려면 “그 작업”을 지칭할 손잡이가 필요해요
+→ Handle
+
+직접 가지 마라. 대리인을 보내라.
+직접 주지 마라. 스냅샷을 보내라.
+직접 묻지 마라. 메시지를 던져라.
+직접 잡지 마라. 핸들을 받아라.
+직접 실행하지 마라. 큐에 넣어라.
+
+경계 때문에 본체가 직접 닿을 수 없을 때 생기는 두 번째 손
+
+존재는 직접적으로는 오래 살지 못해요.
+
+다른 세계로 가려면 그림자가 필요하고,
+다른 존재와 결합하려면 자리가 필요하고,
+미래로 가려면 보류가 필요하고,
+경계를 넘으려면 대리가 필요하고,
+누군가와 관계를 맺으려면 양식이 필요해요.
+
+---
+---
+---
+---
+---
+---
+
+사영(projection).
+추상(abstraction)
+버림
+보존
+
+기하학적 차원(메시, 머티리얼, 트랜스폼)만 보존하는 사영
+역학적 차원(질량, 마찰, 볼록 껍질)만 보존하는 사영
+
+UPROPERTY()를 쓰는 것은 C++ 클래스의 멤버를 리플렉션 공간으로 사영하는 행위이며
+마킹하지 않는 것은 사영에서 제외하는 — 버리는 — 행위
+
+Details 패널이 FProperty를 슬라이더와 체크박스로 바꾸는 것은 
+데이터 공간을 인간 지각 공간으로 사영하는 것이다.
+
+Blueprint 에디터가 클래스를 여섯 패널로 분해하는 것은 
+고차원적 존재(클래스)를 여섯 개의 저차원 면으로 사영하는 것이다.
+
+리플렉션 시스템이 보는 것(UClass/FProperty), 
+렌더러가 보는 것(SceneProxy), 
+물리 엔진이 보는 것(BodyInstance), 
+에디터가 보는 것(Details 패널), 
+네트워크가 보는 것(FRepLayout), 
+직렬화가 보는 것(FArchive)
+이 모든 관점의 합집합에 게임 플레이 의미가 더해져 있다. 
+이것이 게임 객체의 구조이다.
+
+게임 객체는 사영들의 다발에 게임 플레이 상태를 더한 것이다.
+
+Game Thread와 Render Thread가 "원래 있었고" 그 사이에 경계가 발견된 것이 아니다
+"렌더링은 게임 로직과 병렬로 돌려야 한다"는 결정이 경계를 그었고, 그 경계가 두 세계를 창조했다
+경계 이전에는 하나의 세계(단일 스레드 엔진)가 있었을 뿐이다.
+
+UPROPERTY() 마킹은 단순히 "기존 경계를 넘기 위한 도구"가 아니라
+리플렉션 세계와 비-리플렉션 세계 사이의 경계를 긋는 행위 자체다
+
+"지금"과 "나중" 사이에 건널 수 없는 강이 흐른다. 
+현재의 상태를 미래에 전달하려면 저장해야 하며
+저장은 형태를 요구한다
+
+콜스택이라는 현재의 맥락을 미래의 재개 시점으로 운반하는 것. (그때까지 Retain하고 Retrieve하는 것)
+Blueprint VM은 "현재 어디에 있었는가"를 UberGraph의 오프셋으로 저장한다
+C++ 코루틴의 co_await가 스택 프레임을 힙에 보존하는 것도 같은 행위다 
+
+FName
+이름이 살아 있으면, 이름으로 무언가를 찾을 수 있고, 
+찾을 수 있으면 연결할 수 있고, 
+연결할 수 있으면 컴파일 타임에 존재하지 않았던 것들 사이의 관계를 런타임에 구성할 수 있다.
+
+이름은 경계를 넘는 가장 원초적인 도구다. 
+포인터는 같은 프로세스 안에서만 유효하지만, 
+이름은 프로세스를 넘고, 프레임을 넘고, 디스크를 넘고, 네트워크를 넘는다
+
+---
+---
+---
+---
+---
+---
+
+FStaticMeshSceneProxy는 UStaticMeshComponent의 "불완전한 복사본"이 아니다. 
+Render Thread의 세계에서 이것은 완전한 실체다. 렌더러가 프레임을 그릴 때 필요한 모든 것
+메시 데이터, 머티리얼, 트랜스폼, LOD 상태
+
+더도 말고 덜도 말고 딱 그 만큼
+결핍도 아니고 과잉도 아니고 딱 그 자체인 만큼
+
+FBodyInstance는 물리 세계에서 완전한 실체다
+이 세계에는 질량과 마찰과 충돌 형상만이 존재한다
+"이 바디의 머티리얼이 금속 텍스처인지 나무 텍스처인지"는 물리 세계의 존재론에 속하지 않는 질문이다.
+그 차원이 이 세계에는 없다.
+
+각 세계는 자기 차원만을 가진다. 
+사영은 차원을 "잃는" 것이 아니라, 도착한 세계의 차원에 "맞추는" 것이다.
+3차원 물체의 2차원 그림자가 2차원 세계에서 "불완전"한 것이 아니듯
+
+건너간다는 것
+무엇을 이쪽에 두고 무엇을 저쪽에 둘 것인가가 아니라
+무엇을 버릴 것인가를 결정하는 것이다
+
+UStaticMeshComponent
+기하학적 차원(메시, 머티리얼)
+역학적 차원(콜리전, 물리 설정)
+게임플레이적 차원(태그, 소유자, 복제 설정)
+
+공간적 경계에서 Proxy가 "나를 다른 세계에 보내기 위한 분신"이라면
+시간적 경계에서 저장(storage)은 **"나를 미래에 보내기 위한 분신"**이다.
+
+재개 시점에서 "이전 프레임의 월드 상태", "다른 액터들의 위치", "플레이어의 입력"은 보존되지 않는다
+보존된 것은 자기 자신의 로컬 맥락뿐이다
+
+포인터는 한 세계에 속박된 참조다
+0x7FFF3A20은 이 프로세스, 이 순간의 메모리 맵 안에서만 의미를 갖는다
+이번 프로세스가 끝나면 이 숫자는 무의미해진다
+포인터가 세계 내부의 화살표라면
+이름은 세계에 속박되지 않는 참조다
+
+이름이 먼저 있고, 그 이름을 공유하는 두 존재가 각자의 세계에서 태어나며, 이름을 통해 서로를 찾는다.
+
+C++ 컴파일러가 이름을 지우는 것은 세계를 닫는 행위다. 
+이름이 사라진 바이너리는 자기 완결적이며, 외부 세계와의 연결점이 없다. 
+
+리플렉션이 이름을 되살리는 것은 세계를 여는 행위다.
+
+하나의 C++ 클래스가 있다. 
+이 클래스에 UCLASS라는 이름을 부여하면, 리플렉션 세계에 그 존재가 피어난다. 
+멤버에 UPROPERTY라는 이름을 부여하면, 에디터 세계에서 그 멤버를 만질 수 있게 된다. 
+함수에 UFUNCTION이라는 이름을 부여하면, Blueprint 세계에서 그 함수를 호출할 수 있게 된다.
