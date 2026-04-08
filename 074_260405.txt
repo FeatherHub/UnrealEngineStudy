@@ -1,0 +1,967 @@
+가시광선은 전자기파 스펙트럼 중 약 400nm에서 700nm 정도의 매우 좁은 구간
+
+실제 빛은 보통 여러 파장의 혼합
+각 파장마다 얼마나 에너지가 있는지를 가진 분포
+즉 파장 축 위의 분포
+
+SPD, spectral power distribution
+스펙트럼 에너지 분포
+
+RGB는 이 분포를 압축해서 요약한 표현
+
+레이저
+아주 좁은 특정 파장 부근에 에너지가 집중됨
+거의 “한 줄” 같은 SPD
+
+D6
+“무채색/백색” 기준을 잡기 위해 널리 쓰는 CIE 표준 white point
+
+metameric failure
+한 조명 아래에서는 같아 보이던 두 스펙트럼이 다른 조명 아래에서는 다르게 보일 수 있다
+
+scene-referred radiance
+
+이 단계의 값은 아직
+  디스플레이 최대 밝기
+  모니터 색역
+  프레임버퍼 비트 깊이
+같은 것에 맞춰 잘린 값이 아니에요.
+
+여기서 referred는
+“무엇을 기준(reference)으로 한 값인가”
+
+radiance
+“특정 방향으로 흐르는 빛의 밀도”
+
+display-referred radiance
+디스플레이가 낼 수 있는 빛으로 바꾼 값
+
+tone mapping
+scene-referred의 넓은 밝기 범위를
+디스플레이가 감당 가능한 더 좁은 범위로 Remapping하는 과정
+
+단순 clip이 아니라
+강한 하이라이트는 눌러 주고,
+중간톤은 살리고,
+어두운 부분도 읽히게 보정
+
+display encoding
+
+display-referred로 정해진 밝기/색을
+디스플레이 표준에 맞는 프레임버퍼 값으로 변환
+“그걸 장치가 이해하는 숫자 체계로 어떻게 적을까”
+
+gamma correction
+
+셰이딩 계산은 linear radiance 에서 해야 하는데,
+텍스처 저장은 비선형일 수 있어요
+그래서 계산 전후에 선형↔비선형 변환을 맞춰 줘야 해요
+선형 radiance를 전제로 한 shading 계산이 비선형 값 위에서 수행
+
+표면은 들어오는 파장별로 다르게 반사
+
+---
+
+Fresnel reflectance
+
+표면 반사는 일정하지 않고 입사각에 따라 달라진다
+
+정면에서는 약하게 보이던 반사가 비스듬한 각도에서는 훨씬 강해질 수 있다
+
+Schlick 근사의 
+핵심 파라미터 (제어값)
+F0: [0, 1]
+
+---
+
+dielectric(부도체) 와 metal(도체)
+
+금속은 높은 F0
+종종 색이 있는 반사값
+
+---
+
+거친 표면이 흐릿한 하이라이트를 만들고, 매끈한 표면이 날카로운 반사를 만든다
+
+표면은 microgeometry를 가진다
+그것을 통계적으로 다루는 microfacet theory
+
+specular BRDF를 대략 Fresnel 항 F, normal distribution function D, masking-shadowing 항 G 의 곱으로 나누는 형태
+
+roughness
+단순한 “흐림 정도”가 아니라, 미세면 분포의 폭과 형태를 조절하는 값
+
+---
+
+diffuse
+
+opaque dielectric 내부에서 일어난 local subsurface scattering의 표면 응답
+
+specular와 diffuse가 전혀 별개의 현상이 아니라, 
+하나는 표면 반사, 다른 하나는 표면 아래로 들어갔다가 다시 나온 빛
+
+---
+
+cloth
+보풀이나 섬유 방향성
+일반적인 표면 BRDF와 다른 거동을 보이므로, 
+Kajiya–Kay 같은 line/micro-cylinder 기반 모델이나 실측 기반 fabric 모델
+
+wave optics
+기하광학만으로는 다 설명되지 않는 diffraction 과 thin-film interference 같은 현상
+비눗방울이나 기름막 같은 특수 재질
+가죽 같은 일상 재질의 사실감
+
+---
+
+layered materials
+
+코팅·물기·먼지·얼음·페인트층 같은 것이 겹쳐져 있는 경우
+재질을 “base + coat + contamination” 같은 식으로 쌓는 사고방식
+
+얇은 막에 의한 간섭색
+
+PBR은 단일 BRDF를 고르는 작업이 아니라, 서로 다른 광학 층을 어떻게 합성할 것인가의 문제로 확장
+
+재질 파라미터는 최종 색과 선형 관계가 아닐 수 있다
+roughness나 normal map처럼 비선형적인 값은 단순 평균하면 
+잘못된 광택 변화나 specular aliasing을 만들 수 있어요
+
+---
+
+Lₒ(v) = ∫Ω fᵣ(l, v) · Lᵢ(l) · (n·l) dω
+
+(n·l) 가 cosine term
+n은 표면 법선, l은 들어오는 빛 방향
+(n·l) 는 그 방향과 표면 법선 사이 각 θ에 대한 cos θ
+**“그 방향에서 온 빛이 표면에 실제로 얼마나 잘 꽂히는가”**를 나타내는 구조
+
+정면에서는 많이 받고, 비스듬하면 덜 받는다
+
+   ↓↓↓
+ ───────
+
+  ↘ ↘ ↘
+ ───────
+
+같은 양의 빛이라도, 비스듬한 경우 표면 위에 더 길게 퍼지죠.
+그래서 단위 면적당 받는 양은 줄어들어요.
+
+이 “효과”의 구조를 Represent하는 것이 바로 cos θ예요.
+
+---
+
+material parameter / 반사값
+
+표면이 빛에 어떻게 반응할 것인가를 정하는 파라미터
+빛을 변형하는 규칙의 입력
+<->
+“빛 자체”
+빛을 만드는 것
+
+
+base color / albedo
+roughness
+metallic
+specular / F0
+normal
+opacity
+emissive
+
+---
+
+BRDF 모델들
+
+microfacet BRDF
+  base color
+  metallic
+  roughness
+  F0
+  normal
+
+---
+
+outgoing radiance
+
+입사 radiance
+BRDF
+cosine
+visibility
+normal
+view direction
+light direction
+
+을 종합해서 나온 결과예요.
+
+---
+
+rasterization/fragment 단계의 pixel
+화면 샘플 후보
+
+최종 render target의 pixel
+화면 샘플
+위치는 패스마다 다름
+depth/stencil buffer, G-buffer, framebuffer
+
+---
+
+framebuffer
+
+G-buffer framebuffer
+HDR color buffer
+depth buffer
+
+final back buffer
+  display-referred / encoded color 저장
+
+---
+
+BRDF Bidirectional Reflectance Distribution Function
+빛이 표면에 닿았을 때 어느 방향에서 들어와서 어느 방향으로 얼마나 반사되는가
+
+
+표면 한 점의 local scattering
+
+그 점에 빛이 들어왔을 때
+어떻게 반사/굴절/산란하는가
+
+<->
+
+빛이 어디서 와서 어디로 가는가
+가시성, 그림자, 다중 반사
+그 결과를 어떤 픽셀에 기록하고, 어떻게 인코딩해 보여줄까
+
+---
+
+BRDF 가 하지 않는 것 
+  그림자를 계산하지 않아요
+  누가 보이는지 결정하지 않아요
+  tone mapping을 하지 않아요
+  GI 전체를 풀지 않아요
+
+BRDF 가 하는 것
+
+“이 점에 이 방향들로 빛이 들어오면, 저 방향으로 얼마만큼 나가나?”
+local appearance의 핵심
+
+---
+
+BRDF는 반사(reflection)
+BTDF는 투과(transmission)
+
+유리나 물은 BTDF가 중요
+
+BSDF는 
+Bidirectional Scattering Distribution Function
+reflection + transmission을 다 포함
+
+BSSRDF
+Bidirectional Scattering Surface Reflectance Distribution Function
+이건 표면 한 점으로 들어온 빛이
+바로 그 점에서 나오지 않고,
+조금 옆의 다른 점에서 나오는 경우
+
+피부, 왁스, 우유 같은 subsurface scattering
+
+---
+
+전체 light transport
+├─ 표면 상호작용
+│  ├─ BRDF   : 반사
+│  ├─ BTDF   : 투과
+│  ├─ BSDF   : 반사+투과
+│  └─ BSSRDF : 표면 아래 확산
+├─ 볼륨 상호작용
+│  └─ Phase Function
+└─ 광원 방출
+   └─ Emission / EDF
+
+BRDF는 **“표면에서의 반사”**라는 아주 특정한 자리의 함수
+
+---
+
+재질이 빛에 반응하는 방식의 표준 인터페이스
+material response kernel
+
+입사 radiance × BRDF × cosine → 출사 radiance
+
+즉 BRDF는
+  light 쪽도 아니고
+  geometry 쪽도 아니고
+  camera 쪽도 아니고
+  framebuffer 쪽도 아니고
+material과 light transport가 만나는 접점
+
+---
+
+BRDF
+
+현대 PBR에서는 재질 authoring을 결국
+BRDF 파라미터 authoring으로 바꾸어 놓았어요
+  roughness
+  metallic
+  F0
+  normal
+  base color
+
+---
+
+하늘빛이 없는 달 사진에서는 태양을 등진 면이 거의 새까맣게 보이는데, 
+지구에서는 대기 산란 때문에 하늘 자체가 큰 광원이 되어서 그림자 속도 완전히 검지 않아요
+
+Area Light Sources
+
+조명이 점 하나가 아니라 구, 원판, 사각형, 선분 같은 면적을 가진 발광체라고 보고, 
+그 형태가 표면 셰이딩에 어떤 영향을 주는지
+
+Environment Lighting
+장면을 둘러싼 전체 환경에서 들어오는 경우
+환경 조명은 어떤 방향에서 얼마나 많은 radiance가 들어오는가를 담은 함수
+
+Spherical and Hemispherical Functions
+구면 위의 함수로 다룬다
+이런 함수를 저장하고, 회전시키고, 합치고, 적분하는 여러 표현
+빛의 방향 함수를 어떤 좌표계와 기저로 표현할지
+
+Environment Mapping
+방향 함수를 실제 텍스처 형태로 저장하고 조회하는 방법
+latitude-longitude mapping, sphere mapping, cube map, dual paraboloid, octahedral mapping 같은 여러 투영 방식
+
+---
+
+샘플을 엄청 많이 찍어
+샘플 마다 식을 평가하고 다 더하는 것
+
+폐형식은
+적분의 결과를 이미 해석적으로 손에 넣은 상태
+
+---
+
+정직한 적분은
+그 BRDF를 포함한 적분을 있는 그대로 수치적으로 푸는 것
+
+폐형식은
+어떤 BRDF/광원 조합에서 해석적으로 수식을 얻을 수 있는 경우
+
+---
+
+방향에 따라 값이 얼마나 빨리 변하느냐
+
+고주파
+값이 공간이나 방향에 따라 급격하게 변한다
+
+태양 디스크처럼 아주 작은 밝은 점
+날카로운 창문 반사
+방향이 조금만 바뀌어도 값이 크게 달라져요
+
+저주파
+값이 천천히, 부드럽게 변한다
+
+흐린 하늘
+넓고 완만한 ambient lighting
+
+함수를 생각할 때,
+  천천히 변하는 성분은 저주파
+  빠르게 출렁이는 성분은 고주파
+
+---
+
+로브 lobe
+
+분포에서 에너지가 몰려 있는 “봉우리 모양” 영역
+
+---
+
+1차원 주기 함수는 Fourier basis로 분해할 수 있죠.
+
+즉 복잡한 함수를
+  느린 파동
+  빠른 파동
+의 합으로 보는 거예요.
+
+---
+
+빛이 장면 안을 어떻게 돌아다니는가
+
+지금까지는 어떤 점으로, 특정 방향과 세기를 갖고 들어오는 빛 L 가 주어졌다고 보고 셰이딩 했지만
+이제는 그 L 이 사실 다른 점에서 나간 radiance L 이라는 것을 식에 통합해요
+
+---
+
+General Global Illumination
+
+finite element 계열의 radiosity
+radiosity는 확산 반사 표면 사이의 에너지 교환에 강하다
+
+Monte Carlo 계열의 ray tracing/path tracing
+path tracing은 반사·굴절·볼륨 효과까지 더 일반적인 light transport를 다룰 수 있다
+path tracing은 강력하지만 엄청난 샘플 수가 필요
+
+정확한 이론을 어떻게 실시간용 근사로 바꿀 것인가
+
+---
+
+Ambient Occlusion
+
+어떤 점이 주변 공간에 얼마나 열려 있는가를 cosine-weighted visibility의 스칼라 값으로 Model
+그래서 crevice, 오목한 부분이 자연스럽게 어두워지고, 조명 방향이 약한 장면에서도 형상이 잘 드러나요
+
+blocked direction의 radiance를 0으로 두는 단순화 위에 서 있기 때문에, 
+실제 GI보다 과하게 어두워질 수 있고 interreflection을 빠뜨린다
+
+---
+
+Directional Occlusion
+
+AO가 “얼마나 가려졌는가”만 남기는 스칼라라면
+DO는 거기에 어느 방향이 열려 있는가를 추가
+
+---
+
+Diffuse Global Illumination
+
+실무적으로는 첫 번째 bounce만으로도 상당히 그럴듯한 결과를 얻을 수 있다
+diffuse GI - 저주파적이고 넓게 퍼지는 간접광을 어떻게 싸게 전달할 것인가
+
+offline/precomputed 계열
+동적 기하나 시간 변화에 취약
+
+fully dynamic 계열
+
+---
+
+Specular Global Illumination
+
+specular는 시선 방향, 표면 roughness, 주변 기하에 훨씬 민감
+
+localized reflection probes, dynamically updated environment maps, screen-space reflections(SSR)
+
+---
+
+radiance는 “방향이 붙은 빛”
+특정 방향으로 흐르는 빛의 밀도
+**“어느 방향에서 어느 정도 빛이 오느냐”**
+
+environment map은
+방향을 입력하면 radiance를 돌려주는 함수
+
+irradiance
+방향별 radiance들을 표면 법선 기준으로 다 합친 결과
+E(n) = ∫Ω L(l) · cosθ dω
+
+---
+
+BRDF의 bidirectional
+입력 방향과 출력 방향, 두 방향을 변수로 가진다
+
+f(l, v)
+l: incoming light direction
+v: outgoing/view direction
+
+“빛이 어느 방향에서 들어오고, 어느 방향으로 나가느냐”
+에 따라 값이 달라지는 함수
+
+
+---
+
+Image-Space Effects
+“장면을 다 그린 뒤 화면 이미지 자체를 가공하는 방법”
+완성된 프레임을 GPU로 어떻게 후처리할 것인가
+<->
+빛, 재질, 그림자, 전역조명처럼 장면 안에서 무슨 일이 일어나는가
+
+오프스크린 버퍼에 렌더한 결과를 텍스처처럼 다시 읽어 와서, 
+화면 전체를 덮는 primitive를 한 번 더 그리며 픽셀 셰이더나 컴퓨트 셰이더로 처리
+가우시안 블러, 박스 필터, 다운샘플링, bilateral filter, ping-pong buffer
+
+---
+
+Reprojection Techniques
+이전 프레임의 계산 결과를 현재 프레임에서 재사용할 수 없을까
+시간적 연속성을 이용해 셰이딩 비용을 여러 프레임에 나눠 갖는 것
+현재 프레임을 제때 다 못 만들었을 때 이전 프레임을 변형해 임시 결과를 만드는 것
+
+이전에 가려져 있던 부분이 새로 드러나는 경우에는 hole이나 cache miss가 생긴다
+가림 관계 변화, 투명체, 반사 하이라이트, 움직이는 물체 같은 경우에는 한계를 가진다
+
+---
+
+Lens Flare and Bloom
+이미지가 너무 밝을 때 생기는 카메라 효과들
+렌즈 내부 반사나 의도치 않은 광 경로
+렌즈나 눈 내부의 산란 때문에 밝은 부분 주위가 번져 보이는 현상
+
+구현 쪽에서는 밝은 부분만 따로 뽑아 블러한 뒤 원본에 더하는 bright-pass 기반 bloom, 
+저해상도 버퍼에서 블러를 수행해 비용을 줄이는 방식, 
+additive blending으로 과노출 느낌을 만드는 방식
+
+“밝다”는 지각을 강화하는 시각 언어
+
+---
+
+Depth of Field
+카메라 렌즈의 초점 범위를 실시간 후처리로 흉내
+어떤 깊이 범위는 선명하고, 그 밖의 물체는 흐려지는 효과
+
+near field와 far field를 분리하지 않으면 foreground blur가 경계에서 뚝 끊기는 문제가 생기므로, 
+근경을 별도 이미지로 만들어 알파와 함께 블러하고 다시 합성하는 방식
+
+---
+
+Motion Blur
+시간축의 안티앨리어싱
+
+프레임 사이에서 물체가 여러 픽셀씩 건너뛰면 움직임이 툭툭 끊겨 보이는데, 
+블러는 그 사이를 시각적으로 메워 준다
+
+모션 블러는 절대적 속도가 아니라 상대적 움직임의 관계의 함수
+카메라가 고정되어 있으면 자동차가 흐려지고, 
+카메라가 자동차를 따라가면 배경이 흐려져요
+
+velocity buffer를 이용해 화면 공간에서 샘플을 늘어놓고 필터링하는 방식
+
+---
+
+버퍼들
+값을 잠깐 저장하는 작업면
+
+오프스크린 버퍼
+최종 화면에 바로 내보내지 않고, 화면 바깥에서 따로 계산용으로 그려 두는 버퍼
+중간 작업 결과를 담는 작업용 캔버스
+
+렌더링은 점점
+한 번에 끝나는 그림 그리기가 아니라
+여러 버퍼 사이를 오가며 중간 결과를 조립하는 파이프라인이 돼요
+
+실시간 렌더링의 “작업 테이블”
+
+---
+
+최종 출력
+
+back buffer
+최종 프레임이 기록되는 버퍼
+
+front buffer
+실제로 표시 중인 버퍼
+
+---
+
+가시성 / 깊이
+
+depth buffer / z-buffer
+픽셀별 깊이
+
+stencil buffer
+마스크/영역 제어
+
+---
+
+지연 렌더링(Deferred Rendering) 파이프라인
+Geometry Buffer
+G-buffer
+  albedo/base color
+  normal
+  roughness
+  metallic
+  material ID
+  depth
+
+포워드 렌더링은 물체를 그리면서 동시에 조명(Lighting) 계산을 수행
+지연 렌더링은 첫 번째 패스에서 조명 계산을 하지 않고, 
+이후 패스에서 조명을 계산하는 데 필요한 기하학적 속성들을 뽑아둡니다
+
+Geometry Pass
+Lighting Pass
+
+---
+
+Substrate는 단순한 G-Buffer 구조를 넘어 
+여러 층의 재질(Multi-layered BSDF)을 표현하기 위해 
+가변적인 데이터 패킹 방식을 도입
+투명한 물체(Transparency)
+
+Bidirectional Reflectance Distribution Function
+Bidirectional Scattering Distribution Function
+
+---
+
+시점 자유도, 거리, 비용, 품질 사이의 연속체
+
+삼각형은 시점이 자유롭게 바뀌어도 안정적이라는 장점
+물체가 멀어지거나 시점이 제한되면 이미지 기반 표현이 더 효율적
+
+시점 제약이 있을수록 많은 것을 재사용할 수 있다
+카메라가 고정된 장면의 color/z-buffer를 저장해 두고 반복 재사용
+skybox는 먼 하늘과 배경을 하나의 환경 이미지로 처리
+  skybox는 항상 뒤에 있으므로 z-buffer 쓰기를 생략하거나, opaque 이후에 그려 픽셀 셰이더 호출을 줄이는 최적화 가능
+
+---
+
+billboard는 카메라를 향하도록 회전하는 텍스처 사각형
+두께보다 외형 인상이 중요한 대상
+
+impostor
+복잡한 물체를 현재 시점에서 한 번 렌더해 만든 이미지를 사각형에 붙여 
+몇 프레임 또는 여러 인스턴스에 재사용
+
+limb별 polypostor나, 여러 cutout plane으로 구성된 billboard cloud
+
+---
+
+relief texture mapping이나 relief impostor
+heightfield, normal, color 텍스처를 사용 
+픽셀 단계에서 ray marching을 해서 실제 표면이 있는 것처럼 보이게 해요
+
+---
+
+Particle Systems
+매끈한 닫힌 표면으로 생각하기 어려운 현상
+
+입자는 단순한 “점”이 아니라, 생성·이동·소멸 규칙까지 포함한 시스템이고, 
+렌더링 쪽에서는 보통 billboard나 작은 quad로 표현돼요
+평평한 camera-facing quad에 volumetric한 빛과 그림자를 주려면 별도 트릭이 필요
+
+---
+
+Point Rendering은 점군(point cloud)을 렌더
+
+표면을 삼각형 연결망으로 만들지 않고 많은 점 샘플 자체로 다루는 것
+splat이나 surfel 같은 primitive를 사용
+
+---
+
+Voxels
+
+대상을 표면이 아니라 부피의 격자 샘플로 보는 방법
+내부 구조까지 다룰 수 있다
+
+저장 비용이 해상도에 대해O(n3)로 커지기 때문에, 
+sparse voxel octree 같은 압축 구조가 중요해져요
+
+---
+
+목표는 화면에 대상을 설득력 있게 보여주는 것이지, 
+반드시 모든 대상을 삼각형 메시로 표현하라는 것이 아니에요
+
+---
+
+시점 자유도는 표현이 허용하는 카메라 이동 범위
+
+어떤 표현은 카메라가 거의 고정되어야 하고, 
+어떤 표현은 조금 움직여도 괜찮고, 
+어떤 표현은 거의 임의 각도에서도 유지돼요
+
+fixed-view 효과는 조금만 움직여도 “정말 그 공간 안을 움직이는 게 아니다”라는 티가 날 수 있지만, 
+light field rendering은 여러 시점을 저장해 두고 새 시점을 보간해서 더 큰 viewing freedom 을 줄 수 있어요
+
+고정 시점 이미지 / fixed-view effect
+  시점 자유도 낮음
+skybox / distant background
+  회전 자유도는 높지만, 위치 이동 자유도는 낮음
+impostor / billboard
+  어느 정도 자유도는 있지만 
+  가까이 가거나 크게 측면 이동하면 들킴
+light field / view interpolation
+  더 높은 자유도를 주려는 시도
+실제 3D geometry
+  가장 높은 시점 자유도
+
+이 표현이 얼마나 진짜 3D 세계처럼 카메라 이동을 견딜 수 있는가 
+
+회전 자유도
+이동 자유도
+parallax 보존 여부
+가까이 갔을 때 형태가 무너지지 않는가
+
+---
+
+G-buffer
+여러 버퍼들의 패밀리예
+한 픽셀에 대해 필요한 속성이 많기 때문
+색만 저장하면 나중에 조명 계산이 안 된다
+
+처음 패스에서는
+“이 픽셀의 표면이 어떤 성질을 가졌는가”
+를 여러 버퍼에 기록
+
+다음 패스에서는
+그 버퍼들을 읽어서 lighting을 계산
+
+---
+
+ray marching
+
+광선을 따라 조금씩 전진하면서, 그 경로 위의 함수나 볼륨 데이터를 샘플링
+
+광선 하나를 쏘고 이렇게 생각하는 거예요.
+  지금 위치 p
+  조금 앞으로 간다
+  거기서 다시 검사한다
+  또 앞으로 간다
+  표면에 충분히 가까워지면 hit
+  너무 많이 갔는데도 없으면 miss
+
+
+---
+
+텍스처는
+연속적인 표면 신호를 이산 격자 위에 저장한 것
+
+“정수 인덱스로 원소 하나를 꺼낸다”기보다
+“연속 공간의 어떤 위치에서 신호값을 추정한다”
+
+인덱스 i를 준다
+정확히 i번째 원소를 꺼낸다
+
+UV = (0.37, 0.62) 같은 연속 좌표를 준다
+그 위치에 해당하는 값을 추정해서 돌려준다
+
+좌표는 대개 실수고, 
+그 위치는 texel 격자 사이 어딘가일 수 있어요
+
+그래서 nearest, bilinear, trilinear 같은 것이 등장해요
+즉 텍스처 접근은 본질적으로
+“격자 위의 이산 데이터로부터 연속 위치의 값을 재구성하는 과정”
+
+---
+
+신호처리(signal processing)
+
+원래 어떤 연속 함수 f(u, v)가 있다
+그걸 texel 격자 위에서 이산적으로 저장했다
+렌더링 중에는 다시 연속 좌표에서 그 값을 읽고 싶다
+
+즉 texel 값들은
+원래 연속 함수의 samples 로 보는 거예요.
+
+---
+
+buffer
+GPU 자원(resource)
+
+texture
+샘플링 가능한 데이터 저장소
+shader가 좌표 기반으로 읽는 용도가 중심
+
+render target
+현재 패스에서 렌더링 결과가 써지는 목적지
+pixel shader 결과가 기록되는 캔버스
+
+---
+
+표면만 그리는 렌더링에서 벗어나
+빛이 표면에서 바로 끝나지 않는 재질들
+대기, 구름, 유리, 물, 피부, 머리카락
+
+absorption은 빛이 사라지는 것이고, 
+out-scattering은 진행 방향에서 다른 방향으로 빠져나가는 것이고, 
+in-scattering은 다른 방향에서 오던 빛이 현재 시선 방향으로 들어오는 것이고,
+emission은 매질 자체가 빛을 내는 거예요. 
+
+이들을 묶는 계수가 σt = σa + σs이고, 
+scattering이 absorption보다 얼마나 우세한지를 나타내는 값이 albedo ρ = σs / σt예요. 
+
+ρ가 0에 가까우면 어둡고 탁한 매질이 되고, 1에 가까우면 밝고 뿌연 매질이 돼요. 
+예를 들어 우유는 scattering이 매우 강해서 뿌옇고 희게 보이고, 
+와인은 scattering은 거의 없고 absorption이 커서 붉고 투명하게 보여요.
+
+transmittance는 빛이 어떤 거리만큼 매질을 통과한 뒤 얼마나 살아남는지를 말하고, 
+phase function은 산란이 어떤 방향을 얼마나 선호하는지를 말해요
+
+---
+
+Specialized Volumetric Rendering
+
+단순한 깊이 기반 fog
+카메라로부터의 거리나 높이에 따라 scene color와 fog color를 섞는 방식
+
+volumetric lighting
+spotlight 속 공기 입자가 빛을 드러내는 god ray, light shaft 같은 효과
+
+---
+
+General Volumetric Rendering
+
+ray marching
+시선 광선을 따라 볼륨을 샘플링하면서 extinction, in-scattering, emission을 누적
+
+---
+
+Translucent Surfaces
+유리, 물, 반투명 플라스틱
+
+표면은 분명히 존재하지만, 빛이 일부 통과하고 굴절하고 약해지는 재질들
+
+단순 알파 블렌딩만으로는 이런 재질을 설명할 수 없다
+
+화면 뒤 배경을 mipmap된 scene texture로 샘플링하고 roughness에 따라 blur량을 달리하는 이미지 기반 refraction 기법
+화면 밖 정보는 굴절에 참여할 수 없다는 한계
+
+caustics
+빛이 어떤 영역에서는 모이고 어떤 영역에서는 퍼지면서 밝은 무늬와 어두운 영역이 생김
+
+---
+
+Subsurface Scattering
+
+표면 바로 아래에서 강하게 산란하는 재질
+BRDF보다 더 일반적인 BSSRDF 문제로 연결
+
+명암 경계가 부드러워지고 shadow edge에 붉은 번짐 같은 color bleeding
+diffuse는 퍼지지만 specular는 표면에서 생기므로 상대적으로 그대로 남아요
+
+“diffuse가 흐려진 것 같은데 specular는 또렷한” 독특한 인상
+
+---
+
+Hair and Fur
+별도의 fiber BSDF나 다중 산란 모델이 필요
+
+여러 장의 반투명 레이어를 표면 바깥쪽으로 반복 렌더해 부피감을 만들고, 
+실루엣에서는 fin을 추가해 가장자리 붕괴를 감춰요
+
+---
+
+언젠가는 표면과 볼륨의 경계가 흐려질 수 있다
+언젠가는 하나의 연속체로 볼 수 있지 않을까
+
+opaque mesh, alpha-blended surface, particle billboard, ray-marched volume을 각각 따로 다루지만, 
+이론적으로는 microfacet 대신 microflake/SGGX 같은 볼륨 기반 표현으로 
+표면과 매질을 더 통일적으로 표현
+
+숲을 멀리서 볼 때 나뭇가지를 메시 LOD로 뚝뚝 바꾸는 대신, 
+볼륨 필터링된 트리 표현으로 점진적으로 스무스하게 넘어가게 만들 수 있다는 거예요
+
+**“빛을 표면에서만 계산할 것인가, 아니면 물질 전체에 대해 계산할 것인가”**
+
+안개, 대기, 구름, 유리, 물, 피부, 머리카락처럼 빛이 표면에서 바로 끝나지 않는 모든 경우를, 
+산란·흡수·전달·굴절·확산이라는 공통 언어로 묶어, 
+표면 렌더링을 ‘공간과 물질 전체의 렌더링’으로 확장
+
+---
+
+표준 opaque mesh
+
+삼각형 → rasterization → depth test → G-buffer 혹은 forward shading
+
+연기/구름처럼 부피 전체가 보이는 것
+머리카락처럼 엄청 많은 가는 선/섬유
+파티클처럼 작은 효과가 수천~수만 개
+point cloud / voxel처럼 애초에 삼각형 메시가 아닌 데이터
+
+불투명하고 표면이 뚜렷하다 → mesh rasterization
+반투명하고 얇다 → alpha-blended geometry
+볼륨 전체를 적분해야 한다 → ray marching / volumetric pass
+삼각형이 아니라 점/복셀이다 → splat, point pass, voxel pass
+
+장면을 여러 표현 도메인으로 나눠 각각 맞는 하위 파이프라인에 보낸다
+
+---
+
+Non-Photorealistic Rendering
+필요한 정보만 더 선명하게 드러내도록 세계를 스타일화하는 기술
+단순화된 채색, 윤곽선, 스트로크, 선
+
+
+연속 명암을 그대로 재현하기보다, 색 영역을 단순한 덩어리로 나누고 경계를 또렷하게 만드는 방식
+
+Outline Rendering
+boundary edge, crease edge, material edge, contour edge, silhouette edge
+
+이미지 기반 에지 검출
+얇거나 거의 같은 깊이/노멀을 가진 경계는 놓칠 수 있어요
+
+Stroke Surface Stylization
+선을 찾은 다음, 그것을 어떤 재료감으로 보여줄 것인가
+shower door effect
+
+---
+
+CAD나 기술 일러스트에서는 형태를 읽게 해 주는 핵심 도구
+선이 항상 표면보다 앞에 보이게 하기가 생각보다 어렵다
+
+depth bias, stencil 기반 방법
+barycentric coordinates를 이용해 픽셀 셰이더에서 가장 가까운 삼각형 변까지의 거리를 계산하는 방법
+
+---
+
+픽셀 하나만 달라져도 판독성이 크게 흔들릴 수 있는 특별한 그래픽 객체
+
+3D 표면 위 텍스트에도 잘 견디는 signed distance field 기반 기법
+
+---
+
+Polygonal Techniques
+
+아무 기하 데이터나 GPU에 바로 던지지 말고, 
+삼각분할하고, 메쉬로 통합하고, 캐시에 맞게 순서를 정리하고, 필요하면 단순화하고, 마지막으로 압축과 정밀도까지 조절해서 
+‘그리기 좋은 데이터’로 바꿔라
+
+‘모델링 데이터’를 ‘렌더링 데이터’로 번역하는 기술
+그 모델이 삼각형 수, 연결성, 순서, 중복, 정밀도 면에서 얼마나 잘 정리되었는가
+
+
+테셀레이션/삼각분할, 통합(consolidation), 메쉬의 재배열, 단순화, 압축과 정밀도
+
+삼각형을 빨리 그리는 문제 이전에 
+삼각형을 어떤 형태로 만들어 저장하고 순서화할 것인가
+
+Sources of Three-Dimensional Data
+폴리곤 모델 Data가 어디서 오는지
+
+기하 데이터를 직접 입력할 수도 있고, 
+절차적으로 생성할 수도 있고, 
+다른 형태의 데이터를 표면/볼륨으로 변환할 수도 있고, 
+모델링 툴로 조형할 수도 있고, 
+사진 기반 복원(photogrammetry), 3D 스캐너/디지타이저, 의료 스캔 같은 등가면(isosurface) 생성으로부터 얻을 수도 있다
+
+---
+
+Tessellation and Triangulation
+
+폴리곤을 더 다루기 쉬운 primitive, 보통 삼각형으로 나누는 일을 
+triangulation 또는 더 일반적으로 tessellation
+
+ear clipping 같은 기본 삼각분할, 
+convex partitioning, 
+여러 outline을 bridge edge로 연결해 단일 루프로 바꾸는 방법, 
+그리고 복잡한 폴리곤을 스텐실 버퍼 두 패스로 직접 채우는 우회책
+
+병적인 입력과 정밀도 문제 때문에 의외로 까다롭다
+T-vertex, zero-area triangle, 길고 가는 삼각형
+단순 fan 분할보다 재삼각분할이 나을 수 있다
+
+---
+
+Consolidation
+polygon soup나 triangle soup
+공유 정점을 찾아 병합하고, 모든 면의 방향을 일관되게 맞추고, 스무스 셰이딩을 위한 정점 노멀을 생성하는 등의 작업
+
+Triangle Fans, Strips, and Meshes
+메쉬를 GPU에 어떻게 보내는지
+
+indexed triangle mesh
+삼각형들이 자유로운 순서를 가질 수 있고, 데이터 공유가 더 쉽고, 전체 메모리 사용도 대개 더 작기 때문
+실제 성능은 단순 primitive 형식보다도 vertex cache를 얼마나 잘 쓰느냐가 중요해서, 
+ACMR(average cache miss ratio) 같은 지표와 캐시 친화적 메쉬 레이아웃이 핵심
+
+Simplification
+메쉬에서 중요하지 않은 특징을 제거하는 과정
+edge collapse와 quadric error metrics(QEM) 계열
+
+
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
