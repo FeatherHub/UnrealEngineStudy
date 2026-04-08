@@ -1,0 +1,311 @@
+삼각형은 어디까지나 최종 렌더링 형식이고, 
+그 앞단의 기하 표현은 더 수학적이고 더 유연할 수 있다
+
+더 압축적인 표현, 
+더 부드럽고 연속적인 형상, 
+더 자연스러운 LOD 확장성,
+애니메이션/충돌 처리의 단순화 가능성
+
+Parametric Curves
+카메라 이동 경로, 객체 이동 경로, 머리카락 렌더링
+여러 곡선 조각을 이어 붙일 때 필요한 C0, G1, C1 연속성
+시작점/끝점과 양 끝의 접선으로 다루는 cubic Hermite interpolation
+
+Parametric Curved Surfaces
+곡선이 𝑡 하나로 움직였다면, 곡면은 보통 ( 𝑢 , 𝑣 )로 움직이고, 
+이 값을 샘플링해서 삼각형으로 연결하면 GPU가 그릴 수 있는 메쉬가 돼요
+런타임에 원하는 밀도로 삼각형화할 수 있는, LOD 친화적 표면 표현
+Bézier patches, Bézier triangles, patch 사이의 continuity
+
+Implicit Surfaces
+어떤 3차원 점 p를 넣었을 때 f(p)=0이면 표면 위다
+“공간 전체에서 어디가 표면인가”
+
+Subdivision Curves, Subdivision Surfaces
+간단한 규칙을 반복 적용하면 점점 더 부드럽고 연속적인 곡선/곡면이 생겨요
+원하는 만큼 세밀하게 샘플할 수 있다
+표면을 너무 매끈하게만 두지 않기 위해 piecewise smooth subdivision으로 
+crease, dart, corner 같은 날카로운 특징을 넣는 방법
+거친 control mesh를 부드러운 subdivision surface로 만든 뒤 다시 displacement로 세부 형상을 얹는 방식
+
+Efficient Tessellation
+GPU가 결국 빠르게 그리는 것은 삼각형
+curved representation을 triangle mesh로 바꾸는 tessellation 과정
+실전에서는 CPU가 미리 잘게 쪼개서 보내기보다 
+곡면 표현 자체를 GPU로 보내고 하드웨어 테셀레이션 파이프라인이 데이터를 확장
+fractional tessellation은 LOD 전환을 더 부드럽게 만들고, adaptive tessellation은 가까운 곳만 더 촘촘히 쪼갠다
+
+---
+---
+---
+
+병목은 프레임 전체에서 고정된 것도 아니고, 한 프레임 안이나 심지어 draw call 사이에서도 바뀔 수 있다
+
+application/CPU, geometry stage, rasterization stage, pixel processing stage, merging stage를 각각 따로 시험하는 사고방식
+
+예를 들면 pixel 쪽은 해상도를 낮춰 보거나 shader를 단순화·복잡화해 보고, 
+geometry 쪽은 vertex format이나 shader 길이를 바꿔 보고, 
+rasterization 쪽은 vertex/pixel shader를 동시에 더 무겁게 만들어도 시간이 안 늘면 rasterizer가 병목
+
+unified shader architecture가 있는 GPU에서는 
+vertex와 pixel이 같은 자원을 공유하므로, 어디가 막히는지 해석이 더 까다로워질 수 있다
+
+오늘날에는 산술 연산 개수보다 메모리 접근 패턴이 더 중요해졌다
+CPU 성능 향상 속도보다 DRAM 성능 향상 속도가 훨씬 느렸다, memory wall
+data-oriented design과 cache coherence를 핵심 원리로 밀어요
+데이터가 얼마나 가까운 곳에, 얼마나 연속적으로, 얼마나 재사용 가능하게 놓여 있는가
+
+API/driver overhead와 state change 비용
+상태 변경 비용이 종류에 따라 비용 차이도 크다
+render target, shader program, blend mode, texture binding 같은 상태 전환
+state sorting, 즉 batching이 중요
+
+정적이고 상태가 같은 오브젝트는 큰 mesh로 묶어 한 번에 그릴 수 있고, 
+반복되는 오브젝트는 인스턴싱으로 per-instance 데이터만 바꿔 한 번에 처리
+
+temporal parallelism
+spatial parallelism
+throughput과 latency 사이의 교환관계
+
+---
+
+Acceleration Algorithms
+굳이 처리할 필요가 없는 것을 최대한 일찍 버리는 것
+프레임레이트·해상도·셰이딩 복잡도·기하 복잡도는 계속 늘어나지만 
+장면 복잡도에는 사실상 상한이 없기 때문에, 가속 알고리즘은 앞으로도 계속 필요하다
+
+Spatial Data Structures
+장면을 그냥 오브젝트 목록으로 두지 말고 
+공간적으로 조직된 계층 구조로 바꾸라
+
+겹침 판정·가시성 검사·충돌·레이 교차 같은 질의가 보통 O(n)에서 O(log n) 수준으로 빨라질 수 있다
+
+BVH, BSP 계열, quadtree, octree
+
+빠른 렌더링의 전제는 좋은 공간 정리
+
+보이지 않는 것을 빨리 판단해 더 아래 단계로 보내지 않는 기술
+backface culling, 그다음이 view frustum culling
+frustum culling은 BVH와 잘 결합
+큰 노드가 통째로 화면 밖이면 그 하위 전체를 버릴 수 있어요
+
+Portal culling
+방과 복도 같은 셀(cell), 그리고 문과 창문 같은 포털(portal)을 기준으로 장면을 나누고, 
+현재 셀에서 포털을 통과해 보이는 다음 셀만 재귀적으로 따라가는 방식
+셀/포털 그래프를 자동화하기 어렵기 때문에 여전히 수작업성이 남는다
+
+Detail and Small Triangle Culling
+멀리 있는 물체나 화면에서 차지하는 면적이 극히 작은 삼각형은, 그려 봐야 거의 안 보이는데 비용은 그대로 들 수 있어요
+보이긴 하지만 기여도가 너무 작은 것도 적극적으로 솎아내야 한다고 봐요
+
+Occlusion culling
+HZB(hierarchical z-buffer) 계열
+
+Culling Systems
+object/instance culling -> cluster/chunk culling -> triangle culling
+오브젝트 단위로 크게 솎아내고, 더 작은 클러스터 단위로 다시 걸러내고, 삼각형 단위까지 내려갈 수 있다
+
+Level of Detail
+안 보이는 것만 버리는 것으로는 부족하니 
+보이는 것도 상황에 따라 더 단순한 표현으로 바꾸자
+discrete geometry LOD, billboard LOD, alpha LOD, CLOD, geomorph LOD
+나무는 가까울 때는 많은 삼각형을 가진 실제 메시로 보이지만, 
+멀어질수록 더 단순한 메시로 바뀌고, 더 멀리 가면 color+normal map을 가진 billboard로 바뀔 수 있어요
+멀리 있는 대상에 가까운 대상과 같은 비용을 쓰지 않아도 돼요.
+
+alpha LOD
+LOD를 점점 투명하게 만들어 결국 사라지게 하는 방식이라, 갑작스러운 popping을 줄여 줘요
+
+CLOD/geomorph
+한 LOD에서 다음 LOD로 갈 때 정점이 서서히 이동하도록 만들어 부드러운 연속 전환을 노려요
+
+품질 저하를 시각적으로 덜 거슬리게 만드는 것
+
+장면 전체를 개별 오브젝트 LOD만으로 다루지 말고,
+HLOD(hierarchical LOD) 처럼 더 큰 묶음 단위의 대표 표현으로 바꿀 수도 있다
+
+시간 예산이나 전력 예산에 맞춰 품질 파라미터를 조절하는 방향
+
+LOD는 단순 거리 기반 메시 교체가 아니라, 
+프레임 타임과 시각 오차를 관리하는 제어 시스템에 가까워져요
+
+Rendering Large Scenes
+“아예 장면 전체가 메모리에 다 안 들어가는 경우”
+현대 게임 월드가 CPU/GPU 메모리보다 훨씬 큰 데이터를 가질 수 있다
+virtual texturing, streaming, transcoding, terrain rendering
+데이터를 언제 어디서 어떻게 불러오느냐
+
+virtual texturing
+현재 화면에 실제로 필요한 타일만 resident 하게 두는 방식
+sparse textures, megatexture, partially resident texturing
+필요한 텍셀 수는 최종 화면 해상도에 비례해야지, 월드 전체 텍스처 해상도에 비례하면 안 된다
+
+Terrain rendering
+geometry clipmaps
+여러 해상도의 정사각형 창(window)을 카메라 주변에만 캐시해 두고, 
+시점이 움직이면 그 창도 따라 움직이며 새 데이터를 로드하는 구조
+
+chunked LOD
+지형을 quadtree 위의 타일/청크들로 나누고, 
+각 노드의 screen-space error 가 임계값 아래면 그 노드를 그리고, 
+아니면 더 세분화된 자식을 방문하는 방식이에요. 
+즉 지형 렌더링은 거대한 높이장 전체를 다 보내는 문제가 아니라, 
+현재 카메라 주변에서 필요한 해상도만 유지하는 문제로 바뀌어요
+
+
+---
+
+Efficient Shading
+
+가시성 판정과 셰이딩을 가능한 한 분리하고
+빛과 재질 계산을 더 적은 패스·더 적은 대역폭·더 더미 없는 방식으로 재구성하는 법
+
+보이는 것으로 결정된 뒤의 셰이딩 비용
+
+forward shading
+물체를 그릴 때 바로 재질과 조명을 함께 계산하는 방식
+
+Deferred Shading
+먼저 G-buffer에 깊이, 노멀, 재질 파라미터 등을 저장한 뒤, 
+그 정보를 사용해 뒤에서 조명을 계산하는 구조예요
+오버드로우를 줄이고, 조명과 재질을 분리하고, 조명이 많은 장면에서 기하 패스를 단순화할 수 있다
+G-buffer의 메모리 사용량과 대역폭 비용
+투명체는 한 픽셀에 한 표면만 저장하는 기본 구조와 잘 맞지 않으며, MSAA도 비싸고 까다롭다
+
+실제로는 불투명체는 deferred, 투명체는 forward로 섞는 구성
+
+Decal Rendering
+
+기존 표면 위에 얹히는 추가 재질 정보
+
+정점에 decal용 UV를 많이 저장하는 방식은 확장성이 낮고, 
+픽셀 셰이더에서 모든 decal을 샘플하는 방식은 셰이더를 복잡하게 만든다
+
+실제로는 별도 패스로 decal을 렌더하거나, 
+경우에 따라 기존 재질 텍스처에 bake하는 방법을 비교
+
+deferred 계열은 G-buffer를 이미 갖고 있으므로 decal을 적용하기 더 편하다
+
+Tiled Shading
+면을 2D 타일로 나누고, 각 타일에 영향을 줄 가능성이 있는 광원 목록만 만들어 두기
+픽셀은 자기 타일의 light list만 순회해 셰이딩
+
+G-buffer를 픽셀당 많아야 한 번 읽고, 출력도 한 번만 쓰며, 공통 항 계산을 묶고, warp 실행 일관성을 높일 수 있다
+false positive가 생기고, 깊이 불연속이 큰 곳에서는 불필요한 광원이 여전히 남을 수 있어요
+
+Clustered Shading
+z 방향 분할까지 추가해서 view frustum을 3차원 셀들로 나누는 방식
+깊이 불연속이 큰 타일에서도 광원 분류가 더 정밀
+셀 구조와 리스트 관리가 더 복잡해지고 
+먼 거리 셀은 거의 픽셀 크기까지 작아질 수 있어 효율 문제가 생길 수 있다
+
+Deferred Texturing
+
+triangle ID, instance ID, material ID, depth, gradients 같은 더 압축된 가시성/재질 참조 정보만 먼저 저장하고, 
+실제 텍스처 fetch와 재질 계산은 뒤에서 하자는 방향이 나와요.
+
+“보이는 표면이 무엇인가”를 먼저 결정한 뒤에만 비싼 텍스처링을 하려는 거예요
+
+Object- and Texture-Space Shading
+
+객체 공간이나 텍스처 공간에서 먼저 셰이딩 결과를 만들어 두고, 최종 카메라 기반 패스에서는 그것을 재사용할 수 있다
+
+---
+
+Virtual and Augmented Reality
+
+motion-to-photon latency
+
+머리를 돌린 순간부터 그에 맞는 영상이 눈에 들어오기까지의 지연
+
+AR에서는 가상 객체가 현실에 붙어 있지 못하고 떠다니는 것처럼 보이는 pixel stick 문제
+VR에서는 simulation sickness
+
+---
+
+교차 판정
+카메라 높이 유지, picking, view-frustum culling, BVH traversal, ray tracing
+기하 질문들을 어떻게 빠르고 견고하게 처리할 것인가
+
+visible object 선택은 CPU가 삼각형을 하나씩 검사하기보다 GPU가 이미 만든 가시성 결과를 활용하는 편이 훨씬 빠를 수 있다
+
+SAT(Separating Axis Test)
+두 convex 물체가 겹치지 않는다면, 둘의 투영 구간이 분리되는 축이 적어도 하나 존재한다
+
+bounding volume을 만드는 법
+
+AABB와 k-DOP
+sphere와 OBB는 quality와 cost 사이의 trade-off가 더 크다
+
+geometric probability
+임의의 ray가 convex object를 맞출 확률은 대체로 surface area와 관련 있고,
+임의의 point가 내부에 들어갈 확률은 volume과 관련 있다
+
+early rejection, 비싼 연산의 지연, 차원 축소, 이전 프레임 결과 재사용
+
+---
+
+geometry pass, lighting pass
+rasterization pass
+
+---
+
+render target, texture, register
+
+---
+
+
+
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
