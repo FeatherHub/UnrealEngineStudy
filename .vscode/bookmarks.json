@@ -214,6 +214,16 @@
 					"label": ""
 				}
 			]
+		},
+		{
+			"path": "082_260410.txt",
+			"bookmarks": [
+				{
+					"line": 481,
+					"column": 3,
+					"label": ""
+				}
+			]
 		}
 	]
 }
