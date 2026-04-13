@@ -1,0 +1,850 @@
+CharacterMovementComponent를 상속
+MOVE_Custom이라는 확장 지점
+
+Custom 모드의 물리
+PhysCustom이라는 빈 virtual 함수
+
+PhysFlying을 reference implementation으로 삼아 구조를 역공학
+
+---
+
+CalcVelocity (가속/감속/마찰 적용)
+SafeMoveUpdatedComponent (실제 이동)
+HandleImpact + SlideAlongSurface (충돌 처리)
+Velocity = (새 위치 - 이전 위치) / deltaTime 
+
+---
+
+Surface Detection
+
+line trace의 한계 (코너를 돌 수 없다) 
+=> shape sweep
+
+sweep이 이미 geometry 안에 겹쳐 있을 때 normal이 왜곡되는 문제 발견 
+=> 각 hit 지점으로 개별 sphere trace를 쏘는 2단계 방식
+
+---
+
+Climbing 진입 조건
+
+"벽에 닿으면 등반"이 아니라 세 가지 필터
+
+캐릭터의 forward vector와 벽 normal의 수평 각도가 25도 이내인가
+천장(ceiling)이 아닌가
+eye height에서 forward trace가 실제로 뭔가를 맞추는가(표면이 너무 낮지 않은가)
+
+---
+
+2D Blendspace
+
+8방향 클라이밍 애니메이션 + idle
+모션 공간의 "샘플 포인트"
+
+
+캐릭터의 velocity는 월드 공간에
+2D blendspace가 기대하는 입력은 "캐릭터 기준으로 얼마나 위로/옆으로 움직이고 있는가"
+로컬 좌표계 기준 속도가 필요
+월드 프레임의 벡터를 바디 프레임으로 변환
+
+---
+
+ledge climb
+Root Motion
+
+손을 짚고, 몸을 끌어올리고, 다리를 넘기는 일련의 동작
+애니메이션 아티스트가 루트 본에 실제 이동 데이터를 심어놓으면, 엔진이 그 이동 데이터를 물리 시스템에 주입
+
+ComputeClimbingVelocity에서 HasAnimRootMotion()이면 CalcVelocity를 건너뛰고, 
+GetClimbingRotation에서도 root motion 중이면 현재 rotation을 그대로 반환해
+
+
+Root Motion은 사전 결정된 궤적
+"이 애니메이션은 앞으로 120cm, 위로 160cm 이동한다"가 이미 베이크
+실제 절벽의 높이와 깊이는 매번 다르다
+
+
+ledge climb 전에 CanMoveToLedgeClimbLocation으로 목표 지점의 walkability와 capsule 충돌을 검사하는 이유
+
+---
+
+애니메이션이 가정하는 표면의 형태와 실제 표면의 형태
+
+---
+
+순방향 키네마틱스(FK)
+루트→리프 방향의 계산
+어깨가 이만큼 회전하면, 팔꿈치가 이만큼 움직이고, 손이 저기에 도달한다
+
+IK
+"손이 저 벽면 위에 있어야 한다"는 목표(end-effector target)를 먼저 설정하고, 
+그 목표를 달성하기 위해 팔꿈치와 어깨가 얼마나 회전해야 하는지를 역산해.
+
+손/발 본의 위치에서 표면을 향해 trace를 쏜다
+hit point와 현재 본 위치의 차이(offset)를 구한다
+이 offset을 deltaTime으로 lerp해서 부드럽게 적용한다
+네 개의 end-effector(양손, 양발)를 Full Body IK solver에 넘긴다
+solver가 전신 포즈를 조정
+
+
+additive global mode
+IK 보정이 기존 애니메이션 위에 더해지는 것
+
+---
+
+기술(description)과 설명(explanation)의 분리
+"이 물체가 어떻게 움직이는가?"와 "이 물체가 왜 움직이는가?"
+
+아리스토텔레스
+운동은 본질적으로 원인과 결합
+운동을 기술하는 것 자체가 이미 원인을 말하는 것
+"어떻게"와 "왜"가 하나의 답변으로 융합
+
+
+14세기 옥스포드의 Merton College와 파리의 Oresme, Buridan
+uniform acceleration 수학적으로 다룸
+그래프로 시각화
+
+
+갈릴레오
+경사면을 구르는 공에 대해, "왜 구르는가?"를 묻기 전에 "어떻게 구르는가?"를 먼저 묻고, 
+측정하고, 수학적 법칙(d ∝ t²)을 찾음 
+원인에 대한 질문을 의도적으로 괄호 치고(bracket) 기술에 집중
+설명하기 전에 먼저 기술하라
+
+---
+
+Statics
+아르키메데스가 기원전 3세기
+
+물체가 움직이지 않는 경우, 즉 평형 상태
+지렛대 법칙과 부력
+
+변화가 없으니 시간이라는 변수를 다룰 필요가 없고, 
+힘들의 합이 0이라는 대수적 조건으로 환원
+
+---
+
+Dynamics
+
+힘(원인)과 운동(결과)의 관계
+F = ma라는 방정식의 왼쪽(F)이 원인이고 오른쪽(ma)이 결과
+
+힘의 합이 0이 아닌 경우 무슨 일이 벌어지는가
+
+---
+
+Kinematics
+
+운동의 기하학
+위치, 속도, 가속도, 궤적, 이것들의 시간에 대한 관계
+
+---
+
+제1법칙
+운동에는 원인이 필요하지 않다
+원인이 필요한 것은 운동의 변화다
+
+<=> 정지가 자연 상태이고 운동에 설명이 필요
+
+
+제2법칙
+"힘"에 조작적 정의(operational definition)를 부여
+"힘이 무엇이든, 그것은 질량 곱하기 가속도로 측정된다."
+힘은 물체의 본질인가? 외부에서 오는 작용인가? 접촉해야만 전달되는가?
+힘의 본질을 묻지 않고, 힘의 효과를 정의함으로써 힘을 수학적으로 다룰 수 있게 만들었다
+
+
+하늘과 땅이 같은 방정식
+F = ma에 F = GMm/r²(만유인력)을 대입하면, 갈릴레오의 자유 낙하 법칙이 나와
+F = ma에 F = GMm/r²을 대입하고 미적분을 하면 케플러의 세 법칙이 전부 연역
+
+---
+
+케플러
+
+물질의 inertia란 물질이 본래 가지고 있는 게으름, 운동에 대한 저항
+물질은 본성적으로 움직이기 싫어한다. 
+외부에서 힘을 가하면 마지못해 움직이지만, 힘이 사라지면 즉시 멈추려 한다
+
+아리스토텔레스적
+정지가 자연 상태이고, 운동은 설명을 요구하는 일탈
+
+행성이 계속 움직이는 것은 태양에서 나오는 어떤 힘이 이 게으름을 지속적으로 극복하고 있기 때문
+
+---
+
+뉴턴
+"vis inertiae"(관성의 힘)
+물체가 자신의 현재 상태를 유지하려는 경향
+그 상태가 정지이든 등속 직선 운동이든
+
+케플러의 inertia는 "정지하려는 게으름"
+뉴턴의 inertia는 "변화에 대한 저항"
+뉴턴에게 등속 운동 중인 물체는 inertia를 발휘하는 중
+
+---
+
+뉴턴의 관성은 사실 법칙(law)이지 성질(property)이 아니야. 
+"물체가 관성을 가진다"는 표현은 마치 무게나 색깔처럼 물체에 내재하는 어떤 것이 있는 것처럼 들린다
+
+하지만 제1법칙이 실제로 말하는 것은 "외력이 없으면 상태가 변하지 않는다"는 우주의 구조에 대한 진술
+물체의 성질이 아니라 시공간의 성질
+
+아인슈타인이 나중에 명확히 하듯이, 관성 운동은 시공간의 측지선(geodesic)을 따르는 것
+"게으름"이 물체 안에 있는 게 아니라, 시공간이 그런 구조를 가지고 있는 것
+
+---
+
+관성은 "상태를 유지하려는 경향"이라는 원리야. 질량은 그 경향이 얼마나 강한지를 재는 척도
+관성은 시공간의 구조에서 오는 것이고, 질량은 그 구조 위에서 "얼마나 많이"를 재는 파라미터
+
+---
+
+관성 질량(inertial mass). F = ma에서의 m.
+중력 질량(gravitational mass). F = GMm/r²에서의 m
+
+---
+
+법칙
+규칙성의 형상
+
+속성은 그 배경에서 동일성/정체성을 갖게 되는 개념
+
+물체의 속성은 법칙에 기생한다
+
+---
+
+F = ma
+
+Parameter
+m은 물체가 무엇인가를 말해.
+힘을 가하기 전에도, 가한 후에도, 이 값은 변하지 않아
+물체의 (사상된) 정체성 (ID)
+
+
+State
+v(와 그로부터 파생되는 위치, 가속도)
+매 순간 변해. 물체의 현재 상황
+
+
+Interation
+다른 물체 또는 장(field)
+
+---
+
+translation
+Interation = F
+Parameter = m
+State = v
+v' = a 
+
+rotation
+Interaction = t (토크)
+Paramter = I (관성 모멘트)
+State = w (각속도)
+w' = a (각가속도)
+
+---
+
+속도는 상태
+
+파라미터(질량, 전하)와 달리, 속도는 관찰자에 따라 달라져
+기차 안에서 공을 던지면, 기차 안의 사람이 보는 속도와 밖의 사람이 보는 속도가 다르지. 
+질량은 누가 보든 같아
+
+
+가속도
+
+관성 프레임 사이에서 불변
+상태(v)는 프레임 의존적인데, 상태의 변화율(a)은 프레임 독립적
+
+---
+---
+---
+
+Statics
+space, 기하학
+점, 거리, 각도, 형상
+
+body
+점이 아니라 확장(extension)을 가진 존재가 놓여
+
+
+구속(constraint)
+물체가 어떤 점에 매달려 있다, 두 물체가 막대로 연결되어 있다, 물체가 경사면 위에 놓여 있다
+구속은 물체의 가능한 위치를 기하학적으로 제한
+
+자유도(degree of freedom)
+물체가 원칙적으로 움직일 수 있는 독립적 방향의 수
+
+
+힘(force)
+Statics의 힘은 변화를 일으키는 원인이 아니라, 변화의 부재를 설명하는 조건
+equilibrium condition
+
+
+상태의 변화율? 없어. 시간이 없으니까
+상태? 있긴 한데, 그것은 "위치"이고, 변하지 않아
+상호작용? 힘이 존재하지만, 서로 상쇄돼서 순효과가 0이야
+파라미터? 가속이 없는 세계에서 "가속에 대한 저항"은 시험될 기회가 없으니까 관성의 척도로서는 아직 의미가 없어
+
+지렛대 법칙, 부력, 도르래
+건축, 교량, 구조 공학
+
+---
+
+Kinematics
+추가되는 것은 단 하나야: 시간(time)
+
+시간이 들어오는 순간, 위치가 더 이상 고정값이 아니라 함수가 돼
+"어디에 있는가"가 "언제 어디에 있는가"로 확장
+여기서 미적분이 자연스럽게 요청돼
+
+
+첫 번째 파생: 속도 v = dx/dt
+위치의 변화율
+"얼마나 빠르게 위치가 변하는가."
+
+
+두 번째 파생: 가속도 a = dv/dt = d²x/dt²
+속도의 변화율
+"얼마나 빠르게 빠르기가 변하는가."
+
+
+궤적(trajectory)
+x(t)를 공간에 그리면 경로가 나와
+포물선, 원, 타원, 직선. 궤적은 운동의 기하학적 형상
+
+Statics에서 물체의 형상이 공간적이었다면, 
+Kinematics에서 운동의 형상은 시공간적이야.
+
+
+Kinematics에는 물체의 정체성이 없어
+질량이 없고, 전하가 없어
+Kinematics에서 물체는 **이름 없는 점(point)**이야
+구별할 수 있는 것은 오직 초기 조건(어디서, 얼마나 빠르게)과 운동의 형태(등속, 등가속, 원운동)뿐
+
+
+가속도가 "주어진 것(given)"으로 취급
+"이 물체는 9.8 m/s²로 등가속한다"라고 선언하고, 거기서 궤적을 계산
+왜 그 가속도인지는 묻지 않아
+갈릴레오가 이 수준에서 작업
+
+---
+
+Dynamics
+추가되는 것은 두 가지야: 힘(force)과 질량(mass)
+F = ma라는 관계 속에서 동시에 추가
+
+Kinematics에서 가속도는 "주어진 것"이었어. Dynamics는 그 "주어진 것"의 출처를 밝혀
+가속도는 주어지는 게 아니라 결정되는 거야. 힘과 질량에 의해. a = F/m.
+
+
+**파라미터(질량)**가 등장하면서 물체에 정체성이 생겨
+이제 5kg짜리 공과 12kg짜리 포탄은 같은 힘을 받아도 다르게 움직여
+
+
+**상호작용(힘)**이 등장하면서 물체 사이에 관계가 생겨
+이 물체가 저 물체를 당긴다, 이 장(field)이 저 물체를 민다
+Kinematics에서 고립된 점이었던 물체가, Dynamics에서 관계의 그물 안에 놓인 존재가 돼.
+
+
+F = ma는 **빈 틀(empty framework)**이고, 특정 force law가 그 틀에 **내용(content)**을 채우는 거야.
+특정 힘의 법칙(force law)
+중력 F = GMm/r²
+전자기력 F = qE
+탄성력 F = −kx 
+
+
+보존량(conserved quantity)
+운동량 p = mv, 
+에너지 E = 1/2mv², 
+각운동량 L = Iω
+
+파라미터와 상태의 곱으로 구성
+이것들이 특정 조건에서 보존된다는 것이 연역
+법칙에서 흘러나오는 파생 구조
+
+에너지 보존은 시간 병진 대칭에서, 운동량 보존은 공간 병진 대칭에서, 각운동량 보존은 회전 대칭에서
+
+---
+
+고급 언어에는 어셈블리에 없는 것이 있어. **추상화(abstraction)**야. 
+함수, 클래스, 모듈, 타입 시스템. 
+이것들은 어셈블리 명령어의 편리한 약칭이 아니야. 
+이것들은 구조를 보게 해주는 렌즈야
+
+고급 언어가 주는 것은 **구조의 가시성(visibility of structure)**이야.
+
+---
+
+기하학은 모든 것을 할 수 있지만, 구조가 안 보여
+대수학화된 기하학은 같은 것을 하지만, 구조가 보여
+
+대수학화가 진행되면서 기하학에서는 상상조차 할 수 없던 질문이 가능해졌어.
+4차원 공간, 음의 곡률, 무한차원 함수 공간
+
+이런 것들은 기하학적 직관으로는 접근 불가능하지만
+대수적 구조로는 자연스럽게 확장돼
+
+---
+
+엔진 인프라
+
+첫 번째 층은 실행 루프
+TickComponent가 매 프레임 호출
+PerformMovement가 그 안에서 외부 물리(중력, 임펄스)를 적용한 뒤, 
+StartNewPhysics를 통해 현재 Movement Mode에 맞는 Phys 함수를 디스패치
+
+
+두 번째 층은 **운동의 원자적 연산(atomic operations)**
+CalcVelocity는 현재 가속도, 마찰, 감속, 최대 속도를 받아서 속도를 계산해.
+SafeMoveUpdatedComponent는 컴포넌트를 이동시키면서 충돌 검사를 해. 
+HandleImpact와 SlideAlongSurface는 충돌 응답을 처리해. 
+
+이것들은 "속도 계산 → 이동 시도 → 충돌 처리"라는 운동의 보편적 3단계를 구현한 거야
+
+
+세 번째 층은 **감지 인프라(sensing infrastructure)**
+SweepMultiByChannel, LineTraceSingleByChannel, FCollisionShape
+충돌 쿼리 시스템, 채널 필터링, FHitResult 구조체
+엔진이 깔아둔 인프라
+
+"이 공간에 뭐가 있어?", "이 방향으로 뭐가 있어?"
+이 도구들을 사용해서 벽을 감지하고 바닥을 확인
+
+
+**확장 지점(extension points)**
+
+PhysCustom — "여기에 너의 물리를 써라."
+OnMovementUpdated — 매 프레임 운동 갱신 후 호출. "상태 전환을 여기서 해라."
+OnMovementModeChanged — 모드 전환 시 호출. "전환 처리를 여기서 해라."
+GetMaxSpeed, GetMaxAcceleration — "너의 모드에 맞는 값을 반환해라."
+FObjectInitializer — 기본 서브오브젝트를 교체하는 메커니즘. "CMC 자체를 너의 것으로 바꿔라."
+
+---
+
+게임 코드
+
+**감지 전략(detection strategy)**
+
+엔진은 "공간에 뭐가 있는지 물어보는 도구"를 줘. 
+하지만 "무엇을 감지할 것인가, 어떤 형상으로, 어디서, 어떤 조건으로"는 게임 코드의 결정이야
+
+
+**진입/이탈 조건(transition conditions)**
+
+CanStartClimbing의 세 가지 필터(수평 각도, 천장 배제, eye-height trace),
+
+엔진은 SetMovementMode를 제공하고, 게임 코드는 언제 그것을 호출할지를 결정해.
+
+
+**물리 튜닝(physics tuning)**
+
+이 값들이 climbing의 "느낌"을 결정
+
+
+surface-following 로직
+
+GetClimbingRotation은 벽 normal의 반대 방향으로 캐릭터를 회전시키고, 
+SnapToClimbingSurface는 벽면과의 거리를 유지
+
+climbing의 기하학적 구속(geometric constraint)
+
+
+animation wiring
+
+엔진이 blendspace, montage, IK solver를 제공하지만, 
+어떤 상태에서 어떤 애니메이션을, 어떤 파라미터로 재생할지는 게임 코드의 영역
+
+
+---
+
+Static Mesh, BSP, Landscape
+이것들도 각자의 콜리전 형상을 가져
+
+이제 공간이 두 종류로 나뉘어: 캡슐이 들어갈 수 있는 곳과 없는 곳
+
+---
+
+Overlap 
+"이 위치에 이 형상을 놓으면 뭐와 겹치는가?"
+결과는 yes/no + 겹치는 대상 목록.
+
+
+Trace (Raycast)
+"이 점에서 저 점까지 선을 그으면 뭐에 닿는가?" 무한히 가는 선
+결과는 FHitResult
+
+
+Sweep 
+"이 형상을 이 위치에서 저 위치로 밀면 뭐에 부딪히는가?"
+형상이 있는 trace
+
+
+HitResult
+"어디서(ImpactPoint), 무엇의 표면이(Normal), 얼마나 진행한 시점에(Time), 무엇에(Actor/Component) 부딪혔는가"
+
+---
+
+표면 분류
+
+표면 Normal의 Z 성분
+수평 바닥의 normal은 (0, 0, 1) — Z가 1
+수직 벽의 normal은 (1, 0, 0) — Z가 0
+45도 경사면은 Z가 약 0.707.
+
+---
+
+StepUp 
+
+첫째, 위로 올린다. 캡슐을 현재 위치에서 MaxStepHeight(기본 45cm)만큼 수직으로 올려본다
+
+둘째, 앞으로 민다
+여기서 부딪히면 — 장애물이 MaxStepHeight보다 높다는 뜻이므로 — 실패
+
+셋째, 아래로 내린다
+전방 이동에 성공했으면, 다시 아래로 내려본다. 여기서 바닥을 찾고, 그 바닥이 walkable인지 확인해
+
+3cm < MaxStepHeight(45cm)이고, 계단 위가 walkable이니까, 세 번의 sweep이 모두 성공하고, 캡슐이 계단 위에 놓여
+
+---
+
+FHitResult
+
+Time 
+Sweep이 시작점에서 끝점까지의 여정을 0~1로 정규화
+"그 여정의 어디에서 접촉이 일어났는가"
+Time = 0이면 출발 즉시 접촉, Time = 1이면 끝까지 아무것도 없었다
+
+이건 **자유 공간의 깊이(depth of free space)**를 코딩하고 있어. 
+"이 방향으로 얼마나 갈 수 있는가"
+
+
+ImpactPoint (FVector)
+
+접촉이 일어난 세계 공간의 정확한 좌표
+Time이 "여정의 언제"를 말한다면, 
+ImpactPoint는 "세계의 어디"를 말해
+
+
+ImpactNormal (FVector)
+
+접촉 지점에서 표면이 어느 방향을 향하고 있는가
+이 벡터 하나가 접촉 지점에서의 표면의 기울기와 방향 전부 인코딩
+접촉 지점에서의 접평면(tangent plane)에 대한 기술
+
+
+Location (FVector)
+
+ImpactPoint는 "표면의 어디에 닿았는가"이고, 
+Location은 "접촉 시점에 sweep 형상의 '중심'이 어디에 있었는가"
+이 둘의 차이가 형상의 크기를 반영
+
+
+Normal (FVector)
+
+ImpactNormal은 표면의 법선이고, Normal은 sweep 형상을 밀어내는 방향
+**분리 방향(depenetration direction)**
+단순한 경우에는 둘이 같지만, 모서리나 꼭짓점에 부딪히면 달라질 수 있어.
+
+
+bBlockingHit 
+
+Overlap은 겹치지만 막지는 않아(trigger zone 같은 것). 
+Blocking hit은 실제로 진로를 차단해.
+
+
+Actor, Component, PhysMaterial
+
+부딪힌 것이 무엇인가
+
+---
+
+하나의 FHitResult
+**하나의 접촉 사건(contact event)**
+**국소적(local)**
+
+공간의 한 점(ImpactPoint)에서, 특정 방향으로 기울어진 표면(ImpactNormal로 정의되는 접평면)이 존재하고, 
+그 표면은 특정 물체에 속하며(Actor/Component), 
+그 표면까지 도달하는 데 특정 깊이의 자유 공간(Time)이 있었다.
+
+
+여러 개의 FHitResult를 모으면(SweepMulti) 무슨 일이 벌어지냐면, 곡면의 이산적 샘플링이 일어나
+각 HitResult가 곡면의 한 점에서의 접평면 정보를 제공하고, 이것들을 종합하면 곡면의 형상을 재구성
+여러 FHitResult를 모으면, 마치 점묘법(pointillism)으로 그림을 그리듯, 표면의 전체 형상이 떠올라.
+
+
+---
+
+Landscape의 콜리전은 미리 만들어진 하나의 형상이 아니야. 쿼리 시점에 동적으로 생성되는 삼각형 메시야
+
+"sweep의 start와 end를 같은 위치로 하면 Landscape에서 hit가 안 잡힌다"
+Landscape 콜리전 시스템은 sweep의 이동 방향과 거리를 이용해서 어떤 셀들을 검사할지 결정하는데,
+이동 거리가 0이면 검사 대상 셀을 찾지 못하는 거야
+
+offset을 추가
+
+---
+
+UWorld가 쿼리를 받으면 FPhysScene에 위임하고, 
+FPhysScene이 물리 엔진의 scene query 시스템을 호출하고, 
+공간 분할 구조(BVH — Bounding Volume Hierarchy)를 탐색해서 후보를 추리고, 
+후보들에 대해 정밀 충돌 검사를 수행해서 결과를 반환
+
+2단계 구조
+
+---
+
+OverlapMultiByObjectType(Results, Pos, Rot, Shape, ObjectQueryParams, Params)
+OverlapAnyTestByObjectType(Pos, Rot, Shape, ObjectQueryParams, Params)
+
+Pos (FVector) — 검사할 위치
+Rot (FQuat) — 형상의 회전
+  캡슐이 세로로 서 있느냐 가로로 누워 있느냐에 따라 점유하는 공간이 완전히 달라진다
+
+Shape (FCollisionShape) — 검사할 영역의 형상
+
+Params (FCollisionQueryParams)
+  무시할 액터, 무시할 컴포넌트, 복잡한 콜리전 사용 여부 
+
+
+돌아오는 결과: TArray<FOverlapResult>.
+
+---
+
+Single/Multi × Channel/ObjectType/Profile
+
+
+LineTraceSingle ByObjectType  (HitResult,  Start, End, ObjectQueryParams, Params)
+LineTraceMulti  ByObjectType  (HitResults, Start, End, ObjectQueryParams, Params)
+
+Start (FVector) — 선의 시작점.
+End (FVector) — 선의 끝점.
+  End가 추가됨으로써 위치, 방향, 거리가 정의돼
+
+
+돌아오는 결과: FHitResult+
+
+이동이 있으면 "경로 위에서 가장 먼저 만나는 표면"이 유일하게 결정되고, 
+그 만남의 순간에 접촉점, 접촉 법선, 진행률이 모두 정의돼
+
+Line Trace 특유의 성질
+  Normal = ImpactNormal
+  Location = ImpactPoint
+
+
+---
+
+Single/Multi × Channel/ObjectType/Profile
+
+SweepSingle ByObjectType (HitResult,  Start, End, Rot, Shape, ObjectQueryParams, Params)
+SweepMulti  ByObjectType (HitResults, Start, End, Rot, Shape, ObjectQueryParams, Params)
+
+Rot — 형상의 자세
+  캡슐을 수직으로 세워서 sweep하느냐, 수평으로 눕혀서 sweep하느냐에 따라 "어디에 걸리는가"가 완전히 달라져
+
+Shape — 형상의 종류와 크기
+  같은 Start/End로 같은 벽을 향해 쿼리해도, 구의 반지름이 10cm면 Time = 0.8에서 접촉하고, 50cm면 Time = 0.5에서 접촉해
+
+
+돌아오는 결과: 같은 FHitResult지만, 이제 모든 필드가 독립적 의미를 가져
+
+Time 
+Line Trace에서 Time은 "이 방향으로 표면까지의 거리"
+Sweep에서 Time은 "이 크기의 형상이 이 방향으로 통과할 수 있는 거리"
+같은 스칼라지만, 형상의 크기가 인코딩되어 있어
+
+ImpactPoint ≠ Location
+ImpactPoint는 형상 표면이 세계 표면에 닿은 점
+Location은 그 순간 형상 중심의 위치
+
+ImpactNormal ≠ Normal
+
+---
+
+Collision Channel 
+"누가 묻는가"를 표현
+Visibility, Camera, WorldStatic, WorldDynamic, Pawn, PhysicsBody
+각 오브젝트는 각 채널에 대해 Block/Overlap/Ignore로 응답 방식을 설정
+
+같은 오브젝트가 Visibility에는 Block, Camera에는 Ignore로 응답할 수 있어
+
+
+Object Type
+TraceByObjectType은 "이 종류의 물체만 보여줘"라고 말하는 거야.
+Channel이 "이 질문에 응답하는 것만"이라면, ObjectType은 "이 정체성을 가진 것만"이야
+
+---
+
+세계에서 일어날 수 있는 가장 완전한 충돌 문장
+
+"[주어]가 [목적어]에 대해 [어떤 응답]을 받는다."
+
+"카메라 trace가 유리벽에 대해 Ignore를 받는다."
+"Pawn의 capsule이 유리벽에 대해 Block을 받는다."
+"Visibility trace가 유리벽에 대해 Block을 받는다."
+
+응답이 주어와 목적어의 함수
+Response = f(Subject, Object)
+
+두 필터링 방식이 이 문장의 어느 부분을 의문대명사로 만드는지
+
+ByChannel은 주어를 고정하고 묻는다: "이 주어에 대해 응답하는 목적어는 누구인가?"
+
+Channel이 주어의 정체성이야. 
+ECC_Visibility는 "나는 시선이다"라는 선언이고, ECC_Camera는 "나는 카메라다"라는 선언이야
+
+세계의 각 오브젝트가 자기의 응답 테이블을 참조해서 "이 주어에 대해 나는 Block/Overlap/Ignore한다"를 결정해
+
+문장 구조: "[Camera]가 [?]에 대해 [non-ignore]을 받는다"
+결과로 돌아오는 것은 "Camera에 대해 non-ignore으로 응답한 모든 것들."
+
+ByChannel은 응답 행렬(response matrix)을 통과하는 쿼리야
+
+
+ByObjectType은 목적어의 정체성만으로 필터링한다
+"이 종류의 것은 어디에 있는가?"
+
+"[누구든]이 [Pawn]을 [찾는다]"
+주어가 무관하고, 응답도 무관해. 오직 목적어의 정체성만이 필터야.
+
+---
+
+FCollisionQueryParams 
+
+AddIgnoredActor / AddIgnoredComponent
+
+bTraceComplex 
+  복잡한 콜리전은 실제 렌더링 메시의 삼각형 단위 충돌
+  "플레이어가 정확히 어디를 클릭했는가" 같은 정밀 쿼리는 복잡한 콜리전
+  같은 오브젝트가 두 수준의 기하학적 표현을 동시에 가지고 있고, 쿼리가 어느 수준에서 물을지를 선택
+
+bFindInitialOverlaps 
+  "시작점에서 이미 겹쳐 있는 것도 보고할 것인가."
+  캐릭터가 이미 벽 안에 살짝 파묻힌 상태에서 sweep을 시작할 때, 그 벽이 "Time = 0에서 즉시 충돌"로 보고되면 
+  이동 자체가 불가능해짐
+
+bReturnPhysicalMaterial 
+  "충돌한 표면의 물리 재질도 알려줘."
+  발소리 시스템이나 총알 관통 시스템에서는 재질이 결정적이야
+
+bReturnFaceIndex 
+  "충돌한 삼각형의 인덱스도 알려줘."
+  bTraceComplex = true일 때만 의미 있어
+  데칼(총알 자국 같은)을 정확한 위치에 붙이거나, 히트맵을 만들 때 필요
+
+TraceTag (FName)
+  이 태그를 설정하면 에디터에서 해당 쿼리를 시각적으로 그려줘
+
+---
+
+FCollisionObjectQueryParams 
+
+**비트 마스크(bitmask)**
+EObjectTypeQuery 열거형의 각 값(WorldStatic, WorldDynamic, Pawn, PhysicsBody, ...)이 비트 하나에 대응
+
+AddObjectTypesToQuery(ECC_Pawn) — Pawn 비트를 켠다.
+AddObjectTypesToQuery(ECC_WorldDynamic) — WorldDynamic 비트도 켠다.
+
+---
+
+쿼리의 완전한 문장
+
+"[이 위치에서] [이 방향으로] [이 형상으로] [이 채널/타입의 것을] [이 방식으로] 찾아라."
+
+---
+
+UE에서 콜리전이 있는 모든 컴포넌트(UPrimitiveComponent)는 내부에 이 두 가지를 가지고 있어
+
+첫째, ObjectType — ECollisionChannel 값 하나
+
+둘째, CollisionResponses — FCollisionResponseContainer
+각 채널에 대해 "나는 이 채널에 어떻게 응답할 것인가"를 Block/Overlap/Ignore 중 하나로 정의해놓은 것
+
+---
+
+LineTraceSingleByChannel(HitResult, Start, End, ECC_Camera)
+나는 Camera 채널로 묻겠다
+
+유리벽을 만남 → 유리벽.CollisionResponses[Camera]를 조회 → Ignore → 건너뜀
+콘크리트벽을 만남 → 콘크리트벽.CollisionResponses[Camera]를 조회 → Block → 충돌로 보고
+
+대상이 쿼리의 응답을 결정한다
+
+---
+
+ByChannel
+
+
+ByObjectType은 인구 조사
+주민이 "나는 조사관에게 응답하지 않겠다"고 거부할 수 없어. 
+직업이 의사면 무조건 명단에 올라. 
+조사관이 주민을 분류해
+
+---
+
+콜리전 시스템
+
+세계에 수많은 오브젝트가 있어. 
+각 오브젝트는 여러 "주파수"에 대해 "나는 이 주파수에서 응답한다/안 한다"를 설정해놓았어. 
+쿼리가 특정 주파수(채널)를 선택하면, 그 주파수에서 "응답한다"고 설정된 오브젝트만 감지돼.
+
+Camera 채널로 보면 유리벽이 투명하고, Visibility 채널로 보면 유리벽이 불투명해
+물리적 세계는 하나인데, 채널에 따라 다른 세계가 보여
+
+
+**다중 필터링된 뷰(multiplexed filtered view)**
+
+하나의 데이터(세계의 기하학)에 대해 여러 개의 독립적인 뷰를 동시에 유지하는 것. 
+데이터베이스 비유로 하면, 같은 테이블에 대해 WHERE 절만 다른 여러 개의 쿼리를 동시에 날릴 수 있는 것
+
+---
+
+MyObjectType: ECollisionChannel 값 하나        (나는 "무엇"인가)
+MyResponses:  ECollisionChannel → Response 맵   (각 채널에 대해 나는 어떻게 응답하는가)
+
+---
+
+TraceByChannel(ECC_Camera)를 호출하면, 
+경로 위의 각 오브젝트에 대해 오브젝트.MyResponses[ECC_Camera]를 조회
+
+쿼리가 하는 것은 MyResponses 맵의 어떤 키를 읽을지를 지정하는 것
+
+---
+
+TraceByObjectType(Pawn 비트 켬)을 호출하면, 
+경로 위의 각 오브젝트에 대해 오브젝트.MyObjectType만 확인
+
+MyResponses 맵을 전혀 열어보지 않아
+
+---
+
+두 종류의 공간 질문
+
+"이것이 나를 막는가?"
+
+카메라가 유리벽을 통과할 수 있는가?
+캐릭터가 안개 영역을 지나갈 수 있는가?
+
+같은 오브젝트가 묻는 자에 따라 다른 답을 해야 한다
+
+유리벽은 카메라에게는 "통과해"라고 하면서 캐릭터에게는 "막혀"라고 해야 해
+
+
+"여기에 뭐가 있는가?"
+
+AI가 주변에 적이 있는지 탐지한다. 
+물리 시뮬레이션이 근처의 PhysicsBody를 찾는다.
+
+오브젝트의 응답 의사와 무관하게 존재 자체를 감지해야 한다
+
+
+ByChannel은 오브젝트에게 선택권을 주고, ByObjectType은 주지 않는다
+
+---
+
+장님이 지팡이로 세계를 읽듯이, 캡슐은 Trace로 세계를 읽는다
+
+선이 통과한다고 캡슐이 통과할 수 있는 것은 아니다. 바늘구멍을 실은 통과하지만 낙타는 통과하지 못하듯이
+그래서 Sweep이 발명되었다. 선에 부피를 입히는 것. 
