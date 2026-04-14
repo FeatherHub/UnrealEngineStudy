@@ -1584,3 +1584,514 @@ Component Space
 USkeletalMeshComponent의 원점을 기준으로 한 좌표 공간
 
 ---
+
+UStaticMesh 
+
+버텍스 위치가 에셋에 고정
+런타임에 메시 형태가 변하지 않아
+
+메시의 형태(shape)가 정적
+문이 회전해서 열릴 수 있지만, 문 자체의 메시 형태(버텍스 배치)는 변하지 않아
+
+내부에 뼈도 없고, 스킨 웨이트도 없고, 애니메이션 연결도 없어
+
+GPU에 버텍스 버퍼를 한 번 올리면 매 프레임 변경할 필요 없이 그대로 드로우 콜만 날리면 돼
+인스턴싱(같은 메시를 수천 개 찍기)도 쉬워
+
+FStaticMeshRenderData
+  LOD별 버텍스/인덱스 버퍼
+  섹션(머티리얼 슬롯)
+  콜리전 데이터
+
+컴포넌트는 UStaticMeshComponent
+
+---
+
+USkeletalMesh 
+
+뼈대(USkeleton), 스킨 웨이트, 모프 타겟을 지님
+
+런타임에 버텍스 위치가 매 프레임 바뀔 수 있음
+
+렌더링 비용
+본 행렬을 GPU에 올리고 버텍스 셰이더에서 스키닝을 수행해야 함
+
+인스턴싱이 비쌈
+각 인스턴스가 다른 포즈를 가지니까 본 행렬이 인스턴스마다 다르다
+
+---
+
+UGeometryCollection 
+
+원본 메시를 보로노이 분할(Voronoi fracture) 등으로 미리 조각내서, 
+각 조각(fragment)의 메시와 조각들 사이의 연결 관계(클러스터 계층)를 저장
+
+컴포넌트는 UGeometryCollectionComponent
+
+---
+
+UProceduralMesh / UDynamicMesh
+
+런타임에 코드로 버텍스와 인덱스를 직접 생성
+
+지형 생성, 절차적 건물, 
+사용자 조작에 따라 변형되는 형태
+
+UProceduralMeshComponent
+UDynamicMeshComponent
+
+---
+
+USplineMeshComponent 
+
+UStaticMesh를 스플라인 곡선을 따라 휘어지게 변형해서 렌더링하는 컴포넌트
+렌더링 시 스플라인 파라미터에 따라 버텍스를 변형
+
+---
+
+Landscape (ALandscapeProxy)
+
+높이맵(heightmap) 기반의 전용 렌더링 시스템을 써
+일반 메시가 아니라 격자(grid)의 높이 값으로 표현되는 특수한 형태
+
+ULandscapeComponent
+
+---
+
+Niagara/Cascade 파티클
+
+수천 개의 작은 면(quad, sprite) 또는 메시를 
+파티클 시스템이 관리
+
+메시 변형이 아니라 인스턴스 변환(instance transform)
+
+---
+
+아티스트가 수동으로 만드는 경우
+
+LOD 0은 50,000 삼각형, LOD 1은 10,000 삼각형, LOD 2는 2,000 삼각형 
+
+아티스트가 각 LOD에서 어떤 디테일을 보존하고 어떤 걸 버릴지 직접 판단
+
+
+엔진이 에디터 타임에 자동 생성하는 경우
+
+UStaticMesh 에디터에서 "Generate LOD" 버튼
+엔진이 LOD 0의 메시를 입력으로 받아서 폴리곤 축소(polygon reduction) 알고리즘을 돌려 하위 LOD를 만들어
+
+USkeletalMesh에서도 같은 기능이 있고, 추가로 뼈 제거(bone removal)도 지원
+
+
+런타임에 동적으로 생성하는 경우
+
+Nanite 시스템
+
+초고해상도 메시를 클러스터 단위로 쪼개서, 런타임에 화면 해상도와 거리에 따라 클러스터별로 적절한 디테일 수준을 선택
+이 선택이 GPU에서 매 프레임 일어남
+"LOD 0, LOD 1, LOD 2" 구분이 아니라, 연속적인 디테일 스펙트럼에서 화면 픽셀 단위로 적응
+
+현재 Nanite는 UStaticMesh에만 적용되고 USkeletalMesh에는 아직 제한적 지원
+
+---
+
+UWhat
+데이터의 정의. 콘텐츠 브라우저에 하나 존재하는 에셋
+상태가 없다
+
+UWhatComponent
+Actor에 소유
+월드 안의 구체적 존재
+인스턴스별 상태를 보유
+
+같은 UWhat을 참조하는 UWhatComponent가 100개 있을 수 있고, 
+각각 다른 위치에 있고 다른 머티리얼 오버라이드를 갖고 다른 가시성 상태에 있을 수 있다
+
+---
+
+철사 그물(wire mesh)
+
+그물의 위상 구조
+그래프 이론적 구조
+
+---
+
+게임 상태에서 드로우 콜까지 많은 결정이 있고
+그 결정을 계산하는 곳이 렌더 스레드
+
+첫째, 카메라에 안 보이는 건 안 그려야 해
+  visibility determination
+  프러스텀 컬링
+  오클루전 컬링
+  거리 컬링
+
+둘째, 보이는 것들 중에서 그리는 순서를 정해야 해
+  불투명한 오브젝트는 앞에서 뒤로 그리는 게 효율적
+  반투명 오브젝트는 뒤에서 앞으로 그려야 정확한 블렌딩이 돼
+  이 **정렬(sorting)**이 렌더 스레드의 일
+
+셋째, 같은 머티리얼/셰이더를 쓰는 오브젝트들을 묶어야 해
+  GPU의 상태 변경(셰이더 교체, 텍스처 바인딩 교체)이 비싸
+  셰이더 A를 쓰는 오브젝트 50개를 연속으로 그리고, 그 다음 셰이더 B를 쓰는 30개를 연속으로 그린다
+
+넷째, 각 오브젝트에 대해 "무엇을 어떻게 그릴지"를 결정
+  이 메시의 어떤 LOD를 쓸지, 
+  어떤 셰이더 변형(permutation)을 쓸지(라이트맵이 있는가, 스킨닝인가, 인스턴싱인가), 
+  어떤 텍스처 밉맵 레벨을 쓸지
+
+---
+---
+---
+
+FAudioDevice 
+
+Audio::FMixerDevice
+
+Audio::IAudioMixerPlatformInterface
+분리된 플랫폼 게이트
+  FMixerPlatformXAudio2
+  FMixerPlatformCoreAudio
+  FMixerPlatformAndroid
+
+이 플랫폼에서 오디오 디바이스를 열고, 콜백을 등록하고, 버퍼를 하드웨어에 제출하는 것
+
+---
+
+FMixerDevice가 최종 PCM 버퍼를 만들면
+IAudioMixerPlatformInterface를 통해 플랫폼 API에 제출
+
+---
+
+UE3 
+하드웨어 오디오 가속
+하드웨어가 믹싱을 함
+
+UE4/5
+소프트웨어 믹싱(Audio Mixer)
+엔진이 직접 PCM을 합산하고 이펙트를 적용
+
+---
+
+FSceneRenderer
+FRHICommandList
+FD3D12DynamicRHI / FVulkanDynamicRHI
+
+오케스트레이터와 플랫폼 게이트가 상속이 아니라 별개의 타입
+<=>
+FMixerDevice가 FAudioDevice를 상속하면서 내부에서 IAudioMixerPlatformInterface를 사용하는 방식으로 진화
+
+---
+
+FGenericApplicationMessageHandler
+FWindowsApplication/FMacApplication
+
+---
+
+두 의미의 Scene
+
+USceneComponent - 3D 공간에 있다 (소리, 트리거 볼륨)
+FScene과 FPrimitiveSceneProxy - "Renderer 관점"에서 그릴 수 있는 것들
+
+---
+
+UActorComponent
+순수한 로직 컨테이너
+그 자체로는 위치 개념이 없다
+
+USceneComponent가 여기에 FTransform을 추가
+부모-자식 계층을 도입
+부모의 변환이 자식에게 전파되는 계층적 트랜스폼 패턴
+
+UPrimitiveComponent
+UAudioComponent
+ULightComponent
+UCameraComponent
+
+공통점은 "3D 공간에서 어디에 있는가"가 의미를 갖는다
+
+반면 UActorComponent이지만 USceneComponent가 아닌 것들
+
+UActorMovementComponent, UInputComponent
+3D 위치가 필요 없는 로직
+
+---
+
+FScene 
+렌더 스레드는 자기만의 World 표현 모델인 FScene을 갖고 있다
+렌더링 가능한 것의 집합
+
+FScene이 담고 있는 것들
+모든 FPrimitiveSceneProxy
+모든 FLightSceneProxy
+
+---
+
+UPrimitiveComponent는 USceneComponent를 상속하면서 "눈에 보이는 것"이라는 속성을 추가
+
+UStaticMeshComponent, USkeletalMeshComponent, UParticleSystemComponent 등
+
+가시성, 콜리전, 물리, 라이팅 채널 개념
+
+---
+
+UPrimitiveComponent
+FPrimitiveSceneProxy
+
+게임 스레드에서 UStaticMeshComponent가 생성되면, 
+CreateSceneProxy() 가상 함수가 호출돼서 
+대응하는 FStaticMeshSceneProxy가 생성되고 
+FScene에 등록된다
+
+렌더 스레드는 이 Proxy만 보면서 (추상) 드로우 커맨드를 결정
+
+---
+
+UWorld가 FScene을 소유
+
+UWorld::InitWorld()에서 FScene이 생성
+UWorld가 파괴될 때 FScene도 파괴
+하나의 UWorld에 하나의 FScene이 대응
+
+PIE에서 별도의 UWorld가 생성되면 별도의 FScene도 생성
+
+하지만 FScene의 내부 상태를 조작하는 것은 렌더 스레드
+
+게임 스레드는 FScene에 "이 Proxy를 등록해줘", "이 Proxy를 제거해줘" 같은 요청을 렌더 커맨드로 큐잉
+
+소유는 UWorld가 하지만, 내부 상태의 실제 변경은 렌더 스레드에서 일어나는 거야.
+
+---
+
+FScene 
+
+TArray<FPrimitiveSceneInfo> Primitives*
+  등록된 모든 렌더링 가능 오브젝트의 래퍼
+  FPrimitiveSceneProxy
+  상태 등 장부 관리(bookkeeping)
+
+TArray<FLightSceneInfo> Lights*
+  FLightSceneProxy
+  
+---
+
+RegisterComponent 
+UPrimitiveComponent::CreateRenderState_Concurrent()
+  CreateSceneProxy() => FPrimitiveSceneProxy
+  this → GetWorld() → GetScene()
+  FScene::AddPrimitive(UPrimitiveComponent*)
+    ENQUEUE_RENDER_COMMAND 
+
+---
+
+UMovementComponent
+
+"어떻게 움직이는가"의 규칙을 정의하는 거지, "어디에 있는가"를 소유하는 게 아니야
+움직일 대상(UpdatedComponent)으로 USceneComponent를 참조해서 그것의 위치를 변경해
+
+UCharacterMovementComponent
+UProjectileMovementComponent
+UFloatingPawnMovementComponent
+UInterpToMovementComponent
+
+움직임 "규칙"과 움직임 "대상"을 분리
+
+---
+
+UAIPerceptionComponent 
+시각, 청각, 손상 감지 등의 센서를 등록하고, 감지된 자극(stimulus)을 수집
+센서 자체는 Actor의 위치를 기반으로 작동하지만, 감지 로직은 판단
+
+UBrainComponent, UBehaviorTreeComponent, UStateTreeComponent
+
+---
+
+USceneComponent 계열
+
+UCameraComponent, USpringArmComponent 
+UPhysicsConstraintComponent 
+UNavModifierComponent 
+
+---
+
+UPrimitiveComponent -> USceneComponent -> UActorComponent
+
+가시성(bVisible, bHiddenInGame), 
+콜리전(콜리전 프로필, 콜리전 응답), 
+물리(시뮬레이트 여부, 질량), 
+라이팅(캐스트 섀도우, 라이팅 채널),
+렌더링 순서(translucency sort priority)
+
+---
+
+메시 계열
+
+UStaticMeshComponent, USkeletalMeshComponent -> USkinnedMeshComponent,
+UGeometryCollectionComponent 
+UProceduralMeshComponent 
+UDynamicMeshComponent 
+  Geometry Scripting 소유
+  더 풍부한 메시 편집 AP
+
+---
+
+프리미티브 도형 계열
+
+주로 콜리전/트리거 용도로 쓰이고 
+시각적으로는 에디터에서만 보여.
+
+UShapeComponent 
+UBoxComponent, USphereComponent, UCapsuleComponent
+
+---
+
+대기/날씨/환경
+개별 오브젝트가 아니라 세계의 속성을 정의
+
+USkyAtmosphereComponent 
+물리 기반 대기 산란 시뮬레이션
+태양 각도에 따라 하늘 색이 바뀌고
+일출/일몰의 붉은빛이 레일리/미 산란으로 계산돼
+
+
+UVolumetricCloudComponent 
+3D 노이즈 텍스처를 레이마칭해서 사실적인 구름을 만들어
+
+
+UExponentialHeightFogComponent 
+지면 근처가 짙고 높이 올라갈수록 옅어지는 지수 감쇄 안개
+
+
+UWindDirectionalSourceComponent 
+풀, 나무, 파티클, 클로스 시뮬레이션이 이 바람에 반응
+
+---
+
+카메라 렌즈 필터
+포스트 프로세싱/렌더링 보정
+
+UPostProcessComponent 
+블룸, 톤매핑, 색보정, DOF, 모션블러 등 적용
+
+
+UHoldoutCompositeComponent 
+홀드아웃 매트 처리
+가상 오브젝트가 실사 배경 위에 올라갈 때 마스킹
+
+
+UComposurePostProcessPass
+Composure 프레임워크의 합성 패스
+실사와 CG를 레이어별로 합성하는 영화/방송 제작 파이프라인
+
+---
+
+물리 시뮬레이션 확장
+
+URadialForceComponent 
+폭발처럼 중심에서 바깥으로 밀어내는 힘을 물리 바디와 파티클에 적용
+
+
+UPhysicsThrusterComponent 
+단방향 추력
+특정 방향으로 지속적 힘을 가해.
+
+
+UPhysicsSpringComponent 
+두 점 사이에 탄성력을 적용
+서스펜션이나 바운시한 연결에 쓰여
+
+
+UPhysicsFieldComponent 
+공간에 걸쳐 분포하는 힘/토크 필드를 정의
+
+
+UPhysicsHandleComponent 
+그래비티 건이나 텔레키네시스 구현에 쓰여
+타겟 물리 바디를 특정 위치/회전으로 부드럽게 끌어당겨
+
+
+UPhysicalAnimationComponent 
+애니메이션과 물리 시뮬레이션을 뼈별로 블렌딩
+래그돌과 키프레임 애니메이션 사이의 부분적 전환에 쓰여
+
+
+UPhysicsControlComponent 
+뼈별 물리 제어를 더 정밀하게 설정하는 시스템
+
+
+UBuoyancyComponent 
+UDeformableSolverComponent 
+
+---
+
+UDisplayClusterOriginComponent 
+여러 대의 프로젝터나 모니터가 하나의 가상 공간을 분할 렌더링할 때의 기준점
+
+
+하나의 씬을 여러 물리적 디스플레이에 분산 렌더링하는 nDisplay 시스템 전용
+LED 월 기반 영화 촬영 스테이지(만달로리안 스타일)
+
+---
+
+USmartObjectComponent / USmartObjectUserComponent
+AI가 이를 발견하고 사용
+
+---
+
+Mover — 차세대 이동 시스템
+
+UMoverComponent 
+UCharacterMovementComponent를 대체하려는 새 이동 프레임워크
+더 모듈화된 설계로, 이동 모드(걷기, 수영, 비행)를 플러그인 방식으로 교체
+
+UMoverDebugComponent 
+UNavMoverComponent 
+
+---
+
+UBillboardComponent 
+항상 카메라를 향하는 2D 스프라이트
+에디터에서 Actor 아이콘(라이트 전구, 사운드 스피커 아이콘)을 표시하는 데 응용
+
+UMaterialBillboardComponent 
+단순 텍스처 대신 풀 머티리얼을 사용하는 빌보드
+원거리 나무 임포스터
+
+UTextRenderComponent 
+3D 공간에 텍스트를 메시로 렌더링
+디버그 표시나 인월드 표지판
+
+---
+
+UShapeComponent 
+UBoxComponent, USphereComponent, UCapsuleComponent
+
+---
+
+ULandscapeComponent 
+지형 타일 하나의 렌더링 단위
+
+---
+
+UNavLinkComponent 
+네비 메시의 분리된 두 영역을 연결하는 "점프 포인트"나 "사다리"를 정의
+AI가 일반 걷기로 도달할 수 없는 영역 간 이동을 가능하게 한다
+
+---
+
+라이브 링크/외부 데이터 스트리밍 — 외부 장치와의 실시간 연결
+
+ULiveLinkComponent / ULiveLinkComponentController / ULiveLinkBroadcastComponent
+
+Live Link 시스템. 모션 캡처 장비, 페이스 트래커
+외부 애니메이션 소스에서 실시간 데이터를 받아 UE 오브젝트에 적용
+
+
+ULinearTimecodeComponent 
+LTC 타임코드 수신. 영상 제작에서 카메라, 오디오, 엔진의 시간 동기화
+
+
+UMusicClockComponent 
+BPM, 박자에 동기화된 게임플레이 이벤트
+
+
+UDMXComponent 
+DMX 프로토콜. 무대 조명 제어 표준
