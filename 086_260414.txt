@@ -1,0 +1,1586 @@
+바이닐 — USoundWave
+레코드판
+홈에 새겨진 파형 
+
+---
+
+
+PCM 오디오 데이터를 감싼 UObject
+Pulse Code Modulation
+아날로그 소리 신호를 디지털 형태로 변환하는 기본적인 방식
+
+---
+
+PCM 데이터의 요소
+
+Sampling Rate
+
+1초당 아날로그 신호를 몇 번 추출하는지
+단위: Hz
+44100Hz (CD 음질): 1초를 44,100개로 쪼개어 기록합니다
+
+
+Bit Depth
+
+각 샘플의 소리 크기(진폭)를 얼마나 정밀하게 표현할지
+16-bit: 65,536단계로 소리 크기를 표현
+24-bit: 약 1,677만 단계로 표현하여 더 넓은 다이내믹 레인지를 가집니다
+
+
+Channels
+소리가 출력되는 통로의 개수
+
+---
+
+아날로그 신호가 PCM 데이터가 되기까지의 세 단계
+
+표본화 (Sampling)
+연속적인 아날로그 파형을 일정 시간 간격으로 잘라냅니다
+
+
+양자화 (Quantization)
+잘라낸 각 지점의 값을 가장 가까운 디지털 수치로 매칭합니다.
+
+
+Encoding
+양자화된 수치를 0과 1의 이진 데이터로 변환하여 저장합니다
+
+---
+
+PCM 데이터의 크기
+
+샘플링 레이트 × 비트 심도 × 채널 수 × 재생 시간(초)
+초당 몇개로 잘랐는가
+각 단위는 몇 비트인가
+채널이 몇 개인가
+단위가 총 몇 개인가
+
+[L샘플1] [R샘플1] [L샘플2] [R샘플2] [L샘플3] [R샘플3] ...
+
+---
+
+UAudioComponent
+
+USceneComponent이므로 월드 안에 위치를 갖고, 
+"지금 재생 중인가", "볼륨은 얼마인가", "3D 공간 어디에 있는가"라는 상태를 보유한다.
+
+---
+
+동시 voice count의 제한
+
+하드웨어가 동시에 믹싱할 수 있는 채널은 유한
+
+---
+
+이펙터 랙과 큐시트 — USoundCue
+
+DJ는 단순히 바이닐을 트는 게 아니라, 
+이펙터를 걸고, 루프를 만들고, 피치를 조절하고, 여러 샘플을 레이어링해
+
+노드 그래프
+
+이 세 개의 USoundWave 중 랜덤으로 하나를 골라서, 
+피치를 ±0.1 범위에서 흔들고, 
+Attenuation 세팅을 적용해서 
+출력하라
+
+DJ가 큐포인트를 찍어두고 "이 구간에서 시작, 이 이펙트 체인 적용"이라는 
+프리셋을 만들어두는 것과 같아
+
+한계
+그래프가 트리거 시점에 평가되고 나면 실행 중 동적 변경이 불가
+라이브로 관객 반응에 따라 실시간으로 사운드를 합성할 수 없는 것 같은 한계
+
+---
+
+USoundCue는 "어떤 샘플을 어떻게 재생할까"의 영역
+MetaSounds는 "소리 자체를 실시간으로 합성하고, 게임 파라미터에 따라 매 프레임 변형한다"의 영역
+  엔진 RPM이 올라가면 주파수가 연속적으로 변하는 차량 사운드, 
+  바람 세기에 따라 스펙트럼이 실시간으로 바뀌는 환경음
+
+DJ가 턴테이블을 버리고 모듈러 신시사이저 앞에 앉은 것과 같다
+
+오실레이터, 필터, 엔벨로프, 딜레이 라인 같은 
+DSP 프리미티브를 노드로 연결해서 
+소리를 처음부터 만들 수 있어
+
+오디오 스레드에서 직접 실행되기 때문에 
+게임 스레드의 프레임 레이트와 디커플링되어 있고, 
+이것이 실시간 DSP를 가능하게 하는 조건
+
+---
+
+DJ 믹서에는 채널이 있다. 
+채널 1은 턴테이블 A, 
+채널 2는 턴테이블 B, 
+채널 3은 마이크, 
+채널 4는 샘플러. 
+
+각 채널에는 독립적인 EQ, 게인, 이펙트 센드가 있고, 
+최종적으로 마스터 퓨즈에서 합쳐져서 스피커로 나간다.
+
+트리 형태의 버스 계층
+
+SFX Submix, Music Submix, Voice Submix, Ambience Submix
+각각 독립적인 볼륨과 이펙트 체인을 갖고
+최종적으로 Master Submix에 합류
+
+UAudioComponent는 재생 시 자신이 어느 Submix로 라우팅될지 지정하고, 
+이것이 DJ가 "이 트랙은 채널 2로 보내"라고 결정하는 것과 같다
+
+---
+
+Sound Class는 소리의 "장르 태그" 같은 거야. 
+"이 소리는 Music이다", "이 소리는 SFX다", "이 소리는 Dialogue다."
+
+Sound Mix는 이 태그들에 대한 볼륨/피치 오버라이드 세트를 정의하고, 게임 상태에 따라 Push/Pop 된다
+
+전투에 돌입하면 Combat Mix가 Push되어 Music 볼륨이 올라가고 Ambience가 줄고, 
+전투가 끝나면 Pop되어 원래 밸런스로 돌아가는 식
+
+---
+
+Sound Attenuation
+거리에 따른 감쇄
+스피커에서 멀어질수록 소리가 작아지는 것.
+
+---
+
+누군가 옆에서 손뼉을 한 번 치면, 공기가 한 번 밀린다.
+그 밀림이 파도처럼 너한테까지 전파돼서 고막을 밀어
+고막이 할 수 있는 건 오직 "안쪽으로 밀리거나, 바깥쪽으로 당겨지거나" 뿐이야
+
+세상에 아무리 많은 소리가 동시에 나도, 네 고막에 도착하는 순간 그건 하나의 파형으로 합산된 결과
+피아노와 기타와 드럼이 동시에 울려도, 공기 분자 입장에서는 세 개의 밀림이 더해진 하나의 총 밀림만 존재
+
+
+스피커도 고막과 똑같아
+스피커 콘(원뿔 모양의 진동판)은 하나고, 
+그 콘이 앞뒤로 밀리는 위치도 매 순간 하나의 숫자야
+
+스피커에 소리를 보내려면, 아무리 많은 소리를 동시에 재생하고 싶어도, 
+최종적으로는 **하나의 숫자 흐름(파형)**으로 합산해서 보내야 해
+
+---
+
+소리 100개를 그냥 더하면 어떻게 될까? 
+각각이 +0.5 정도의 크기를 가진다면, 합산하면 +50이 돼. 
+그런데 스피커가 물리적으로 밀릴 수 있는 범위는 한정돼 있어
+
+단순 덧셈만으로는 부족하고, 더하기 전에 각 소리의 크기를 줄여야 해.
+각 소리의 **볼륨(게인)**을 조절하는 거고, 이 조절이 믹싱의 핵심 행위야.
+
+---
+
+세로로 긴 줄(채널 스트립)이 여러 개 나란히 있고, 
+각 줄에 슬라이더(페이더)가 하나씩 달려 있어. 
+
+채널 1에는 마이크가 꽂혀 있고, 채널 2에는 기타가, 채널 3에는 키보드가 연결돼 있다고 하면, 
+각 슬라이더를 올리고 내려서 "마이크 소리는 크게, 기타는 중간, 키보드는 살짝"이라고 비율을 정하는 거야
+
+그리고 모든 채널의 출력이 최종적으로 하나로 합산되어 스피커로 나가
+
+---
+
+슬라이더가 8개인 믹서는 동시에 8개의 소리 원천(source)을 독립적으로 제어할 수 있다는 뜻이야.
+9번째 소리를 추가하려면 물리적으로 슬라이더가 하나 더 있어야 해. 
+이것이 "동시에 출력할 수 있는 채널의 제한"의 체감적 실체야 — 슬라이더가 유한하다는 것
+
+---
+
+bus group
+
+채널 1~8의 출력을 먼저 "드럼 버스"라는 중간 합산 지점으로 보내고
+드럼 버스에 자체 슬라이더를 하나 달아.
+그러면 그 슬라이더 하나로 드럼 전체의 볼륨을 제어할 수 있어
+
+기타들도 "기타 버스"로, 키보드들도 "키보드 버스"로. 
+
+그리고 모든 버스가 최종적으로 마스터 버스에 합류해서 스피커로 나가.
+
+---
+
+이 구조가 **트리(나무)**라는 걸 느껴봐
+
+개별 소리(나뭇잎)가 그룹 버스로 모이고, 그룹 버스가 마스터 버스로 모여서, 스피커로 나간다
+
+---
+
+Effect
+
+네 목소리(원래 파형)는 같은데, 그 파형이 통과하는 환경이 파형을 변형시키는 거야.
+욕실에서 부르면 울림이 있고, 베개에 얼굴을 묻고 부르면 먹먹해.
+
+타일 벽이 소리를 반사해서 원래 소리에 살짝 지연된 복사본을 겹치면 — 그게 **리버브(reverb)**야. 
+베개가 고주파를 흡수해서 먹먹하게 만들면 — 그건 **로우패스 필터(low-pass filter)**의 효과야.
+
+---
+---
+---
+
+omnibus 
+for all
+19세기에 도시 대중교통으로 등장한 승합마차
+아무나 탈 수 있고, 여러 사람이 한 경로를 공유하는 탈것
+
+
+전기공학
+
+전력 배전(power distribution)
+발전소에서 나온 전기를 여러 목적지로 보내야 할 때
+모든 목적지에 개별 전선을 까는 대신 
+하나의 굵은 도체(busbar)에 연결하고, 
+각 목적지가 그 도체에서 분기하는 구조를 썼어
+
+이 busbar가 "여럿이 공유하는 하나의 경로"라는 뜻에서 omnibus에서 이름을 따옴
+
+---
+
+point-to-point 연결
+<=>
+버스는 N:1 합류 지점
+
+발전기 여러 대의 출력이 하나의 도체에 합류하고, 거기서 여러 부하로 분기한다
+N개의 발전기를 M개의 도착지에 개별 연결하면 N×M개의 전선이 필요한데, 
+busbar를 경유하면 N+M개로 줄어
+
+
+컴퓨터 버스
+CPU, 메모리, I/O 장치가 각각 전용선으로 연결되면 장치가 늘 때마다 배선이 폭발해
+공유 버스를 두면 모든 장치가 같은 선을 시분할(time-sharing)로 사용하고, 
+주소(address)로 "지금 누구한테 보내는 데이터인지"를 구분
+
+공유는 동시성을 포기하는 대가로 얻어진다.
+한 번에 하나의 장치만 버스를 점유할 수 있고, 나머지는 기다려야 해
+버스 중재(bus arbitration) 문제
+
+
+오디오 버스
+드럼 파트 8개를 하나의 드럼 버스로 합류
+
+*
+컴퓨터 버스가 운반하는 건 "구별되어야 하는 메시지"인 반면, 
+오디오 버스가 운반하는 건 "합산되어도 되는 물리량"
+
+파형은 더해져도 정보가 (원리적으로는) 보존되지만, 
+데이터 비트가 더해지면 의미가 파괴
+*
+
+---
+
+Audio Device
+
+운영체제와 하드웨어의 경계야
+
+사운드 카드 혹은 온보드 오디오 칩
+일정한 간격으로 숫자를 받아서 전기 신호로 바꿔 스피커를 밀어
+이 "일정한 간격"이 샘플 레이트
+44100Hz면 1초에 44100번 숫자를 먹는다는 뜻이고, 각 숫자가 그 순간 스피커 콘의 위치를 지정
+
+---
+
+이 하드웨어 인터페이스를 감싸는 것이 FAudioDevice
+플랫폼별 오디오 백엔드(Windows에서는 XAudio2나 WASAPI, 콘솔에서는 각 플랫폼 전용 API)를 추상화한 계층
+
+UE 오디오 시스템의 나머지 전부가 "스피커가 어떤 API를 통해 연결되어 있는가"를 몰라도 되게 만드는 것
+플랫폼별 Dialect 를 UE 의 언어로 통역하는 중간 계층
+
+---
+
+FAudioDevice는 동시에 처리할 수 있는 source voice의 수에 상한
+32나 64 정도
+
+이 숫자를 넘어서는 소리를 동시에 재생하려 하면, 누군가는 탈락해야 해. 
+이 탈락의 정치학이 나중에 Concurrency와 Priority로 올라온다.
+
+---
+
+스피커에 먹일 숫자는 어디서 오는가
+USoundWave는 PCM 오디오 데이터를 담은 UObject 에셋
+
+wav 파일을 임포트하면 UE가 이걸 압축 포맷(Vorbis, Opus, 플랫폼별 코덱)으로 변환해서 저장하고, 
+재생 시 디코딩해서 PCM 숫자 스트림으로 복원해
+
+---
+
+에셋/인스턴스 구분
+
+USoundWave는 "이 소리의 원본 파형 데이터"야. 레코드 가게에 진열된 음반이야
+
+그래서 USoundWave 자체에는 "지금 재생 중인가", "볼륨은 얼마인가" 같은 상태가 없어
+턴테이블에도 올라가지 않은 상태
+
+---
+
+게임은 보통 30~60fps로 돌아가잖아. 
+그런데 오디오는 44100Hz로 숫자를 뱉어야 해. 
+
+게임 스레드가 "이 소리를 재생해라, 볼륨은 이만큼, 위치는 여기"라고 명령을 보내면, 
+오디오 스레드가 그 명령을 받아서 독립적인 템포로 숫자를 생산해. 
+
+게임 시간과 오디오 시간이 다른 해상도로 흐른다는 것
+
+이 분리 때문에 오디오 쪽에는 게임 오브젝트의 "그림자" 같은 것이 필요해. 
+게임 스레드의 UAudioComponent가 "나는 여기서 이 소리를 재생 중이야"라는 상태를 갖고 있으면, 
+오디오 스레드에는 그 상태의 복사본인 FActiveSound가 존재해
+
+---
+
+FActiveSound
+실제 파형 생산 단위인 FWaveInstance를 하나 이상 갖고 있다
+하나의 재생 요청이 여러 파형을 동시에 생산할 수 있기 때문
+
+---
+
+FWaveInstance들이 생산한 PCM 데이터가 자신이 지정된 Submix로 흘러들어가고, 거기서 합산되고, 그 Submix의 이펙트 체인을 통과하고, 
+그 결과가 부모 Submix로 올라가서 또 합산되고, 최종적으로 Master Submix에 도달해서 FAudioDevice를 통해 스피커로 나가
+
+트리 구조의 각 내부노드가 하나의 Submix이고, 각 Submix 노드에는 자체 이펙트 체인과 볼륨 조절이 달려 있어
+
+---
+
+Sound Class는 개별 소리에 붙이는 태그
+"이 소리는 Music이다", "이 소리는 Dialogue다"
+
+Submix가 파형이 물리적으로 합류하는 장소(배관)라면
+Sound Class는 소리가 의미론적으로 어떤 범주에 속하는지를 부여하는 타입(Tag)
+
+---
+
+필요한 건 "전투 모드에서는 이 범주들의 볼륨 비율이 이렇게 된다"는 프리셋
+이것이 USoundMix
+
+Sound Class별 볼륨/피치 오버라이드의 묶음
+
+CombatMix라는 Sound Mix를 정의해서 "Music 클래스 볼륨 1.2, Ambience 클래스 볼륨 0.3, Dialogue 클래스 볼륨 1.0"이라고 설정
+전투 돌입 시 이 Mix를 Push하고 전투 종료 시 Pop해
+
+Sound Mix는 Sound Class라는 분류 체계 위에서 작동하는 정책 프리셋
+
+---
+
+UAudioComponent는 
+재생할 사운드 에셋(USoundWave, USoundCue, MetaSoundSource), 
+라우팅할 Submix, 적용할 Attenuation, 소속 Sound Class를 참조. 
+모든 하위 층의 설정을 하나로 묶어서 
+"이 소리 인스턴스의 완전한 명세"를 구성
+
+Play()를 호출하면 오디오 스레드에 FActiveSound를 생성하라는 명령이 날아간다
+
+---
+
+Stereo Panning
+왼쪽과 오른쪽 스피커의 볼륨 크기(Level) 차이만 조절
+소리가 내 머리 안의 좌우 직선상에서 움직이는 느낌
+
+HRTF
+Head-Related Transfer Function
+귀바퀴에 부딪혀 발생하는 회절, 머리에 가로막혀 생기는 저항 등을 모두 계산하여 
+소리가 '머리 밖 특정 공간'에 위치하게 만듭니다.
+
+---
+
+오디오 시스템은 일정 크기의 버퍼 — 예를 들어 512샘플이나 1024샘플 — 를 미리 채워서 사운드 카드에 넘겨.
+사운드 카드는 그 버퍼의 숫자를 44100Hz 속도로 하나씩 소비하면서 스피커를 밀어
+512샘플 버퍼라면 약 11.6ms 분량이야
+
+사운드 카드가 현재 버퍼를 소비하는 동안 CPU는 다음 버퍼를 채우고 있어
+
+버퍼가 크면 CPU가 여유 있게 채울 수 있어서 끊길 위험이 줄지만, 
+게임에서 "지금 총을 쐈다"는 이벤트가 발생해도 현재 버퍼가 소비될 때까지 기다려야 하니까 
+**지연(latency)**이 커져
+
+버퍼가 작으면 지연은 줄지만, CPU가 제시간에 못 채우면 빈 구간이 생겨서 "뚝" 소리가 나
+
+UE에서 이 버퍼 크기는 Audio Callback Buffer Size로 설정되고,
+오디오 스레드가 이 콜백 주기마다 깨어나서 다음 버퍼를 채우는 거야.
+
+---
+
+숲을 헤치고 길을 낸다는 원초적 이미지
+rupta(깨진, 열린) 파생
+
+routing은 "무언가를 특정 경로로 보내는 행위"야.
+
+"이 소리의 출력을 어디로 보낼 것인가"를 결정하고 연결하는 행위
+물리적 스튜디오에서 이것이 말 그대로 케이블을 꽂는 행위
+
+1960~70년대 레코딩 스튜디오
+patch bay
+
+UAudioComponent가 "내 출력을 SFX Submix로 보낸다"고 지정하는 것이 routing
+옛날에는 케이블을 꽂는 것이었고, 
+디지털에서는 프로퍼티로 지정하는 것
+
+---
+
+MetaSounds
+그래프 내부의 아무 파라미터든 외부에서 SetParameter() 로 실시간 주입할 수 있다
+
+
+Animation Notify 
+애니메이션 시퀀스 안에 "이 프레임에서 이벤트를 발화하라"는 마커를 박아놓는 거야
+
+왼발이 땅에 닿는 프레임에 "PlayFootstepSound" 노티파이를 넣으면, 
+애니메이션 시스템이 그 프레임에 도달할 때 사운드 재생을 트리거해
+소리가 애니메이션의 시간에 종속되는 거지, 게임 로직의 시간에 종속되는 게 아니야.
+
+소리의 타이밍 권한이 애니메이터에게
+애니메이터가 애니메이션 에디터에서 정확한 프레임에 마커를 찍어
+
+
+가장 자유도가 높은 층위
+게임의 아무 이벤트에 반응해서 소리를 시작/중지/변경하는 로직을 직접 작성
+"오디오 전용 시스템"이라기보다, 범용 이벤트/델리게이트 시스템 위에서 오디오 API를 호출
+
+---
+---
+---
+
+스피커
+
+전류가 흐르는 도체가 자기장 안에서 힘을 받는다(로렌츠 힘) 
+
+
+다이내믹 스피커의 구조
+뒤쪽에 강력한 **영구자석(permanent magnet)**이 고정
+자석이 만드는 자기장의 좁은 틈(gap) 안에 voice coil이 매달려 있어
+가느다란 구리 선을 원통형으로 감은 것
+
+이 보이스 코일에 전류를 흘리면 코일이 전자석이 되면서 영구자석의 자기장과 상호작용해서 앞뒤로 밀리거나 당겨져
+전류의 방향이 바뀌면 힘의 방향도 바뀌고, 전류의 크기가 커지면 밀림의 폭도 커져.
+
+보이스 코일에는 **cone**이 붙어 있어
+보통 폴리프로필렌으로 만든 원뿔형 진동판이야
+코일이 앞으로 밀리면 콘도 앞으로 밀리면서 앞쪽 공기를 압축하고, 
+코일이 뒤로 당겨지면 콘도 뒤로 당겨지면서 앞쪽 공기가 팽창해
+
+이 압축과 팽창이 공기 중의 압력파 — 즉 소리 — 가 돼서 네 고막까지 전파되는 거야
+
+
+콘이 제자리로 돌아오게 해주는 **서스펜션(spider + surround)**이 있어
+콘의 가장자리와 뒤쪽에 탄성 재질이 연결되어서, 전류가 멈추면 콘을 중립 위치로 복원해
+
+그리고 이 모든 것을 담는 **프레임(basket)**과, 
+뒤쪽으로 나가는 소리가 앞쪽 소리를 상쇄하지 못하도록 분리하는 인클로저(enclosure, 스피커 상자).
+
+
+전류의 시간 함수를 공기 압력의 시간 함수로 변환하는 transducer
+입력이 전류 파형이고 출력이 공기 압력 파형이야
+
+이 변환은 (이상적으로는) 선형이야 
+전류 값에 비례해서 콘이 움직여
+전류 파형의 모양이 곧 소리의 모양이 돼.
+
+---
+
+메인보드에 내장된 audio codec chip 혹은 별도의 사운드 카드
+그 전류 파형은 어디서 오는가
+
+DAC — Digital-Analog Converter
+디지털 숫자를 아날로그 전압으로 바꿔
+
+메모리에 있는 PCM 샘플을 하나씩 읽어서, 그 숫자에 비례하는 전압을 출력해. 
+숫자가 +32767이면 최대 양의 전압, -32768이면 최대 음의 전압, 0이면 전압 없음. 
+이 전압이 스피커에 전류로 흘러들어가.
+
+DAC가 이 변환을 수행하는 속도가 샘플 레이트야
+각 전압 값 사이에는 계단 모양의 전압을 부드러운 연속 파형으로 다듬어줘
+"숫자들 사이를 부드럽게 채워주는 회로가 있다"
+
+---
+
+codec
+coder-decoder
+DAC와 ADC를 하나의 칩에 합쳐놓은 것
+
+---
+
+Realtek 칩과 Creative 칩과 Intel HD Audio 컨트롤러는 
+각각 레지스터 구조, 명령 포맷, DMA 설정 방식이 다 달라
+
+
+드라이버는 특정 하드웨어의 구체적인 제어 방식을 알고 있는 모듈
+위쪽으로는 OS가 정의한 표준 인터페이스를 제공하고
+아래쪽으로는 특정 하드웨어의 레지스터에 값을 써넣어서 실제 동작을 일으켜
+
+---
+
+커널 사운드 드라이버
+
+하드웨어 초기화
+샘플 레이트, 비트 깊이, 채널 수
+Direct Memory Access 버퍼 할당
+  CPU가 매 샘플마다 직접 사운드 카드에 숫자를 써넣는 게 아니라, 
+  메모리에 버퍼를 마련해두면 사운드 카드가 알아서 그 메모리에서 데이터를 읽어가는 구조
+
+사운드 카드가 버퍼를 다 소비했을 때 발생하는 인터럽트를 처리
+"다음 버퍼를 채워라"는 신호를 OS에 올려보내
+
+사운드 카드의 DMA 엔진이 자기 클럭에 맞춰서 메모리에서 숫자를 읽어가. 
+"끌어가기(pull)" 모델
+
+---
+
+드라이버 위에 OS의 오디오 스택이 올라와
+
+문제 1: 다중 앱의 동시 재생
+각 앱이 자기만의 PCM 스트림을 생산하는데, 사운드 카드는 하나
+누군가가 이 스트림들을 합산해서 하나의 파형으로 만들어야 해
+
+이것이 OS 레벨 audio mixer
+
+문제 2: 포맷 변환
+앱 A는 44100Hz 16비트 스테레오로 데이터를 보내고, 앱 B는 48000Hz 32비트 플로트 모노로 보내
+사운드 카드는 하나의 고정된 포맷(예: 48000Hz)으로 작동하고 있어
+합산하기 전에 모든 스트림을 같은 포맷으로 통일해야 해
+
+문제 3: 디바이스 열거와 라우팅
+스피커, 헤드폰, USB DAC, Bluetooth 이어폰
+출력 장치가 여러 개일 수 있어
+
+앱이 어떤 장치로 출력할지 선택할 수 있게 한다
+앱의 출력을 어떤 장치의 입력으로 보낼 것인가
+
+---
+
+시스템 전체의 소스 보이스 한도에 도달했을 때, Priority가 낮은 소리부터 가상화(virtualization)되거나 제거돼. 
+가상화란 "실제 파형 생산은 멈추지만 상태는 계속 '재생'하는 것"
+
+---
+
+Occlusion
+
+직접 전달 경로도 반사 경로도 모두 벽에 의해 차단되는 상황
+
+Obstruction
+
+직접 경로만 막히고 반사음은 도달하는 것
+
+---
+
+Source Effect
+
+개별 소리 인스턴스에 적용되는 이펙트
+
+Submix Effect
+
+버스 전체에 적용되는 이펙트
+
+---
+
+Audio Streaming
+
+데이터 전체를 메모리에 올려놓고 쓸 수 없다
+5분짜리 배경 음악은 PCM으로 풀면 수십 MB 
+10곡을 동시에 메모리에 올려놓으면 메모리가 터진다
+
+큰 오디오 파일은 디스크에 압축 상태로 두고, 
+chunk 단위로 읽어서 디코딩
+
+USoundWave에
+Loading Behavior 전략을 에셋별로 지정
+
+
+---
+---
+---
+
+USoundWave
+압축된 오디오 데이터(Vorbis, Opus 등)이 위치
+재생 시 디코딩되어 PCM 스트림을 생산
+USoundClass, USoundConcurrency를 참조
+스트리밍 여부, 로딩 전략, 자막(subtitle) 텍스트
+
+---
+
+USoundCue
+내부에 USoundNode 트리를 소유
+이 각 노드가 랜덤 선택, 피치 변조, 루핑, 레이어링, 감쇄 적용 같은 하나의 연산을 표현
+
+리프 노드인 USoundNodeWavePlayer가 USoundWave를 참조
+
+USoundCue 자체도 USoundWave처럼 기본 USoundClass, USoundConcurrency, USoundAttenuation을 참조할 수 있다
+
+---
+
+UMetaSoundSource
+내부에 MetaSounds 그래프를 소유
+
+DSP 노드(오실레이터, 필터, 엔벨로프, WavePlayer 등)의 연결로 구성
+
+---
+
+UAudioComponent가 "재생할 대상"으로 참조하는 것은 이 USoundBase 타입
+USoundWave, USoundCue, UMetaSoundSource — 가 USoundBase의 세 갈래
+
+다형성
+날것의 파형인지, 가공 레시피인지, 실시간 합성 그래프인지 알 필요 없이 USoundBase로 취급
+
+---
+
+USoundAttenuation
+
+FAttenuationSettings 구조체를 감싼 UObject 래퍼야
+
+거리 감쇄 곡선, 최소/최대 거리, 공간화 방식(Panning, Binaural/HRTF), Occlusion 설정, 
+Air Absorption(공기에 의한 고주파 감쇄), Reverb Send 비율 등
+
+USoundCue, UMetaSoundSource, UAudioComponent 등 모두가 이것을 참조할 수 있어
+우선순위는 UAudioComponent의 지정이 가장 높고, 
+없으면 재생 중인 사운드 에셋(USoundCue 등)의 기본값, 
+그마저 없으면 USoundWave의 기본값으로 fallback
+
+---
+
+USoundMix
+
+Sound Class별 조정값을 정의
+
+내부에 **TArray<FSoundClassAdjuster>**를 갖고 있고,
+각 FSoundClassAdjuster가 하나의 USoundClass를 참조하면서 그 클래스에 적용할 Adjust를 지정
+
+USoundMix는 다른 에셋에 의해 참조되기보다는, 런타임에 FAudioDevice에 Push/Pop되는 방식으로 사용 
+다만 USoundClass의 PassiveSoundMixModifiers가 USoundMix를 참조해서, 특정 클래스의 소리가 재생될 때 자동 Push되는 연결이 있어.
+
+---
+
+USoundSubmix
+
+---
+
+UAudioComponent
+에셋 층의 거의 모든 것을 참조하는 허브
+
+재생할 USoundBase,
+라우팅할 USoundSubmix,
+적용할 USoundAttenuation, 소속 USoundClass, 적용할 USoundConcurrency 등을 참조
+
+에셋은 엔진의 에셋 매니저가 소유하고, UAudioComponent는 그걸 가리킬 뿐
+
+---
+
+FAudioDeviceManager
+엔진 전체에 하나만 존재
+모든 FAudioDevice 인스턴스를 소유하고 관리
+PIE 세션마다 별도의 FAudioDevice가 생길 수 있다
+
+FAudioDeviceManager는 또한 오디오 스레드의 생성과 관리를 담당
+
+---
+
+FAudioDevice
+
+현재 활성화된 모든 FActiveSound의 목록을 소유
+FActiveSound를 생성하고 파괴하는 책임이 FAudioDevice에 있어
+
+
+FSoundSource 풀을 소유
+
+플랫폼별 소스 보이스의 추상화
+풀의 크기가 곧 동시 재생 가능한 보이스 수
+
+
+Submix 그래프의 런타임 표현을 구성 및 실행
+현재 Push되어 있는 Sound Mix 스택을 참조해서 적용
+
+---
+
+GEngine
+FAudioDeviceManager
+FAudioDevice
+FActiveSound
+FWaveInstance
+
+---
+
+USoundCue의 USoundNode 트리
+재생이 트리거되면 FActiveSound가 이 트리를 평가
+FActiveSound가 루트 노드의 ParseNodes()를 호출
+
+인터프리터 모델
+
+---
+
+MetaSounds 그래프
+컴파일된다
+
+프론트엔드(편집 모델)와 백엔드(실행 모델)가 분리
+
+---
+
+Submix
+오디오 업계에서 **하위 믹싱 버스(sub-mix bus)**를 가리키는 용어
+"sub" + "mix" — 최종 믹스(마스터)에 도달하기 전의 중간 합산 지점
+
+"드럼 서브믹스", "스트링 서브믹스"라고 하면, 실제로 신호가 물리적으로 합류하는 버스를 가리켜.
+
+---
+---
+---
+
+Game Thread가 하는 일
+월드의 상태를 결정하는 것
+이 오브젝트는 여기 있고, 이렇게 생겼고, 이 머티리얼을 쓰고, 보여야 한다
+
+
+Render Thread
+
+FScene(씬 전체의 Proxy 집합)을 소유
+가시성 판정(이 오브젝트가 카메라에 보이는가),
+오클루전 컬링(다른 오브젝트에 가려져 안 보이는가), 
+LOD 선택, 
+드로우 콜 배칭과 정렬
+
+렌더 커맨드 리스트
+
+여기까지가 **플랫폼 무관(platform-agnostic)**
+
+
+Render Hardware Interface Thread
+
+렌더 커맨드를 특정 GPU API의 언어로 번역
+
+---
+
+게임 스레드가 UObject를 자유롭게 수정하는 동안, 
+렌더 스레드는 이전 프레임의 안정된 Proxy 스냅샷 위에서 작업
+
+1프레임의 지연(latency)을 대가로 두 스레드가 독립적으로 돌 수 있어
+
+---
+
+플랫폼 무관 명령과 플랫폼 고유 번역의 분리
+
+커맨드 리스트를 빌드하고, 리소스 상태 전환(배리어)을 삽입하고, 메모리 할당을 관리하고, GPU와의 동기화 펜스를 처리하는 것
+이게 사소한 번역이 아니라 CPU 시간을 상당히 먹는 작업
+
+---
+---
+---
+---
+---
+---
+
+skeletal structure
+hierarchical transform propagation from parent to children
+
+
+pose
+어떤 한 순간에 모든 관절의 회전값을 찍어놓은 스냅샷
+마리오네트의 모든 실의 길이를 그 순간 기록해놓은 것
+애니메이션의 기본 단위
+
+
+animation clip
+시간에 따라 변하는 포즈의 시퀀스
+포즈1에서 포즈2로, 포즈2에서 포즈3으로
+
+오디오에서 PCM 샘플의 시간 시퀀스가 파형이었듯이, 
+포즈의 시간 시퀀스가 애니메이션
+
+---
+
+key pose (keyframe), in-between (frame)
+
+핵심 순간만 지정하고 나머지는 보간(interpolation)으로 채우는 것
+
+---
+
+안무가의 큐시트
+
+---
+
+블렌딩
+여러 포즈의 가중 보간
+
+오디오에서 믹싱
+여러 파형의 가중 합산
+
+---
+
+오디오의 버스 구조처럼, 애니메이션에서도 합성의 계층이 있어
+
+하체에는 "로코모션 블렌드"(걷기/뛰기 전환)를 적용하고,
+상체에는 "사격 레이어"를 덮어씌우고, 
+머리에는 "룩앳(look-at) 보정"을 추가
+
+---
+
+layer
+
+배경을 하나의 셀(cel)에, 캐릭터 몸통을 다른 셀에, 얼굴 표정을 또 다른 셀에 그려서 겹쳐
+
+---
+
+오디오에서 Anim Notify가 "소리 타이밍의 권한을 애니메이터에게" 준 것처럼,
+루트 모션은 "이동의 권한을 애니메이터에게" 줘.
+
+애니메이션 데이터 안에 스켈레톤의 루트 뼈(보통 골반)의 이동량이 포함되어 있고, 
+이 이동량이 캐릭터의 월드 위치 변화로 직접 적용
+
+게임플레이 코드가 속도를 결정하는가, 
+아니면 애니메이션 데이터가 이동을 결정하는가
+
+---
+
+USkeleton
+
+FReferenceSkeleton을 소유
+
+FReferenceSkeleton은 뼈 계층의 완전한 정의
+TArray<FMeshBoneInfo>(각 뼈의 이름과 부모 인덱스)
+TArray<FTransform>(각 뼈의 레퍼런스 포즈에서의 로컬 변환)을 갖고 있어
+
+
+Smart Name Mapping을 소유
+애니메이션 커브(표정 모프 타겟, 머티리얼 파라미터 등)의 이름 레지스트리
+
+
+애니메이션 몽타주에서 사용하는 슬롯 이름과 그룹 구조 소유
+
+---
+
+USkeletalMesh
+렌더링 가능한 메시 에셋
+
+USkeleton에 연결되서 "나는 이 뼈대 위에 씌워지는 메시다"는 관계가 성립
+
+
+FSkeletalMeshRenderData 를 소유
+
+
+---
+
+UAnimSequence
+
+USkeleton을 참조
+
+FRawAnimSequenceTrack 배열 소유
+
+각 트랙이 하나의 뼈에 대한 키프레임 데이터 — 시간별 위치(FVector), 회전(FQuat), 스케일(FVector) — 를 담고 있어
+
+USoundWave가 PCM 샘플의 시퀀스를 담듯이, 
+UAnimSequence가 포즈의 시퀀스를 담아.
+
+
+FAnimNotifyEvent 배열 소유
+
+특정 프레임에 발화하는 이벤트 마커들
+
+---
+
+UAnimSequence의 원본 키프레임 데이터는 그대로 저장하면 크니까, 
+UAnimBoneCompressionCodec과 UAnimCurveCompressionCodec에 의해 압축돼. 
+런타임에 FCompactPose로 복원
+
+이건 오디오에서 USoundWave가 Vorbis/Opus로 압축 저장되고 재생 시 디코딩되는 것과 같은 구조야
+
+---
+
+UBlendSpace
+
+파라미터 공간(예: 속도 × 방향) 안에 여러 UAnimSequence를 배치해두고, 
+런타임에 파라미터 값에 따라 주변 샘플들을 블렌딩해서 포즈를 만든다
+
+---
+
+UAnimMontage
+
+"게임플레이 코드가 명시적으로 트리거하는 일회성 동작"을 위해 디자인 됨
+
+내부에 FSlotAnimationTrack 배열 소유
+
+---
+
+UAnimBlueprint
+
+내부에 UAnimGraphNode 트리를 소유
+
+UAnimBlueprintGeneratedClass로 컴파일된다
+
+---
+
+USkeletalMeshComponent
+
+애니메이션 시스템의 UAudioComponent에 해당하는 허브
+
+USkeletalMesh
+UAnimInstance
+
+---
+
+UAnimInstance
+
+FAnimInstanceProxy 를 소유
+FAnimNode 트리 소유
+
+---
+
+FAnimInstanceProxy
+
+게임 스레드의 UObject 세계와 워커 스레드의 포즈 평가를 분리하기 위한 경계 객체
+
+PreUpdate()
+Update()
+Evaluate()
+
+이 중 Update와 Evaluate가 워커 스레드에서 실행될 수 있어
+
+---
+
+게임 스레드
+
+USkeletalMeshComponent::TickComponent()
+UAnimInstance::UpdateAnimation()
+FAnimInstanceProxy::PreUpdate()
+  변수들(속도, 방향, IsInAir 같은 게임플레이 상태)을 
+  UAnimInstance에서 FAnimInstanceProxy로 복사
+  게임 스레드 UObject 세계의 스냅샷을 찍는다
+
+Parallel Animation Evaluation가 켜져 있으면
+FParallelAnimationEvaluationTask를 TaskGraph에 제출
+
+이 태스크가 워커 스레드에서 FAnimInstanceProxy::Update()와 Evaluate()를 실행
+
+FAnimNode 트리 전체를 평가하고 FCompactPose로 결과를 생산
+
+---
+
+게임 스레드에서 프레임 후반부에 FParallelAnimationCompletionTask가 실행
+결과 포즈를 USkeletalMeshComponent의 본 트랜스폼 배열에 적용하고, Notify 이벤트를 발화하고, 물리 바디를 갱신
+
+---
+
+왜 오디오처럼 전용 스레드가 아니라 태스크 그래프인가?
+
+매 틱(60fps = 16.67 ms)에 한 번 포즈를 생산하면 되고, 그 생산이 1ms 늦어져도 화면이 찢어지진 않아
+"빈 코어가 있으면 거기서 돌려라"는 유연한 스케줄링
+
+---
+---
+---
+
+뼈의 움직임에 따라 메시 버텍스를 변형
+skinning
+
+메시의 각 버텍스는 하나 이상의 뼈에 대한 skin weight
+이 버텍스는 상완 뼈에 0.7, 전완 뼈에 0.3의 영향을 받는다
+
+이 연산이 GPU에서 실행된다
+스키닝은 버텍스 셰이더에서 수행
+
+모든 상위 층의 일은 결국 본 행렬 배열을 생산하는 것으로 수렴
+오디오에서 모든 상위 층의 일이 "최종 PCM 버퍼를 채우는 것"으로 수렴했던 것과 같아
+
+---
+
+스키닝이 작동하려면 "뼈가 몇 개이고, 어떻게 연결되어 있고, 기본 자세에서 각 뼈가 어디에 있는가"가 정의되어야 해.
+
+이것이 USkeleton 에셋 안의 FReferenceSkeleton이야
+
+FReferenceSkeleton의 구조
+
+FMeshBoneInfo 배열
+각 원소가 뼈 하나의 메타데이터(FName Name, int32 ParentIndex)를 담아
+
+FTransform 배열
+각 원소가 해당 뼈의 레퍼런스 포즈에서의 로컬 변환(부모에 대한 상대적 위치, 회전, 스케일)이야. 
+
+
+이 두 배열의 인덱스가 일치해서, BoneIndex = 3이면 
+FMeshBoneInfo[3]에서 이름과 부모를 읽고, FTransform[3]에서 레퍼런스 로컬 변환을 읽어
+
+---
+
+USkeleton이 "뼈 이름과 계층의 정규적 정의"로서, 
+메시 USkeletalMesh와 애니메이션 UAnimSequence 사이의 
+compatibility contract 제공
+
+---
+
+FCompactPose
+한 순간의 모든 뼈의 로컬 변환
+
+상완이 어깨로부터 이만큼 떨어져 있고, 어깨에 대해 이만큼 회전해 있다
+애니메이션 블렌딩은 이 공간에서 수행
+
+---
+
+UAnimSequence
+
+FRawAnimSequenceTrack 
+에디터에서 애니메이션을 임포트했을 때의 원본 데이터이고, 쿠킹(패키징) 시 압축
+FCompressedAnimSequence
+
+RateScale(재생 속도 배율)
+SequenceLength(총 길이, 초)
+NumFrames(총 프레임 수)
+bLooping(루프 여부)
+
+Notifies 배열
+
+---
+
+AnimGraph
+
+FAnimNode
+
+오디오의 "파형을 입력받아 파형을 출력하는 이펙트"와 같은 위상
+
+---
+
+FAnimInstanceProxy 
+
+---
+
+UAnimInstance 
+
+---
+
+USkeletalMeshComponent 
+
+USkeletalMeshComponent::TickComponent()
+UAnimInstance::UpdateAnimation()
+FAnimInstanceProxy::PreUpdate
+
+병렬 경로 — FParallelAnimationEvaluationTask가 태스크 그래프에 제출
+FAnimInstanceProxy::UpdateAnimation()
+FAnimInstanceProxy::EvaluateAnimation()
+FCompactPose가 생산
+
+프레임 후반에 USkeletalMeshComponent::CompleteParallelAnimationEvaluation()
+
+---
+
+UAnimBlueprint가 에셋
+UAnimInstance는 그 에셋에서 찍어낸 것
+
+USkeletalMeshComponent마다 하나씩
+각각 자기만의 UAnimInstance를 갖는다
+
+---
+
+USoundWave(에셋)와 FWaveInstance(재생 인스턴스)의 관계, 
+USoundCue(에셋)와 FActiveSound(재생 인스턴스)의 관계 
+UAnimBlueprint(에셋)와 UAnimInstance(실행 인스턴스)의 관계
+
+---
+
+USkeleton의 전체 뼈 목록에는 수십~수백 개의 뼈가 있을 수 있어
+하지만 특정 USkeletalMesh는 그 중 일부만 사용할 수 있어
+어떤 메시는 얼굴 뼈가 없고, 어떤 메시는 손가락 뼈가 없어
+
+FCompactPose는 현재 메시가 실제로 사용하는 뼈에 대해서만 트랜스폼을 저장해
+
+FBoneContainer가 "Compact BoneIndex → Skeleton BoneIndex"의 매핑 테이블을 갖고 있다
+
+---
+
+FCompactPoseBoneIndex와 FSkeletonPoseBoneIndex가 별도의 타입
+int32를 감싼 강타입(strong typedef)으로, 
+둘을 혼동해서 배열에 잘못된 인덱스로 접근하는 버그를 컴파일 타임에 방지
+
+타입 시스템으로 공간(인덱스 공간)의 혼동을 방지
+
+---
+
+Frame
+시간의 원자
+
+영화에서 한 장의 사진, 애니메이션에서 한 순간의 포즈
+
+오디오에서의 하나의 PCM 샘플에 대응
+
+---
+
+Track
+
+하나의 채널에 따른 시간 축 데이터
+
+자기 테이프 위의 물리적 "길(track)".
+
+애니메이션에서 Track은 하나의 뼈에 대한 시간별 변환 데이터
+
+---
+
+Sequence
+
+여러 Track이 시간 축을 공유하면서 묶인 전체 단위
+
+모든 뼈의 Track을 하나의 시간 범위(0초 ~ SequenceLength) 안에 묶은 것
+
+하나의 의미 단위를 이루는 프레임들의 연속
+
+---
+
+Clip
+
+잘라낸 조각
+
+긴 필름에서 가위로 잘라낸 한 구간
+AnimSequence에서 특정 시간 범위만 잘라서 사용한다는 뉘앙스
+
+---
+
+USkeleton 
+
+인형을 만들기 전에, 먼저 관절 설계도를 그려
+
+"어깨는 몸통에 붙고, 상완은 어깨에 붙고, 전완은 상완에 붙는다. 어깨는 세 축으로 돌고, 팔꿈치는 한 축으로만 접힌다."
+
+관절 설계도는 인형의 외형(키가 크든 작든, 뚱뚱하든 날씬하든)과 무관
+
+관절의 이름, 연결 관계, 기본 자세를 정의
+
+외형은 달라도 관절 구조가 같으면, 같은 안무를 둘 다에 적용할 수 있어
+
+---
+
+USkeletalMesh 
+
+USkeleton 위에 나무 조각, 천, 채색을 입힌 완성된 인형
+의상을 입은 인형
+
+각 인형의 표면(메시)이 관절에 어떻게 연결되는지(스킨 웨이트)
+가 USkeletalMesh에 고유한 정보
+
+---
+
+UAnimSequence 
+
+안무가가 특정 동작을 기보법으로 기록한 악보
+
+이 악보는 종이에 적힌 것이지, 특정 USkeletalMesh에 귀속되지 않는다
+
+같은 USkeletalMesh를 따르는 모든 USkeletalMesh에 적용할 수 있어.
+
+시간에 따른 데이터의 시퀀스
+
+무대 지시(stage direction) - FAnimNotifyEvent
+"여기서 발소리 효과음", "여기서 표정 변경"
+
+악보의 특정 마디에 적힌 지시
+
+---
+
+FRawAnimSequenceTrack 
+
+악보에서 한 관절의 줄
+
+오케스트라 악보에서 바이올린 파트, 첼로 파트, 플루트 파트가 각각 한 줄을 차지하듯이
+
+안무 악보에서 어깨 파트, 팔꿈치 파트, 손목 파트가 각각 한 줄(track)
+
+---
+
+FCompressedAnimSequence 
+
+---
+
+UBlendSpace 
+
+다이얼이 돌려지면서 주변 안무 악보들이 부드럽게 섞인다
+
+다이얼이 2개면 2D 공간
+
+---
+
+UAnimMontage 
+
+---
+
+UAnimBlueprint 
+
+이 상황에서는 이 안무를 쓰고, 저 상황에서는 저 안무를 써
+전환할 때는 이렇게 섞어
+
+상태 머신 다이어그램, 블렌드 비율
+IK 규칙
+
+---
+
+UAnimBlueprintGeneratedClass 
+
+손으로 쓴 교본(UAnimBlueprint)을 인쇄소(컴파일러)에 보내서 
+공연 중 읽을 수 있는 형태로 인쇄한 것
+
+UAnimBlueprint의 많은 정보가 버려지고 실행 가능한 구조만 남는다
+
+---
+
+UAnimInstance 
+
+무엇의 Instance? UAnimBlueprint 의 Instance 
+(UAnimBlueprint가 Compile된 UAnimBlueprintGeneratedClass의)
+
+UAnimBlueprintGeneratedClass 를 받아들고
+실제로 공연을 하고 있는 인형사 한 명
+
+"지금 걷기 안무의 3초 지점"
+"전투 상태 진입 중, 전환 블렌드 60% 진행"
+"왼손 IK가 문손잡이를 향하고 있음"
+
+---
+
+FAnimInstanceProxy 
+
+두뇌(UAnimInstance, 게임 스레드)가 손에게 "이번 장면에서 속도는 이만큼, 방향은 이쪽, 전투 상태다"라고 알려주면(PreUpdate), 
+손은 그 정보로 실을 조작해(Update + Evaluate, 워커 스레드)
+
+일이 끝나면 손이 "이번 결과 포즈 여기 있어"라고 두뇌에게 돌려주고(PostUpdate), 
+두뇌가 무대 감독에게 알림(Notify 발화)을 전달해
+
+---
+
+FAnimNode 
+
+FAnimNode_SequencePlayer
+
+UAnimSequence를 시간에 따라 읽어나가면서 "지금 이 순간의 포즈"를 실시간으로 소리내어 불러주는 낭독가
+현재 시간에 해당하는 포즈를 충실히 읽어줄 뿐
+
+
+FAnimNode_StateMachine 
+
+무대 옆에 서서 "지금 장면은 '걷기'다. 속도가 300을 넘었으니까 '뛰기' 장면으로 전환
+
+각 장면(상태)에는 해당 장면의 안무가 배정
+장면 사이의 전환 조건과 전환 방식(블렌드 시간, 커브)이 정의
+
+
+FAnimNode_TwoDirectionBlend 
+
+크로스페이더
+두 포즈 소스를 Alpha 값에 따라 섞어. Alpha 0이면 왼쪽만, 1이면 오른쪽만, 0.5면 반반
+포즈의 합산은 회전의 구면 보간(SLERP)
+
+
+FAnimNode_BlendSpacePlayer 
+
+다이얼의 현재 위치(파라미터 값)를 읽어서, 
+주변 안무들을 적절한 비율로 섞은 포즈를 실시간으로 생산해
+
+
+FAnimNode_LayeredBoneBlend
+
+인형사 A는 하체 실만 잡고(로코모션 담당), 
+인형사 B는 상체 실만 잡고(사격 포즈 담당), 
+인형사 C는 머리 실만 잡고(룩앳 담당)
+
+"본 마스크"가 각 인형사의 담당 영역을 정의
+
+본 레이어는 하나의 출력을 부위별로 다른 소스에서 채운다
+
+
+FAnimNode_Slot 
+
+Montage가 꽂히는 Override 포인트
+
+블렌드 인 — 서서히 정규 안무와 Montage 동작이 섞이고, 
+블렌드 아웃 — 서서히 정규 안무로 돌아간다
+
+
+FAnimNode_TwoBoneIK / FABRIK (Forward And Backward Reaching Inverse Kinematics)
+
+인형사가 실로 관절을 조종하는 것(FK, 순운동학)과 달리
+누군가가 인형의 손목을 직접 잡고 "여기 닿아"라고 당기는 거야
+
+손목이 목표 위치로 끌려가면, 팔꿈치와 어깨가 역으로 따라 움직여
+안무 악보가 제공하지 못하는 "월드의 구체적 지형에 대한 적응"을 담당해
+
+---
+
+FPoseLink 
+
+FAnimNode들을 연결하는 실
+
+"이 노드의 입력은 저 노드의 출력이다"를 선언
+
+---
+
+FCompactPose 
+
+공연 중 어느 한 순간에 인형의 모든 관절 각도를 찍은 사진
+"왼 어깨 30도, 왼 팔꿈치 45도, 왼 손목 10도, 오른 어깨 15도..."
+
+설계도에는 100개의 관절이 정의되어 있어도, 이 인형은 얼굴 관절이 없어서 80개만 있으면, 80개 관절만 담은 압축 사진
+
+---
+
+FPoseContext 
+
+순간 사진(FCompactPose), 그 순간의 부가 정보(애니메이션 커브 값 — 표정 모프 정도, 머티리얼 파라미터 등)를 담는 봉투
+FAnimNode의 Evaluate가 이 봉투를 받아서 사진을 채우고, 봉투를 상위 노드에게 전달
+
+---
+
+USkeletalMeshComponent 
+
+UAnimInstance를 소유
+
+---
+---
+---
+
+USkeleton 
+
+FReferenceSkeleton ReferenceSkeleton 
+  핵심 구조체
+
+TArray<FBoneNode> BoneTree
+  Translation Retargeting Mode
+
+TArray<FVirtualBone> VirtualBones
+  두 뼈 사이에 런타임으로 계산되는 가상 뼈
+  IK 타겟이나 컨스트레인트 기준점
+
+FSmartNameContainer SmartNames
+  애니메이션 커브 이름의 중앙 레지스트리
+
+
+GetBoneIndex(FName BoneName)
+  이름으로 뼈 인덱스 조회
+
+MergeAllBonesToBoneTree(USkeletalMesh*)
+  새 메시에만 있는 뼈를 USkeleton에 추가 등록
+  호환성 확장
+
+AddCompatibleSkeleton(USkeleton*) 
+  다른 USkeleton용 애니메이션을 리타게팅 없이 적용 가능하게 
+
+---
+
+FReferenceSkeleton 
+
+TArray<FMeshBoneInfo> RawRefBoneInfo
+  각 뼈의 이름(FName)과 부모 인덱스(int32)
+
+TArray<FTransform> RawRefBonePose
+  각 뼈의 레퍼런스 포즈 로컬 트랜스폼
+  인덱스가 RawRefBoneInfo와 동기화
+
+TMap<FName, int32> RawNameToIndexMap
+  이름 → 인덱스 역매핑
+
+---
+
+USkeletalMesh 
+
+
+USkeleton* Skeleton
+  이 메시가 따르는 뼈대 
+
+FSkeletalMeshRenderData* SkeletalMeshRenderData
+  LOD별 버텍스/인덱스 버퍼
+  스킨 웨이트
+  섹션(머티리얼 슬롯별 인덱스 범위)
+
+TArray<FSkeletalMaterial> Materials
+  각 슬롯이 UMaterialInterface를 참조
+
+UPhysicsAsset* PhysicsAsset
+  래그돌/물리용 콜리전 바디와 컨스트레인트 정의
+
+---
+
+UAnimSequence 
+
+필름 한 릴
+키프레임마다 모든 관절의 위치가 찍혀 있다
+
+FCompressedAnimSequence CompressedData
+  압축된 뼈 트랜스폼 + 커브 데이터.
+
+TArray<FRawAnimSequenceTrack> RawAnimationData
+  에디터에서만 존재하는 비압축 원본. 쿠킹 후 제거
+
+UAnimBoneCompressionCodec* BoneCompressionCodec
+  뼈 데이터 압축/해제 코덱
+
+UAnimCurveCompressionCodec* CurveCompressionCodec
+  커브 데이터 압축/해제 코덱
+
+TArray<FAnimNotifyEvent> Notifies
+  시간별 노티파이 이벤트 배열
+
+bool bEnableRootMotion
+  이 시퀀스의 루트 뼈 이동을 캐릭터 이동으로 추출할지
+
+FRootMotionMovementParams RootMotionParams
+  추출된 루트 모션 델타 트랜스폼을 담는 컨테이너
+
+
+GetBonePose
+  특정 시간의 포즈를 디코딩해서 FCompactPose에 채움
+  재생의 핵심
+
+GetAnimNotifies
+  두 시간 사이에 발화해야 할 노티파이 수집
+
+---
+
+FCompressedAnimSequence 
+
+TArray<uint8> CompressedByteStream
+  뼈 트랜스폼의 압축 바이트 배열.
+
+TArray<uint8> CompressedCurveByteStream
+  커브 데이터의 압축 바이트 배열
+
+TArray<FTrackToSkeletonMap> CompressedTrackToSkeletonMapTable
+  압축 시 불필요 트랙이 제거되니까, 남은 트랙과 원본 뼈의 대응 관계가 필요
+
+---
+
+UBlendSpace 
+
+벽에 걸린 2D 차트의 특정 지점들에 샘플 음료(UAnimSequence)가 배치되어 있고, 
+손님이 "속도 3, 방향 -45"를 주문하면 주변 음료들을 비율대로 섞어서 칵테일을 만들어.
+
+TArray<FBlendSample> SampleData
+  각 샘플의 위치와 UAnimSequence 참조
+
+---
+
+UAnimMontage 
+FAnimMontageInstance 
+
+---
+
+UAnimBlueprint 
+
+도면(노드 그래프), 
+전기 배선도(상태 머신 전환), 
+자재 목록(참조하는 에셋)
+
+USkeleton* TargetSkeleton
+  이 AnimBP가 호환되는 스켈레톤
+
+TArray<UAnimGraphNode_Base*> AnimNodeProperties
+  에디터 그래프 노드들
+  컴파일의 대상
+
+
+컴파일은 FAnimBlueprintCompilerContext가 수행
+AnimBP 고유의 컴파일러 패스
+
+---
+
+UAnimBlueprintGeneratedClass 
+
+---
+
+UAnimInstance 
+
+FAnimInstanceProxy* Proxy
+  실제 평가 엔진
+
+USkeletalMeshComponent* SkeletalMeshComponent
+  역참조. 자기를 소유한 컴포넌트
+
+UpdateAnimation(float DeltaSeconds, bool bNeedsValidRootMotion) 
+  전체 갱신 오케스트레이션
+  NativeUpdate → BlueprintUpdate → Proxy.PreUpdate → 병렬 태스크 제출(또는 직렬 실행)
+
+Montage_Play(UAnimMontage*, float PlayRate, ...)
+  FAnimMontageInstance를 생성해서 MontageInstances에 추가
+
+Montage_Stop(float BlendOutTime, UAnimMontage*) 
+  몽타주 블렌드 아웃 시작.
+
+---
+
+FAnimInstanceProxy 
+
+외부 칸(UAnimInstance, 게임 스레드)에서 값을 넣으면 잠기고, 
+내부 칸에서 독립적으로 작업이 수행되고, 
+완료되면 결과를 외부 칸으로 반환
+
+외부와 내부가 동시에 열리지 않는 게 핵심
+
+
+FAnimNode_Base* RootNode
+  AnimNode 트리의 루트에 대한 포인터
+
+UpdateAnimation()
+  FAnimNode 트리의 Update 패스 실행
+
+EvaluateAnimation(FPoseContext& Output)
+  FAnimNode 트리의 Evaluate 패스 실행
+
+---
+
+USkeletalMeshComponent 
+
+관절 설계(USkeleton), 
+외형(USkeletalMesh), 
+제어 프로그램(UAnimInstance)이 
+모두 조립된, 움직일 수 있는 완성품
+
+---
+---
+---
+
+USkeletalMesh
+
+TArray<USkeletalMeshSocket*> Sockets
+  Socket은 뼈에 붙는 이름 있는 부착점
+
+USkeletalMeshSocket 
+  FName SocketName
+  FName BoneName
+  FTransform RelativeTransform
+
+USkeleton 에도 소켓을 정의할 수 있음
+
+런타임에 소켓의 월드 위치가 필요하면
+USkeletalMeshComponent::GetSocketTransform(FName SocketName)을 호출
+
+---
+
+스키닝이 "뼈의 움직임에 따른 메시 변형"이라면, 
+모프 타겟은 "뼈와 무관한 메시 자체의 형태 변형"
+
+얼굴 근육의 미세한 움직임은 뼈 회전으로 표현하기엔 너무 세밀하니까, 버텍스 단위의 직접 변형이 더 적합
+
+
+UMorphTarget이 USkeletalMesh에 소유되는 이유
+
+모프 타겟의 델타는 그 메시의 버텍스 구조에 종속적
+
+---
+
+FBX (Filmbox)
+
+메시 + 스켈레톤 + 애니메이션 + 모프 타겟 + 머티리얼 정보를 하나의 파일에
+
+FBX에 스켈레톤 + 메시 + 애니메이션이 모두 들어있는 경우, 이것을 Import 하면.
+
+USkeleton(뼈 계층 정의)
+USkeletalMesh(메시 + 스킨 웨이트 + 모프 타겟)
+UPhysicsAsset(자동 생성된 기본 콜리전 바디)
+UAnimSequence(애니메이션 데이터)
+UMaterialInstance 혹은 UMaterial(머티리얼)
+
+FBX SDK가 파일을 파싱해서 씬 그래프를 읽고, 
+UE의 UFbxFactory가 이걸 UE 에셋으로 변환
+
+---
+
+일반 애니메이션
+절대 포즈를 정의
+"이 프레임에서 왼팔은 어깨 기준 45도 위"
+
+Additive 애니메이션
+delta를 정의
+"기준 포즈에서 왼팔을 10도 더 올려라"
+
+기준 포즈는 RefPoseType으로 지정 — 레퍼런스 포즈(T-포즈), 시퀀스의 첫 프레임, 별도 지정된 다른 시퀀스 등
+
+---
+
+Component Space
+USkeletalMeshComponent의 원점을 기준으로 한 좌표 공간
+
+---
