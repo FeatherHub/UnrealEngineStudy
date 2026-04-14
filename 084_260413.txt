@@ -1,0 +1,298 @@
+asset
+wave, cue, meta, class, submix
+
+world 배치
+actor, component, volume, world setting 에 sound 가 associate 되는 method
+
+execution
+game thread requests play of sound 
+
+game thread -> audio thread -> audio render thread -> hardware endpoint
+
+---
+
+sound wave
+
+오디오 파일을 import 해서 sound wave 로 감싼다
+
+---
+
+sound cue
+
+재생 논리
+
+---
+
+meta sound
+
+런타임에 Synthesize 를 통해 audio 를 procedural 하게 produce
+
+이 audio 를 다른 audio source 와 mix 가능
+
+---
+---
+---
+---
+---
+---
+
+u audio component 
+
+world/scene 쪽 handle
+sound facility 의 조작점
+  attenuation, spatialization, envelope
+  fft, bus send
+
+u audio component 자체가 소리는 아니다
+world 에 reside 하는, 재생 요청의 거점 
+
+실제 오디오 실행 인스턴스는 u audio component 배후
+
+world (level) 에 꽂는 audio representative
+
+---
+
+실행 층: 실제로 재생될 때 내부에서 생기는 것
+
+f active sound
+지금 재생 중인 하나의 런타임 사운드 인스턴스
+
+u audio component 한 개가 여러 개의 f active sound 인스턴스를 동시에 operate 할 수 있다
+
+
+f active sound 의 생성/삭제 notify 는 audio thread 에서 일어난다
+actor 의 u audio component 는 world (game thread) 의 얼굴   
+
+---
+---
+---
+
+SoundWave = 음원 데이터의 엔진 자산화
+SoundCue = 재생 논리 그래프
+MetaSound = 신호 생성/처리 그래프
+SoundClass = 정책/분류 트리
+Submix = 실제 오디오 합류 지점, 믹싱 버스
+
+---
+
+SoundClass
+논리적 분류와 공통 어휘
+“이 소리는 Music인가, SFX인가, UI인가, Voice인가”
+
+---
+
+SoundWave
+
+오디오 파일을 “엔진 자산으로 승격한 뒤 재생”
+엔진 시스템들이 공통 방식으로 다룰 수 있게 변환한다
+엔진 시스템에 연결하는 표준화된 소스 객체
+
+---
+
+cue
+
+무대 조명·음향 담당자가 특정 효과를 발생시켜야 하는 타이밍
+무대 위 배우의 대사와 합을 맞춘다
+
+공연에서 "음향 큐!"라고 외치면 미리 약속된 소리가 터져 나오는 상황
+
+Play했을 때 실행될 복합적인 명령 세트
+
+---
+
+SoundCue
+
+재생 behavior를 구성하는 그래프
+
+선택
+여러 사운드 후보 중 하나를 고른다
+Random, Branch, QualityLevel
+
+
+시간 배열
+Delay, Loop, Concatenate
+
+
+mix
+여러 음원을 조합해 하나의 소리로 조합한다
+mixer, group control
+e.g. 엔진음 + 바람음 + 진동음
+
+---
+
+Digital Signal Processing
+
+소리를 샘플/버퍼 단위의 신호 흐름으로 보고, 그 위에 연산 노드들을 연결한 그래프
+
+
+Oscillator / Noise / Sample Source
+   ↓
+Gain / Envelope / Filter / Delay / Mix / Modulation
+   ↓
+Output
+
+오실레이터: 파형 생성
+엔벌로프: 시간에 따른 세기 변화
+믹스: 여러 신호 합성
+
+
+사운드의 의미를 다루는 그래프가 아니라
+사운드의 물질 자체를 만드는 그래프
+
+---
+
+Game Thread 에서의 사운드 재생 요청
+UAudioComponent, SpawnSoundAttached, SpawnSoundAtLocation
+CreateSound2D
+
+
+Audio Thread 
+FActiveSound
+
+
+Audio Render Thread
+하드웨어에 넘길 버퍼를 계산한다
+
+
+Hardware Endpoint
+플랫폼의 오디오 장치가 버퍼를 소비해 실제 소리가 난다
+
+
+---
+
+Audio Render Thread
+
+buffer underrun
+데드라인을 놓치면 바로 잡음, 끊김, 드롭
+
+---
+
+Audio Thread = 오디오 엔진의 지휘자
+Audio Render Thread = 악기를 실제로 연주하는 손
+
+---
+
+Quartz
+
+game, audio logic, audio rendering threads 사이의 timing issues를 해결하기 위해 도입
+
+---
+
+라우팅 층
+USoundSubmix
+
+여러 소스를 다운믹스한 합에 효과를 적용하는 클래스
+많은 소리가 합류하는 강줄기
+
+---
+
+USoundSourceBus
+믹서 내부의 배선
+
+---
+
+게임 스레드는 프레임 기반이고, 오디오는 버퍼 기반
+게임플레이 로직의 “지금”과 오디오 렌더링의 “지금”이 다르다
+
+Quartz
+소리를 정확한 타이밍에 재생하도록 돕는 시스템
+
+---
+
+리듬 게임, 비주얼라이저, 입 모양/애니메이션 연동, 환경 반응 연출에서는
+오디오가 더 이상 출력 전용 자산이 아니라 분석 가능한 시계열 데이터가 된다
+
+---
+
+virtualization
+
+concurrency, priority, MaxChannelCount 같은 제약 때문에 실제 재생에서 밀려났을 때 어떻게 다룰지
+가상화해서 어떻게 다시 살아날 수 있게 할 것인가
+
+---
+
+FFT 
+Fast Fourier Transform
+소리를 읽는 기능
+
+“어떤 대역이 얼마나 강한가”
+“저음, 중음, 고음 대역이 얼마나 들어 있나”
+
+
+UAudioComponent::GetCookedFFTData
+해당 컴포넌트에서 재생 중인 사운드들의 현재 시점 스펙트럼 데이터를 가져온다
+current-time cooked spectral data
+
+
+특정 대역에 반응하는 이펙트
+박자/에너지 기반 연출
+“이 소리가 지금 얼마나 날카롭나 / 둔탁하나” 같은 분석
+음악 비주얼라이저
+
+
+재생 중인 오디오
+   ↓
+FFT 분석
+   ↓
+주파수 대역별 강도 데이터
+   ↓
+게임플레이 / VFX / UI 반응
+
+---
+
+Bus Send
+
+소리의 복사본을 다른 경로로 추가 송출
+
+원본 소스
+   ├─ 메인 경로로 감
+   └─ send를 통해 다른 bus/submix에도 일부 복사됨
+
+Pre: 소스 이펙트를 먹이기 전의 신호를 보냄
+Post: 소스 이펙트를 먹인 뒤의 신호를 보냄
+
+---
+
+sound는 들리는 현상 쪽이고, 
+audio는 그것을 다루는 신호/시스템 쪽
+
+
+Sound
+구체적이고 개별적인 소리
+“하나의 들리는 사건”
+
+
+Audio
+소리 현상을 다루는 기술 시스템
+
+
+SoundWave, SoundCue, SoundClass, SoundSubmix
+AudioComponent, AudioBus, AudioMixer, AudioThread
+
+---
+
+Game Thread의 재생 의도
+   ↓
+Audio Thread의 논리 처리
+   ↓
+Quartz가 시간 정렬
+   ↓
+Audio Render Thread가 실제 버퍼 생산
+
+---
+
+디바이스 단위로 존재하는 오디오 엔진 인스턴스
+
+월드 → 재생 요청 → 디바이스/믹서 인스턴스
+
+오디오 디바이스 / 오디오 엔진 컨텍스트
+
+---
+
+“현재 살아 있는 소리들”의 레지스트리
+
+Game/World 측 재생 요청
+  ↓
+Active Sound Registry
+  ↓
+각 활성 사운드가 소스 처리 / 믹싱 / 출력 Pipeline으로 내려감
