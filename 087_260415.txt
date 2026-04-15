@@ -1,0 +1,633 @@
+AInfo
+AGameModeBase, AGameStateBase, APlayerState, AWorldSettings
+공간적 존재(위치, 회전, 스케일)를 가지지 않는다
+
+---
+
+ALevelScriptActor
+Level Blueprint를 호스팅하는 싱글턴 액터
+
+---
+
+ALevelBounds
+월드 파티션과 스트리밍의 공간적 경계를 정의
+
+---
+
+ALevelInstance 
+ALevelInstanceEditorInstanceActor, ALevelInstancePivot, AWorldPartitionHLODOnlyLevelInstance
+레벨-인-레벨 구조의 런타임 표현
+모듈식 월드 합성의 메커니즘
+
+---
+
+AWorldPartitionHLOD
+
+---
+
+APawn
+Controller-Pawn 분리
+같은 Pawn을 AI와 플레이어가 제어
+
+
+AHUD
+PlayerController에 바인딩
+2D 오버레이 렌더링 액터
+
+
+APlayerCameraManager
+각 PlayerController가 소유
+뷰 타겟 전환, 카메라 셰이크, 블렌딩
+
+
+AGameplayCameraSystemActor
+PlayerCameraManager의 한계(단일 카메라 스택, 제한된 블렌딩 모델)를 넘어서는 
+데이터 드리븐 카메라 시스템의 월드 측 표현
+
+---
+
+AStaticMeshActor
+ASkeletalMeshActor
+ADynamicMeshActor
+
+---
+
+ALight
+APointLight, ASpotLight, ADirectionalLight
+
+
+ALightmassPortal
+Lightmass GI 계산에서 간접광 경로를 힌트하는 포탈
+
+---
+
+AReflectionCapture
+빌드 타임 또는 스태틱
+
+SceneCapture
+매 프레임 또는 on demand
+
+---
+
+AFunctionalTest
+
+자동화 테스트의 월드 배치 단위(테스트 로직을 Blueprint로 작성하고 월드에 배치하여 실행)
+
+
+AEngineTestTickActor
+
+---
+
+ATargetPoint
+
+월드에 배치하는 단순 위치 마커
+AI 패트롤 포인트 등에 사용
+
+---
+---
+---
+
+UStaticMesh 
+
+에셋
+패키지에 소속
+여러 인스턴스가 (불변) 데이터를 공유
+
+
+UStaticMeshComponent 
+
+합성
+
+
+AStaticMeshActor 
+
+컴포넌트를 DefaultSubobject로 조립
+월드에 드래그 앤 드롭으로 배치 가능
+Tick, Transform, Replication의 소유 단위
+
+---
+
+UWhat, UWhatComponent, AWhatActor
+
+UGeometryCollection, UGeometryCollectionComponent, AGeometryCollectionActor
+
+UNiagaraSystem, UNiagaraComponent, ANiagaraActor
+
+USoundBase, UAudioComponent, AAmbientSound
+
+UFont, UTextRenderComponent, ATextRenderActor
+
+UGroomAsset, UGroomComponent, AGroomActor
+
+---
+
+에셋 층이 없는 경우
+"공유할" 데이터가 없다
+라이트, 카메라
+공유 에셋이 무의미
+
+
+액터 층이 없는 경우
+UCharacterMovementComponent
+UInputComponent
+
+
+에셋이 여러 삼중항에 공유되는 경우
+UStaticMesh
+UStaticMeshComponent, USplineMeshComponent, UInstancedStaticMeshComponent
+
+---
+
+StaticMesh를 수직으로 관통하면 일곱 개의 층이 드러난다
+
+각 층은 서로 다른 소유권 경계, 스레드 친화성, 생명주기를 갖는다
+
+
+1 에디터 타임 층
+FMeshDescription
+
+임포트하거나 모델링 툴로 편집할 때의 표현
+버텍스/엣지/폴리곤을 속성 배열로 저장
+FRawMesh 후속자
+
+"메시가 아직 확정되지 않은 상태"의 물질화
+이 층은 쿠킹 시 소비되고 런타임에는 존재하지 않는다
+
+---
+
+2 에셋 층
+UStaticMesh
+
+FMeshDescription에서 빌드된 결과물을 
+직렬화 가능한 패키지로 포장한 것
+
+LOD 설정, 머티리얼 슬롯, 콜리전 설정, 라이트맵 해상도 같은 메타데이터를 소유
+
+
+3 렌더 데이터 층
+FStaticMeshRenderData
+
+UStaticMesh가 소유 
+
+FStaticMeshLODResources
+  FStaticMeshSection 
+    FPositionVertexBuffer, FStaticMeshVertexBuffer, FRawStaticIndexBuffer
+
+
+에셋의 메타데이터(머티리얼 슬롯 이름, 에디터 설정 등)와 
+GPU 전송용 바이너리 데이터는 생명주기가 다르다
+
+렌더 데이터는 스트리밍될 수 있고(LOD 0만 먼저 로드), 플랫폼별로 다른 포맷으로 쿠킹되며, 메모리 압력에 따라 언로드될 수 있다
+UStaticMesh 자체의 메타데이터는 항상 메모리에 있지만, 
+FStaticMeshRenderData는 필요할 때만 존재할 수 있다.
+
+---
+
+4 컴포넌트 층
+UStaticMeshComponent
+
+에셋에 대한 참조, 인스턴스별 상태(머티리얼 오버라이드, 트랜스폼, 가시성, 커스텀 데이터),
+물리 바디, 렌더링 등록 상태를 소유
+
+"에셋을 특정 맥락에 바인딩하는 행위"의 물질화
+
+
+5 씬 프록시 층
+FStaticMeshSceneProxy
+
+UStaticMeshComponent가 렌더러에 등록될 때 생성되는 게임 스레드 컴포넌트의 그림자
+FMeshBatch를 생산한다
+FMeshBatch → FMeshDrawCommand → RHI Command 파이프라인
+
+---
+
+6 액터 층
+AStaticMeshActor
+
+
+7 물리 측 분기
+FBodyInstance
+
+---
+
+에디터/런타임 경계
+FMeshDescription은 에디터에서만, FStaticMeshRenderData는 런타임에서만
+쿠킹이 이 경계를 넘는 변환
+
+
+공유/인스턴스 경계 
+UStaticMesh(공유 에셋)와 UStaticMeshComponent(인스턴스별 상태)
+100개의 나무가 하나의 메시를 공유하되 각각 다른 Transform
+
+
+게임 스레드/렌더 스레드 경계
+UStaticMeshComponent(게임 스레드)와 FStaticMeshSceneProxy(렌더 스레드)
+
+
+게임 스레드/물리 스레드 경계
+UStaticMeshComponent와 FBodyInstance
+
+---
+---
+---
+
+SkeletalMesh
+애니메이션 평가 스레드 경계 — 가 추가
+
+---
+
+에디터 타임 층
+FMeshDescription
+
+스킨 웨이트와 본 계층구조라는 두 가지 차원이 추가
+본 계층구조는 FReferenceSkeleton이라는 별도 구조체로 추출
+
+---
+
+에셋 층
+
+StaticMesh에서 에셋 층은 UStaticMesh 하나
+SkeletalMesh에서는 네 개
+
+
+1 USkeleton
+본 계층
+FReferenceSkeleton 소유
++ 메타데이터
+
+"한 캐릭터의 모든 애니메이션 에셋이 공통으로 참조해야 하는 단일 진실의 원천"
+UAnimSequence, UAnimMontage, UAnimBlueprint, USkeletalMesh 모두 USkeleton을 가리킨다
+
+
+2 USkeletalMesh
+USkeleton에 바인딩된 메시 지오메트리
+
+
+3 UPhysicsAsset
+래그돌/물리 시뮬레이션을 위한 물리 바디와 제약의 집합
+
+
+4 UAnimBlueprint (그리고 UAnimBlueprintGeneratedClass)
+애니메이션 로직의 에셋
+StaticMesh는 "행동"이 없었다
+
+---
+
+3. 렌더 데이터 층
+
+FSkeletalMeshRenderData → FSkeletalMeshLODRenderData → FSkelMeshRenderSection
+
+FStaticMeshRenderData → FStaticMeshLODResources → FStaticMeshSection
+
+버텍스 버퍼, 인덱스 버퍼, LOD별 리소스의 삼중 구조
+
+SkeletalMesh의 버텍스 버퍼에는 본 인덱스와 본 웨이트가 추가 스트림으로 존재
+FSkinWeightVertexBuffer
+
+FMorphTargetVertexInfoBuffers가 별도 버퍼로 존재한다
+선택적으로 FClothVertexBuffer가 있을 수 있다
+
+---
+
+4. 컴포넌트 층
+
+세 개의 스레드에 각각 프록시를 파견하는 허브
+
+렌더 스레드에 SceneProxy를
+물리 스레드에 FBodyInstance 배열을
+애니메이션 워커 스레드에 FAnimInstanceProxy를
+
+StaticMesh의 컴포넌트가 두 개의 프록시(렌더 + 물리)를 보내는 것과 비교
+
+---
+
+5. 애니메이션 평가 층 
+
+UAnimInstance(게임 스레드)와 FAnimInstanceProxy(워커 스레드)의 분리
+
+
+6. 씬 프록시 층
+
+SkeletalMesh의 SceneProxy는 본 행렬이 프레임마다 바뀌므로 동적 경로(GetDynamicMeshElements)를 타야 한다
+GPU 스키닝이 활성화된 경우, 본 행렬은 UBO/SSBO로 GPU에 업로드되고 버텍스 셰이더에서 스키닝 계산이 수행된다. 
+
+Uniform Buffer Object
+Shader Storage Buffer Object
+
+---
+
+7. 액터 층
+8. 물리 측 분기
+9. 클로스 시뮬레이션 분기
+
+---
+---
+---
+
+Material/Shader
+
+1 에디터 타임 층
+
+Mesh의 FMeshDescription에 대응하는 
+머티리얼 노드 그래프 — UMaterialExpression
+
+셰이더 컴파일 시 소비되어 HLSL 코드로 변환
+
+"셰이더가 아직 확정되지 않은 상태"(Source)의 물질화
+
+---
+
+2. 에셋 층
+
+UMaterial
+
+셰이딩 모델(Lit, Unlit, Subsurface 등), 블렌드 모드, 양면 여부 같은 구조적 선택과 노드 그래프 전체를 포함
+"마스터" 에셋
+
+
+UMaterialInstance
+
+UMaterial의 파라미터만 오버라이드하는 경량 에셋
+노드 그래프를 소유하지 않고, 부모 머티리얼이 노출한 파라미터의 값만 저장한다
+셰이더 코드는 공유하고 파라미터만 달리하는 것
+
+UStaticMesh(공유)와 UStaticMeshComponent(인스턴스별 오버라이드)의 분리와 동일한 압력에서 태어났지만, 
+에셋 층 안에서 이미 발생했다.
+
+
+UMaterialInstanceDynamic(MID)
+런타임에 코드로 생성되는 파라미터 오버라이드
+UMaterialInstance가 에디터에서 사전 제작되는 에셋이라면, 
+MID는 "실행 중에 머티리얼 색상을 빨간색으로 바꾸겠다"는 런타임 행위
+
+패키지에 직렬화되지 않고, 요청 시 컴포넌트 레벨에서 생성되어 GC가 회수할 때까지 산다
+
+
+그래프 변경(셰이더 재컴파일, 초 단위)
+파라미터 프리셋 변경(에셋 교체, 밀리초)
+파라미터 값 변경(유니폼 업로드, 마이크로초)
+
+---
+
+3. 컴파일된 셰이더 층 
+
+Mesh에서 FStaticMeshRenderData가 "GPU가 소비할 수 있는 형태로 정리된 기하 데이터"
+Material에서는 **FMaterialShaderMap이 "GPU가 실행할 수 있는 형태로 컴파일된 셰이더 프로그램"**
+
+
+FMaterial
+UMaterialInterface가 GetRenderProxy()를 통해 FMaterialRenderProxy를 반환
+FMaterialRenderProxy가 FMaterial을 참조
+
+
+FMaterialResource
+셰이더 permutation 공간의 한 점에 해당하는 컴파일 결과물
+UMaterial 하나가 수십 개의 FMaterialResource를 소유할 수 있다
+
+
+FMaterialShaderMap
+머티리얼이 사용되는 모든 패스(베이스 패스, 뎁스 패스, 섀도우 패스, 벨로시티 패스 등)와 
+모든 버텍스 팩토리(스태틱 메시, 스켈레탈 메시, 스플라인 메시, 랜드스케이프 등)의 조합 집합
+
+하나의 머티리얼이 베이스 패스에서 StaticMesh와 SkeletalMesh에 모두 쓰일 수 있으므로, 각 조합마다 별도 셰이더가 필요하다. 
+이 조합 폭발이 UE의 셰이더 컴파일이 느린 근본 원인이다
+
+
+FShader
+개별 셰이더 프로그램(버텍스 셰이더, 픽셀 셰이더 등)의 래퍼
+아래에 FRHIShader가 있고, 이것이 플랫폼별 네이티브 셰이더 객체(ID3D12PipelineState, VkShaderModule)에 매핑
+
+
+기하 데이터는 "컴파일"되지 않는다. 버텍스 버퍼는 포맷 변환과 최적화를 거치지만, 프로그램으로 변환되지는 않는다. 
+Material의 셰이더 층은 "고수준 기술(description)에서 기계어로의 변환"이라는 컴파일러 단계가 추가된다
+이 변환이 플랫폼 × 퀄리티 × 패스 × 버텍스팩토리의 곱집합 차원에서 수행된다
+
+---
+
+4 컴포넌트 층의 부재
+
+Material은 자신의 전용 컴포넌트를 갖지 않고 (e.g. UMaterialComponent)
+UMeshComponent(또는 UDecalComponent, UPrimitiveComponent 등)의 슬롯에 참조로 꽂힌다.
+
+Material은 공간적 맥락이 자신의 것이 아니라 Mesh의 것이다
+머티리얼은 독립적으로 월드에 존재하지 않고, 반드시 어떤 표면 위에 존재한다
+
+---
+
+5. 렌더 스레드 프록시 층
+FMaterialRenderProxy
+
+UMaterialInterface::GetRenderProxy()가 반환
+
+렌더 스레드가 머티리얼 파라미터 값을 읽는 경로
+
+---
+
+6. 물리 측 — 부재
+
+머티리얼은 시각적 속성(색, 거칠기, 노멀)이지 물리적 속성(마찰, 반발)이 아니다
+물리적 표면 속성은 UPhysicalMaterial이라는 별도 에셋이 담당
+
+시각적 표면 기술과 물리적 표면 기술이 완전히 독립된 계통으로 분화
+UStaticMesh의 머티리얼 슬롯과 UBodySetup의 물리 머티리얼 슬롯에서 각각 참조됨으로써 메시 위에서 합류
+
+---
+---
+---
+
+Sound 
+
+
+1 에디터 타임 / 임포트 타임
+
+원본 비압축 PCM 데이터를 에디터 전용 벌크 데이터로 보존
+플랫폼에 따라 다른 코덱(ADPCM, Opus, Vorbis, 플랫폼 네이티브)으로 재인코딩해야 하기 때문
+Mesh에서 FMeshDescription이 플랫폼별로 다른 버텍스 포맷으로 쿠킹되는 것과 동형
+
+---
+
+2. 에셋 층
+
+USoundWave
+
+인코딩된 오디오 데이터의 직렬화 컨테이너
+USoundWave의 데이터는 스트리밍 가능하다. 
+긴 배경음악은 전체를 메모리에 올리지 않고 청크 단위로 디코딩하면서 재생한다
+UStaticMesh의 FStaticMeshRenderData가 LOD 스트리밍을 지원하는 것과 동형
+스트리밍의 축이 공간(LOD 거리)이 아니라 **시간(재생 위치)**
+
+
+USoundCue
+
+여러 USoundWave를 노드 그래프로 논리 조합
+
+UMaterial의 노드 그래프는 컴파일되어 셰이더로 변환
+USoundCue의 노드 그래프는 런타임에 인터프리팅
+
+둘 다 "기본 데이터 에셋(텍스처/사운드웨이브)을 노드 그래프로 조합하여 최종 출력을 합성"
+
+
+UMetaSoundSource
+
+오디오 DSP 노드 그래프를 정의
+USoundCue와 달리 컴파일 경로를 갖는다
+
+
+세 에셋 모두 "재생하면 오디오 출력을 생산한다"는 단일 인터페이스를 공유
+반면 StaticMesh와 SkeletalMesh는 렌더링 경로가 다르므로(GPU 스키닝 유무) 공통 부모를 가지지 않는다
+
+---
+
+3. 쿠킹/인코딩 층
+FByteBulkData, FStreamedAudioChunk 
+인코딩된 오디오 바이트의 선형 청크 배열
+
+Mesh의 FStaticMeshRenderData
+버텍스/인덱스 버퍼의 복잡한 중첩 구조 
+
+플랫폼별 인코딩이 여기서 발생
+Material의 FMaterialResource는 퀄리티 × 피처 레벨로 퍼뮤테이션
+
+---
+
+4. 컴포넌트 층
+UAudioComponent
+
+Material은 표면 없이 존재할 수 없는 기생적(속성적) 개념
+Sound는 공간의 한 점에서 독립적으로 방출되는 현상
+
+---
+
+5. 오디오 렌더 스레드 프록시 층 
+
+Mesh에서 렌더 스레드 경계가 FPrimitiveSceneProxy를 낳았고, 
+SkeletalMesh에서 애니메이션 워커 스레드 경계가 FAnimInstanceProxy를 낳았다
+
+게임 스레드의 UAudioComponent가 Play()를 호출하면, 오디오 엔진(FAudioDevice)이 FActiveSound를 생성한다. 
+FActiveSound는 "현재 재생 중인 사운드 하나"의 오디오 렌더 스레드 측 표현이다
+
+FActiveSound 아래에 FWaveInstance 배열이 있다
+
+---
+
+6. 믹싱/라우팅 층
+
+개별 소리들이 USoundSubmix를 통해 계층적으로 라우팅되고, 
+각 서브믹스에서 이펙트 체인(리버브, EQ, 컴프레서 등)이 적용된 후, 
+최종적으로 마스터 서브믹스에서 합산되어 출력된다
+
+소리는 합산 가능(additive)하지만 시각은 그렇지 않기 때문이다. 
+100개의 소리는 하나의 출력으로 믹스되어야 하지만, 
+100개의 메시는 각각 독립적으로 래스터라이즈된다 (예외: 반투명)
+
+---
+
+7. 공간화 층
+FAudioSpatialization 
+
+8. 액터 층
+AAmbientSound
+
+
+---
+---
+---
+---
+---
+---
+
+BlueprinVM이 범용 게임 로직을 처리하는 것과 달리, 
+RigVM은 본 트랜스폼 조작에 특화된 타입 시스템과 명령어 집합을 갖는다
+Control Rig와 AnimGraph의 백엔드
+
+
+Model-View-ViewModel 플러그인
+UI 아키텍처 패턴
+UMG 위젯(View)과 게임 데이터(Model) 사이에 ViewModel 층을 두어 양방향 바인딩을 제공
+
+
+Mass Entity Framework
+Entity Component System 패턴의 UE 구현
+UMassProcessor가 시스템(로직), FMassFragment가 컴포넌트(데이터)
+
+
+Optimus
+컴퓨트 셰이더 기반 변형(deformer) 그래프 시스템
+Material Editor가 "표면 외관의 그래프 편집"이라면, Optimus는 "표면 형태의 그래프 편집"
+
+
+DMX — Digital Multiplex
+무대 조명 제어의 산업 표준 프로토콜
+UE에서 물리적 조명 기구를 실시간 제어한다.
+
+
+MVR 
+조명 디자인 교환 포맷(GDTF/MVR)
+조명 디자이너의 가상 무대 설계를 UE에 임포트
+
+
+OSC — Open Sound Control
+네트워크를 통해 실시간 파라미터를 교환하는 프로토콜
+라이브 퍼포먼스, 인터랙티브 설치 등에서 사용
+
+
+Interchange 
+UE5의 차세대 에셋 임포트/익스포트 프레임워크
+FBX/USD/GLTF 등을 통합된 파이프라인으로 처리
+기존 UFactory 기반 임포트를 대체
+
+
+LiveLink 
+실시간 스트리밍 데이터를 UE에 연결하는 프레임워크
+모캡, 페이셜 캡처, 가상 카메라 등
+
+---
+---
+---
+
+분류 II: 타입 시스템 및 리플렉션
+
+UField
+UClass, UStruct, UFunction, UProperty(FProperty로 이전)
+
+UBlueprintCore / UBlueprintGeneratedClass
+Blueprint는 UEdGraph(노드 그래프)로 편집되고, 
+UBlueprintGeneratedClass(UClass 서브클래스)로 컴파일된다
+
+UInterface
+C++ 다중 상속을 UObject 시스템에서 에뮬레이션하기 위한 메커니즘
+
+---
+
+분류 IV: 에셋 임포트/익스포트 시스템
+
+UFactory
+레거시 임포트 시스템의 베이스
+FBX, PNG, WAV 등 각 포맷별로 UFactory 서브클래스
+
+UExporter는 그 역방향
+
+
+Interchange 계열
+임포트를 "번역(Translation) → 중간 표현(Intermediate Graph) → 팩토리 생성"의 3단계로 분리한 것
+새 포맷 지원은 Translator만 추가하면 되고, 새 에셋 타입 지원은 Factory만 추가하면 된다
+
+
+Datasmith 계열
+건축/제조 도메인의 대규모 씬 임포트에 특화
+
+---
+
+분류 XX: 네트워킹
+
+UNetDriver
+UIpNetDriver
+
+UChannel
+UActorChannel, UVoiceChannel
+
+
+Iris Replication System
+UReplicationBridge / UReplicationDriver / UReplicationSystem
+
+---
