@@ -1,0 +1,1100 @@
+물리적 사건(사용자가 버튼을 눌렀다)이 의미론적 사건(캐릭터가 점프했다)으로 변환되어야 하는데, 
+이 변환에 필요한 정보가 단일 장소에 존재하지 않는다
+
+어떤 키가 눌렸는지는 OS가 알고, 
+그 키가 무엇을 의미하는지는 매핑 에셋이 알고, 
+그 의미를 누가 수신해야 하는지는 Player-Controller-Pawn 체인이 안다
+
+입력 처리란 본질적으로 분산된 정보의 런타임 Join이다
+
+---
+
+저장소(Store)들과 그 스키마
+
+FKey 
+물리적 신호의 정규화된 식별자
+
+Windows에서 입력의 발생지는 Win32 메시지 펌프(WM_KEYDOWN, WM_INPUT 등)
+이 원시 신호들은 플랫폼 종속적이고 이질적
+
+UE는 이를 FKey라는 단일한 이름 공간으로 정규화
+
+FKey는 EKeys::SpaceBar, EKeys::Gamepad_FaceButton_Bottom 같은 열거형 값
+물리적 입력 이벤트의 Primary 식별자 역할
+
+여기에 저장되는 것은 "무엇이 눌렸는가"라는 사실
+
+---
+
+FInputDeviceId / FPlatformUserId
+IPlatformInputDeviceMapper
+FGenericPlatformInputDeviceMapper
+
+물리적 장치 N번은 플랫폼 사용자 M에게 귀속된다는 관계를 보관
+게임패드 0번이 Player 1의 것이고, 게임패드 1번이 Player 2의 것
+
+---
+
+ULocalPlayer 
+
+UGameInstance가 소유하는 배열
+
+이 배열의 크기가 곧 로컬 플레이어 수이다
+
+각 ULocalPlayer는 하나의 FPlatformUserId와 연결
+  FPlatformUserId → ULocalPlayer
+
+"장치 N → 플랫폼 사용자 M → 로컬 플레이어 객체 L"이라는 체인이 구성된다
+
+---
+
+APlayerController 
+
+ULocalPlayer와 1:1로 연결
+
+"이 플레이어가 현재 어떤 Pawn을 소유하는가", 
+"어떤 InputComponent 스택을 가지는가" 
+
+현재 런타임 세션 컨텍스트를 보관
+
+접속(로컬 플레이어 생성)과 함께 생기고, 
+게임 내 상태 전이(Possess/UnPossess)에 따라 갱신된다
+
+---
+
+UEnhancedInputLocalPlayerSubsystem 
+
+ULocalPlayer에 대한 서브시스템
+로컬 플레이어당 하나씩 존재
+
+Enhanced Input의 실질적 처리 엔진
+
+현재 활성화된 UInputMappingContext들을 보관
+AddMappingContext/RemoveMappingContext 호출이 이 테이블을 갱신하는 DDL 연산
+
+매 Tick마다 원시 입력을 받아 "매핑 → 수정 → 트리거평가"의 파이프라인을 실행한다
+
+---
+
+UInputMappingContext (IMC) 
+
+FKey → UInputAction의 관계를 정의하는 에셋
+
+구조적으로 중요한 것은 IMC가 에셋(UObject)이라는 점이다. 
+즉, 매핑 관계가 런타임 코드가 아니라 직렬화된 데이터로 존재한다. 
+
+매핑이 코드에 박혀 있었다면 이 모든 것이 재컴파일을 요구했을 것이다
+정보를 데이터로 분리함으로써 런타임 유연성이 생긴다
+
+---
+
+UInputAction (IA) 
+
+의미론적 행위의 타입 선언
+
+ValueType(Bool, Axis1D, Axis2D, Axis3D)
+
+---
+
+UInputModifier 
+
+변환 함수 저장소
+독립 UObject로 존재하여 재사용 가능하다
+
+---
+
+UInputTrigger 
+
+술어(Predicate) 저장소
+데이터베이스의 WHERE 절에 해당한다
+
+Trigger는 내부 상태를 가질 수 있다
+단순한 순수 함수가 아니라 상태를 가진 필터이다
+(Hold의 경우 경과 시간을 추적)
+
+---
+
+UEnhancedInputComponent 
+
+"UInputAction X가 Triggered 상태가 되면 함수 F를 호출하라"는 바인딩을 정의 및 보관
+
+앞선 모든 과정이 "IA_Jump가 Triggered됐다"는 사실을 산출하면, 
+이 컴포넌트가 해당 사실을 구체적 함수 호출로 변환한다
+
+---
+
+InputComponent
+
+PlayerController의 것, Pawn의 것, UI의 것
+
+---
+
+1단계: 신호 정규화 (Raw → FKey)
+
+Win32 메시지 루프에서 FWindowsApplication이 원시 메시지를 수신하고
+FSlateApplication에 FKey + 값(아날로그의 경우 float)의 형태로 전달한다
+
+이질적 소스(WM_INPUT, XInput, DirectInput)로부터 공통 스키마(FKey, float)로의 정규화
+
+---
+
+2단계: 장치-플레이어 귀속 (FKey → ULocalPlayer)
+
+입력 이벤트에는 FInputDeviceId가 태깅되어 있고, 
+IPlatformInputDeviceMapper를 통해 FPlatformUserId로 변환된 후, 
+UGameInstance의 LocalPlayer 배열에서 해당 플레이어를 찾는다
+
+FInputDeviceId -> DeviceMapper -> ULocalPlayer
+
+---
+
+3단계: FKey × IMC → UInputAction
+
+UEnhancedInputLocalPlayerSubsystem이 해당 플레이어의 활성 IMC 목록을 순회하면서
+FKey를 각 IMC의 매핑 엔트리와 대조한다
+
+FKey가 매칭되면 해당 엔트리의 UInputAction이 식별된다
+
+---
+
+4단계: 값 변환 (Modifier 적용)
+
+(IA, Value) 쌍에 대해, 해당 매핑에 부착된 UInputModifier 체인이 순차 적용
+DeadZone, Scalar, Negate
+최종 FInputActionValue가 산출
+
+---
+
+5단계: 트리거 평가 (WHERE 절)
+
+UInputTrigger 체인이 평가
+
+각 Trigger는 ETriggerState(None, Ongoing, Triggered)를 반환하고, 
+복수 Trigger의 결과가 조합 규칙에 따라 합산되어 최종 ETriggerEvent가 결정된다
+
+순수 관계 대수로는 표현 불가능하고
+스트림 처리 엔진의 윈도우 함수(window function over time)에 더 가까운 의미론이다.
+
+---
+
+6단계: 바인딩 IA × TriggerEvent → Callback
+
+최종적으로 산출된 (IA, FInputActionValue, ETriggerEvent) 튜플
+InputComponent 스택을 순회하며, 매칭되는 바인딩(IA, ETriggerEvent → Delegate)을 찾아 호출한다
+
+---
+
+HW_Signal(DeviceId, RawValue)
+
+FPlatformKeyMapper(RawValue -> FKey, Value)
+
+DeviceMapper(DeviceId → PlatformUserId)
+
+GameInstance(PlatformUserId → ULocalPlayer)
+
+ULocalPlayer.Subsystem
+  ActiveIMCs(FKey → IA, Modifiers[], Triggers[])
+  (Value, Modifiers[])  →  FinalValue
+  Triggers[].Evaluate(FinalValue) 
+
+InputComponentStack(IA, TriggerEvent → Delegate)
+Delegate.Execute(AccumulatedValue)
+
+---
+---
+---
+
+매 Tick의 전수조사
+
+Enhanced Input은 이벤트 구동이 아니다.
+
+"A키가 눌렸다"는 이벤트가 파이프라인을 타고 흘러가는 것이 아니라,
+UEnhancedInputLocalPlayerSubsystem이 매 Tick마다 모든 활성 매핑을 전수조사한다
+
+활성 IMC 목록에 등록된 모든 FEnhancedActionKeyMapping 엔트리를 순회
+각 엔트리는 (FKey, UInputAction*, Triggers[])의 조합
+각 엔트리의 FKey에 대해 "지금 이 키의 값이 무엇인가"를 읽는다
+
+스페이스바를 꾹 누르고 있으면 매 Tick마다 value=1.0이 읽히고, 떼고 있으면 매 Tick마다 value=0.0이 읽힌다
+이벤트가 아니라 상태의 반복 샘플링이다.
+
+이 값을 해당 엔트리의 Trigger 체인에 넣는다
+Trigger는 내부 상태를 가진 객체이므로, 이전 Tick에서의 축적된 정보(Hold 시간, 이전 프레임의 키 상태 등)와 현재 값을 조합하여
+ETriggerState 셋 중 하나를 반환한다: None, Ongoing, Triggered.
+
+---
+
+Trigger의 반환값 자체가 아니라 **이전 Tick의 반환값에서 현재 Tick의 반환값으로의 전이(transition)**가 
+최종 ETriggerEvent를 결정한다
+  이전 Tick에서 None이었는데 현재 Triggered이면 → ETriggerEvent::Triggered
+  이전 Tick에서 None이었는데 현재 Ongoing이면 → ETriggerEvent::Started
+  이전에도 Ongoing이고 현재도 Ongoing이면 → ETriggerEvent::Ongoing. 
+  이전에 Ongoing이나 Triggered였는데 현재 None이면 → ETriggerEvent::Completed (또는 조건에 따라 Canceled)
+
+즉, Trigger가 보관하는 것은 "발화 여부"가 아니라 "현재 상태"이고, 상태 전이가 이벤트를 생성한다
+
+---
+
+PlayerController는 BuildInputStack()을 통해 현재 유효한 UInputComponent들의 우선순위 정렬 배열을 구성한다
+  PlayerController 자신의 InputComponent
+  현재 Possess하고 있는 Pawn의 InputComponent
+  PushInputComponent()를 호출하여 삽입된 액터의 InputComponent(UI 위젯이나 차량 등)
+
+---
+
+각 UEnhancedInputComponent 안에는 바인딩 목록이 있다
+바인딩 하나는 (UInputAction*, ETriggerEvent, Delegate)의 튜플이다
+
+서브시스템이 (IA_Jump, Value, Triggered)라는 결과를 산출하면, 
+스택을 위에서부터 훑으며 IA_Jump + Triggered에 매칭되는 바인딩을 찾아 호출한다
+
+---
+
+PlayerController가 어떤 Pawn을 Possess하고 있는지를 알기 때문에 그 Pawn의 InputComponent를 스택에 포함시킬 수 있고, 
+PlayerController 자체가 ULocalPlayer에 연결되어 있기 때문에 서브시스템이 이 스택을 발견할 수 있다
+
+---
+
+(서브시스템 → LocalPlayer → Controller) - (Controller → 현재 Pawn → InputComponent)
+
+---
+---
+---
+
+전투맥락에서 A→B→C 순차 입력 시 DelegateM 발화
+
+UInputAction
+
+IA_ComboA, IA_ComboB, IA_ComboC는 각각 개별 키 입력을 표상
+IA_CombatComboABC
+
+
+UInputMappingContext
+
+IMC_Combat
+
+FKey=A → IA_ComboA, Trigger=Pressed(단발)
+FKey=B → IA_ComboB, Trigger=Pressed
+FKey=C → IA_ComboC, Trigger=Pressed
+FKey=C → IA_CombatComboABC, Trigger=UInputTriggerCombo
+
+UInputTriggerCombo는 ComboActions 배열을 가지며, 
+여기에 [IA_ComboA, IA_ComboB, IA_ComboC]를 순서대로 등록한다
+
+각 스텝에는 TimeToPressKey(다음 키를 누르기까지 허용 시간)를 설정할 수 있다.
+
+
+Pawn의 InputComponent 바인딩
+
+SetupPlayerInputComponent()에서
+
+EnhancedInput->BindAction(IA_CombatComboABC, ETriggerEvent::Triggered, this, &ACombatPawn::ExecuteComboM);
+
+
+전투 진입 시 게임 로직이 Subsystem->AddMappingContext(IMC_Combat, 1)을 호출
+이 순간부터 IMC_Combat의 네 매핑 엔트리가 매 Tick 전수조사 대상에 포함된다
+
+---
+
+프레임 100
+
+플레이어가 A키를 누른다. 서브시스템이 전수조사를 수행한다. 첫째 엔트리(A→IA_ComboA, Pressed)를 평가한다. A키의 현재 값은 1.0이다.
+
+Pressed 트리거는 "이전 Tick에서 0이었고 현재 1인가?"를 확인한다. ETriggerState::Triggered를 반환한다. 
+이전 Tick에서 이 엔트리의 상태는 None이었으므로, 전이 None→Triggered가 ETriggerEvent::Triggered를 산출한다. 
+
+
+넷째 엔트리(C→IA_CombatComboABC, ComboTrigger)도 평가된다. 
+C키의 현재 값은 0.0이다. 하지만 ComboTrigger는 C키 값만 보는 것이 아니라 자신의 ComboActions 배열의 상태를 추적한다. 
+이 Tick에서 IA_ComboA가 Triggered된 것을 감지하고, 내부 상태를 "Step 1 완료, Step 2 대기 중"으로 전이한다. 
+하지만 콤보가 완성되지 않았으므로 ETriggerState::Ongoing을 반환한다. 
+이전 None→현재 Ongoing이므로 ETriggerEvent::Started. 
+
+---
+
+프레임 141
+
+플레이어가 B키를 누른다. 둘째 엔트리(B→IA_ComboB, Pressed)가 Triggered를 산출한다. 
+
+넷째 엔트리의 ComboTrigger가 IA_ComboB의 Triggered를 감지하고, 
+내부 상태를 "Step 2 완료, Step 3 대기 중"으로 전이한다. 여전히 Ongoing.
+
+---
+
+프레임 170
+
+플레이어가 C키를 누른다. 셋째 엔트리(C→IA_ComboC, Pressed)가 Triggered를 산출한다. 
+
+넷째 엔트리의 ComboTrigger가 IA_ComboC의 Triggered를 감지한다. 
+모든 스텝이 순서대로 완료되었다. ETriggerState::Triggered를 반환한다. 
+이전 Ongoing→현재 Triggered이므로 ETriggerEvent::Triggered.
+
+서브시스템이 (IA_CombatComboABC, Value, Triggered)를 산출한다
+InputComponent 스택을 순회하며 (IA_CombatComboABC, Triggered)에 매칭되는 바인딩을 찾는다.
+
+CombatPawn의 InputComponent에서 (IA_CombatComboABC, ETriggerEvent::Triggered)를 발견한다. DelegateM이 발화된다
+
+---
+---
+---
+
+수영맥락에서 A를 3초 누르고, B를 3초 누르면 DelegateN 발화
+
+UInputAction 
+
+IA_SwimHoldA(ValueType: Bool), IA_SwimHoldB(ValueType: Bool), 
+IA_SwimComboAB
+
+
+IMC_Swimming
+
+FKey=A → IA_SwimHoldA, Trigger=UInputTriggerHold(HoldTimeThreshold=3.0초)
+FKey=B → IA_SwimHoldB, Trigger=UInputTriggerHold(HoldTimeThreshold=3.0초)
+FKey=B → IA_SwimComboAB, Trigger=UInputTriggerCombo.
+  ComboActions [IA_SwimHoldA, IA_SwimHoldB]
+
+---
+
+바인딩
+
+EnhancedInput->BindAction(IA_SwimComboAB, ETriggerEvent::Triggered, this, &ASwimPawn::ExecuteSwimAbilityN);
+
+---
+
+수영 모드 진입 시 Subsystem->AddMappingContext(IMC_Swimming, 1) 호출
+
+---
+
+프레임 200
+플레이어가 A키를 누르기 시작한다. 첫째 엔트리(A→IA_SwimHoldA, Hold 3초)를 평가한다. A의 현재 값은 1.0.
+Hold 트리거는 내부 타이머를 시작한다
+
+셋째 엔트리의 ComboTrigger도 매 Tick 평가된다. 
+IA_SwimHoldA가 아직 Triggered가 아니라 Ongoing이다. 
+ComboTrigger는 Triggered를 기다리므로 아직 Step 1 미완료
+
+---
+
+프레임 381
+Hold 트리거의 누적 시간이 3.0초를 넘긴다
+IA_SwimHoldA가 Triggered되었다
+
+셋째 엔트리의 ComboTrigger가 IA_SwimHoldA의 Triggered를 감지한다
+ETriggerState::Ongoing
+
+---
+---
+---
+
+마을맥락에서 A와 D를 동시에 누르면 DelegateO 발화
+
+UInputAction 
+
+IA_TownKeyA, IA_TownChordAD
+
+
+IMC_Town
+FKey=A → IA_TownKeyA, Trigger=Down
+FKey=D → IA_TownChordAD
+Trigger=UInputTriggerChordAction(ChordAction=IA_TownKeyA)
+
+---
+---
+---
+
+InputMapping + Context
+입력 매핑들의 맥락
+
+InputMapping(FKey→IA+Trigger 엔트리)을 묶어서 하나의 단위로 활성화/비활성화할 수 있게 하는 껍질
+
+"하나의 단위로" => 일관성, 원자성
+
+개별 행을 하나씩 삭제하고 새 행을 하나씩 삽입 
+매핑이 50개면 50번의 원자적 조작이 필요
+그 중간 상태에서 일관성이 깨질 수 있다
+
+Context는 "이 번역 규칙들이 유효한 상황의 이름"
+
+---
+
+Context
+해석 함수의 암묵적 매개변수
+
+interpretation(symbol, context) → meaning
+
+기호만으로 의미가 결정되면 context-free
+기호 외의 정보가 필요하면 context-sensitive
+
+---
+
+CPU Context (Context Switch)
+
+동일한 MOV EAX, [RBX+8] 명령이라도 RBX의 값, 페이지 테이블에 따라 다른 물리 메모리에 접근한다
+Context Switch란 이 암묵적 매개변수 세트를 교체하는 것
+
+동일한 명령어가 교체 후에는 완전히 다른 의미(다른 물리 메모리 접근)를 갖게 된다.
+
+---
+
+Graphics Context (D3D Device Context, OpenGL Context)
+
+동일한 DrawIndexed(36, 0, 0) Draw Call 호출이라도, 
+어떤 셰이더가 바인딩되어 있는지, 어떤 렌더 타겟에 그리는지, 블렌드 스테이트가 무엇인지에 따라
+다른 시각적 결과를 산출한다
+
+이 바인딩된 상태의 총체가 Graphics Context이다
+Draw Call 자체에는 "어떤 셰이더로"라는 정보가 없다
+
+---
+---
+---
+
+Context의 존재는 "이 시스템에는 암묵적 의존성이 있다"는 것의 구조적 표지이다
+
+---
+---
+---
+
+class UInputTriggerCustom : public UInputTrigger
+    ETriggerState 
+    UpdateState_Implementation (
+        const UEnhancedPlayerInput* PlayerInput,
+        FInputActionValue ModifiedValue,
+        float DeltaTime
+    ) virtual override
+
+
+
+UpdateState가 매 Tick 호출되며, 세 가지 인자를 받는다
+
+PlayerInput은 현재 플레이어의 전체 입력 상태에 대한 접근을 제공한다(다른 키의 상태도 조회 가능)
+
+ModifiedValue는 이 매핑의 FKey에 대해 Modifier 체인을 거친 후의 값이다
+
+DeltaTime은 이전 Tick으로부터의 경과 시간이다
+
+
+서브시스템이 이전 Tick의 반환값과 현재 반환값의 전이에서 ETriggerEvent를 추출한다
+
+---
+
+class UInputTriggerCustom : public UInputTrigger
+    GetTriggerType() => Implicit, Explicit, Blocker
+  
+Implicit은 "이 조건이 만족되지 않으면 발화를 차단한다" (AND)
+Explicit은 "이 조건이 만족되면 발화할 수 있다"(OR)
+Blocker는 "이 조건이 만족되면 발화를 금지한다"(NOT)
+
+---
+
+class UInputTriggerCustom : public UInputTrigger
+
+내부 상태
+  내부에 TArray로 타임스탬프 히스토리를 보관하면 "최근 N초 동안의 입력 패턴"에 기반한 판정이 가능하다.
+ 
+PlayerInput 의 풍부한 정보
+  "마우스가 화면 왼쪽 절반에 있을 때만 이 키 입력을 인정한다"
+
+GetWorld()를 통해 월드에 접근
+  "플레이어의 체력이 30% 이하일 때만 이 입력이 활성화된다"
+  AbilitySystemComponent에서 특정 태그 보유 여부를 확인
+
+---
+---
+---
+---
+---
+---
+---
+---
+---
+
+메시지 펌프 진입
+
+내부에서 Win32의 PeekMessage/TranslateMessage/DispatchMessage 루프를 돌려 OS 메시지 큐를 한 번에 소진한다
+스페이스바를 눌렀으므로 큐에 WM_KEYDOWN 메시지가 들어 있다.
+
+FEngineLoop::Tick()
+FWindowsPlatformApplicationMisc::PumpMessages(bFromMainLoop=true)
+
+
+---
+
+DispatchMessage가 WndProc을 호출한다
+
+FEngineLoop::Tick()
+FWindowsPlatformApplicationMisc::PumpMessages(...)
+
+FWindowsApplication::AppWndProc(hwnd, msg=WM_KEYDOWN, wParam=VK_SPACE, lParam=...)
+FWindowsApplication::ProcessDeferredMessage(DeferredMessage)
+
+---
+
+플랫폼 키코드 → FKey 변환
+
+FEngineLoop::Tick()
+FWindowsPlatformApplicationMisc::PumpMessages(...)
+
+FWindowsApplication::AppWndProc(hwnd, msg=WM_KEYDOWN, wParam=VK_SPACE, lParam=...)
+FWindowsApplication::ProcessDeferredMessage(DeferredMessage)
+
+FSlateApplication::OnKeyDown(KeyCode=0x20, CharacterCode=0x20, bIsRepeat=false)
+FInputKeyManager::GetKeyFromCodes(KeyCode=0x20, CharCode=0x20) → EKeys::SpaceBar
+
+---
+
+FKeyEvent 구조체 생성
+(Key=EKeys::SpaceBar, CharacterCode=0x20, ModifierKeys={bShift=false, bCtrl=false, bAlt=false}, bIsRepeat=false)
+
+Slate 이벤트 라우팅
+
+UI 위젯이 포커스를 잡고 소비하면 여기서 끝나고, 소비하는 위젯이 없으면 뷰포트로 내려간다.
+
+
+FEngineLoop::Tick()
+FWindowsPlatformApplicationMisc::PumpMessages(...)
+FWindowsApplication::AppWndProc(hwnd, msg=WM_KEYDOWN, wParam=VK_SPACE, lParam=...)
+FWindowsApplication::ProcessDeferredMessage(DeferredMessage)
+
+FSlateApplication::OnKeyDown(KeyCode=0x20, CharacterCode=0x20, bIsRepeat=false)
+FSlateApplication::ProcessKeyDownEvent(InKeyEvent)
+
+---
+
+뷰포트 → 로컬 플레이어 매칭
+
+FInputKeyEventArgs
+(Viewport*, InputDevice=FInputDeviceId(0), Key=EKeys::SpaceBar, Event=IE_Pressed, AmountDepressed=1.0, bGamepad=false)
+
+UGameViewportClient는 FInputDeviceId로부터 FPlatformUserId를 조회하고, 그에 매칭되는 ULocalPlayer를 찾는다
+해당 ULocalPlayer의 PlayerController로 전달한다.
+
+
+FEngineLoop::Tick()
+FWindowsPlatformApplicationMisc::PumpMessages(...)
+FWindowsApplication::AppWndProc(hwnd, msg=WM_KEYDOWN, wParam=VK_SPACE, lParam=...)
+FWindowsApplication::ProcessDeferredMessage(DeferredMessage)
+
+FSlateApplication::OnKeyDown(KeyCode=0x20, CharacterCode=0x20, bIsRepeat=false)
+FSlateApplication::ProcessKeyDownEvent(InKeyEvent)
+
+FViewport::InputKey(EventArgs)
+UGameViewportClient::InputKey(EventArgs)
+
+---
+
+내부의 TMap<FKey, FKeyState> KeyStateMap에서 SpaceBar 엔트리를 갱신한다.
+
+FKeyState의 갱신 내용
+  RawValue → (1.0, 0.0, 0.0)
+  bDown → true
+  EventCounts[IE_Pressed] → 1 증가
+
+Params의 내용
+(Key=EKeys::SpaceBar, Event=IE_Pressed, AmountDepressed=1.0, bGamepad=false, InputDevice=FInputDeviceId(0)
+
+
+FEngineLoop::Tick()
+FWindowsPlatformApplicationMisc::PumpMessages(...)
+FWindowsApplication::AppWndProc(hwnd, msg=WM_KEYDOWN, wParam=VK_SPACE, lParam=...)
+FWindowsApplication::ProcessDeferredMessage(DeferredMessage)
+
+FSlateApplication::OnKeyDown(KeyCode=0x20, CharacterCode=0x20, bIsRepeat=false)
+FSlateApplication::ProcessKeyDownEvent(InKeyEvent)
+
+FViewport::InputKey(EventArgs)
+UGameViewportClient::InputKey(EventArgs)
+
+APlayerController::InputKey(Params)
+UEnhancedPlayerInput::InputKey(Params)
+
+---
+---
+---
+
+물리적 키 입력이 KeyStateMap이라는 저장소에 상태로 기록된 것이 전부이다
+실제 처리는 같은 프레임의 월드 틱에서 일어난다
+
+---
+---
+---
+
+월드 틱 → PlayerController 틱 진입
+
+FEngineLoop::Tick()
+UGameEngine::Tick(DeltaTime, bIdleMode=false)
+UWorld::Tick(LEVELTICK_All, DeltaTime)
+
+APlayerController::TickActor(DeltaTime, LEVELTICK_All, ThisTickFunction)
+APlayerController::PlayerTick(DeltaTime)
+
+---
+
+InputStack 구축
+
+
+FEngineLoop::Tick()
+UGameEngine::Tick(DeltaTime, bIdleMode=false)
+UWorld::Tick(LEVELTICK_All, DeltaTime)
+
+APlayerController::TickActor(DeltaTime, LEVELTICK_All, ThisTickFunction)
+APlayerController::PlayerTick(DeltaTime)
+
+APlayerController::TickPlayerInput(DeltaTime, bGamePaused=false)
+APlayerController::BuildInputStack(OUT InputStack)
+
+---
+
+1
+모든 IMC의 매핑 엔트리들을 우선순위 순으로 정렬하여 
+EnhancedActionMappings라는 flat 배열로 병합
+
+2 "매 Tick 전수조사"
+[for each Mapping in EnhancedActionMappings]
+FInputActionInstance 업데이트
+
+3 Trigger 평가
+[for each (Action, ActionData) in ActionInstanceData]
+UInputTriggerPressed::UpdateState_Implementation(PlayerInput, ModifiedValue, DeltaTime)
+
+4 ETriggerEvent 계산
+[for each (Action, ActionData) in ActionInstanceData]
+
+5
+InputComponent 스택 순회 → 바인딩 매칭 → 델리게이트 발화
+
+FEngineLoop::Tick()
+UGameEngine::Tick(DeltaTime, bIdleMode=false)
+UWorld::Tick(LEVELTICK_All, DeltaTime)
+
+APlayerController::TickActor(DeltaTime, LEVELTICK_All, ThisTickFunction)
+APlayerController::PlayerTick(DeltaTime)
+
+APlayerController::TickPlayerInput(DeltaTime, bGamePaused=false)
+UEnhancedPlayerInput::ProcessInputStack(InputStack, DeltaTime, bGamePaused=false)
+
+---
+---
+---
+---
+---
+---
+
+1 메시지 펌프 진입
+
+FEngineLoop::Tick() → void
+FWindowsPlatformApplicationMisc::PumpMessages(bFromMainLoop=true) → void
+
+
+PumpMessages는 static 함수이다
+
+---
+
+2 DispatchMessage → WndProc
+
+AppWndProc는 Win32에 등록된 윈도우 프로시저 콜백이다
+PumpMessages 내부의 DispatchMessage가 OS를 경유하여 호출한다
+엔진 코드가 호출하는 것이 아니라 OS가 콜백한다
+
+AppWndProc는 FWindowsApplication의 static 멤버 함수이고, 
+내부에서 FWindowsApplication 인스턴스를 static 변수로 참조하여 
+FWindowsApplication::ProcessDeferredMessage를 호출한다
+
+
+FEngineLoop::Tick()
+FWindowsPlatformApplicationMisc::PumpMessages(...)
+
+FWindowsApplication::AppWndProc(hwnd, msg=WM_KEYDOWN, wParam=VK_SPACE, lParam=...) → LRESULT
+FWindowsApplication::ProcessDeferredMessage(DeferredMessage) → int32
+
+---
+
+3 플랫폼 키코드 → FKey 변환
+
+FWindowsApplication은 생성 시 GenericApplication::MessageHandler 멤버 포인터를 보유한다. 
+이것이 FSlateApplication 인스턴스를 가리킨다
+소유는 아니고 인터페이스를 통한 참조이다
+
+FWindowsApplication::ProcessDeferredMessage 내부에서 MessageHandler->OnKeyDown(...) 형태로 호출한다
+
+
+FInputKeyManager는 싱글턴이다
+FInputKeyManager::Get()으로 접근한다
+
+
+FEngineLoop::Tick()
+FWindowsPlatformApplicationMisc::PumpMessages(...)
+FWindowsApplication::AppWndProc(...)
+
+FWindowsApplication::ProcessDeferredMessage(...)
+FSlateApplication::OnKeyDown(KeyCode=0x20, CharacterCode=0x20, bIsRepeat=false) → bool
+FInputKeyManager::GetKeyFromCodes(KeyCode=0x20, CharCode=0x20) → FKey (EKeys::SpaceBar)
+
+---
+
+FSlateApplication::ProcessKeyDownEvent는 Slate 위젯 트리에서 이벤트를 소비하는 위젯을 찾지 못하면, 
+현재 포커스된 SViewport 위젯을 통해 FViewport에 도달한다
+
+FViewport는 ViewportClient라는 멤버 포인터(FViewportClient*)를 보유한다
+이것이 UGameViewportClient 인스턴스를 가리킨다.
+
+
+FEngineLoop::Tick()
+FWindowsPlatformApplicationMisc::PumpMessages(...)
+FWindowsApplication::AppWndProc(...)
+FWindowsApplication::ProcessDeferredMessage(...)
+
+FSlateApplication::OnKeyDown(...) → bool
+FSlateApplication::ProcessKeyDownEvent(InKeyEvent) → FReply
+FViewport::InputKey(EventArgs) → bool
+UGameViewportClient::InputKey(EventArgs) → bool
+
+---
+
+UGameViewportClient는 PlayerController를 직접 멤버로 보유하지 않는다. 경로는 이렇다
+
+1
+GetWorld()->GetGameInstance()
+GetWorld()는 UObject의 메서드로, Outer 체인을 타고 UWorld를 찾는다
+
+2
+UGameInstance는 *TArray<ULocalPlayer> LocalPlayers**를 멤버로 소유한다
+
+3
+FInputDeviceId → FPlatformUserId 변환 후, LocalPlayers 배열에서 매칭되는 ULocalPlayer를 찾는다
+
+4
+ULocalPlayer::GetPlayerController(GetWorld())
+ULocalPlayer는 PlayerController를 WeakObjectPtr로 참조한다
+
+
+APlayerController는 PlayerInput이라는 멤버 포인터를 소유
+
+
+FEngineLoop::Tick()
+FWindowsPlatformApplicationMisc::PumpMessages(...)
+FWindowsApplication::AppWndProc(...)
+FWindowsApplication::ProcessDeferredMessage(...)
+FSlateApplication::OnKeyDown(...)
+FSlateApplication::ProcessKeyDownEvent(...)
+FViewport::InputKey(...)
+
+UGameViewportClient::InputKey(EventArgs)
+APlayerController::InputKey(Params) → bool
+UEnhancedPlayerInput::InputKey(Params) → bool
+
+---
+---
+---
+---
+---
+---
+
+월드 틱 → PlayerController 틱 진입
+
+1
+FEngineLoop는 UGameEngine을 멤버로 보유하지 않는다
+GEngine이라는 전역 포인터(UEngine*)를 통해 접근한다
+GEngine은 엔진 초기화 시 설정
+
+2
+UGameEngine은 WorldList(TIndirectArray<FWorldContext>)를 멤버로 소유한다. 
+Tick에서 활성 월드를 순회하며 각 UWorld::Tick()을 호출한다.
+
+3
+UWorld는 등록된 모든 액터의 틱 함수를 FTickTaskManager를 통해 관리한다.
+APlayerController는 월드에 스폰된 액터이므로 틱 대상 목록에 등록되어 있다
+
+4
+TickActor → PlayerTick → TickPlayerInput
+전부 self 호출이다
+
+
+FEngineLoop::Tick() 
+UGameEngine::Tick(DeltaTime, bIdleMode=false) → void
+UWorld::Tick(LEVELTICK_All, DeltaTime) → void
+
+APlayerController::TickActor(DeltaTime, LEVELTICK_All, ThisTickFunction) → void
+APlayerController::PlayerTick(DeltaTime) → void
+APlayerController::TickPlayerInput(DeltaTime, bGamePaused=false) → void
+
+---
+
+InputComponentStack 배열을 채울 때 접근하는 대상들
+  PushInputComponent()로 외부에서 추가된 컴포넌트들이 들어 있다.
+
+this->InputComponent — APlayerController 자신의 멤버
+this->GetPawn()->InputComponent
+
+
+FEngineLoop::Tick()
+UGameEngine::Tick(...)
+UWorld::Tick(...)
+APlayerController::TickActor(...)
+APlayerController::PlayerTick(...)
+APlayerController::TickPlayerInput(...) 
+
+APlayerController::BuildInputStack(OUT InputStack) → void
+
+---
+
+FEngineLoop::Tick()
+UGameEngine::Tick(...)
+UWorld::Tick(...)
+APlayerController::TickActor(...)
+APlayerController::PlayerTick(...)
+APlayerController::TickPlayerInput(...) 
+
+UEnhancedPlayerInput::ProcessInputStack(InputStack, DeltaTime, bGamePaused=false) → void
+
+---
+
+UEnhancedPlayerInput::ProcessInputStack 
+
+Step 1: 매핑 재구축
+UEnhancedPlayerInput::RebuildControlMappings() → void
+
+MappingContexts라는 멤버(활성 IMC 목록, FEnhancedActionKeyMapping[])를 소유
+이것을 순회하여 EnhancedActionMappings(flat 배열)를 재구축한다
+
+
+Step 2: 전수조사
+
+[for each Mapping in EnhancedActionMappings]
+  this->GetKeyState(Mapping.Key) → FKeyState*
+
+  [for each Modifier in Mapping.Modifiers]
+     Modifier->ModifyRaw(this, CurrentValue, DeltaTime) → FInputActionValue
+
+  this->ActionInstanceData.FindOrAdd(Mapping.Action)
+
+
+GetKeyState는 멤버인 TMap<FKey, FKeyState> KeyStateMap을 조회한다. 
+Phase 0에서 갱신해둔 저장소
+
+---
+
+Step 3: Trigger 평가
+
+[for each (Action, ActionData) in this->ActionInstanceData]
+    [for each Trigger in ActionData.Triggers]
+        Trigger->UpdateState(this, ActionData.Value, DeltaTime) → ETriggerState
+
+
+Step 4: 상태 전이 → ETriggerEvent 추출
+
+[for each (Action, ActionData) in this->ActionInstanceData]
+
+    GetTriggerEvent(ActionData.LastTriggeredState, CurrentState) → ETriggerEvent
+    
+    ActionData.TriggerEvent = Event
+    ActionData.LastTriggeredState = CurrentState
+
+
+전부 자기 멤버 내의 연산이다
+외부 접근 없음
+
+---
+
+Step 5: InputComponent 스택 순회 → 델리게이트 발화
+
+[for i = InputStack.Num()-1 downto 0]
+  UEnhancedInputComponent* IC = Cast<UEnhancedInputComponent>(InputStack[i])
+
+  [for each Binding in IC->GetActionEventBindings()]
+      if (Binding.Action == Action && Binding.TriggerEvent == ActionData.TriggerEvent)
+          Binding.Delegate.Execute(ActionData.Value) // AMyPawn::OnJump(ActionData.Value) 실행
+
+---
+---
+---
+
+StaticMeshComponent, CapsuleComponent
+FPrimitiveSceneProxy, FBodyInstance
+
+이 컴포넌트들은 자기가 속한 Actor의 맥락에서, 
+해당 도메인의 글로벌 시스템(Scene, PhysicsScene)에 
+개별적으로 등록되어 참여한다
+
+---
+
+PlayerController::BuildInputStack
+
+매 틱마다 여러 Actor에 흩어져 있는 InputComponent들을 수거하여 하나의 배열로 조립한다
+그리고 이 배열을 UEnhancedPlayerInput::ProcessInputStack()에 매개변수로 넘긴다
+
+
+InputComponent의 존재 이유는 다른 객체(PlayerInput)가 수거해 가서 읽을 바인딩 목록을 보관하는 것이다
+InputComponent는 Actor 자신이 읽지 않고, 매 틱마다 PlayerController라는 배달부가 와서 수거해 가고, PlayerInput이라는 주방에서 처리된다
+
+---
+
+입력은 **인격적(personal)**이다. 이 세계에 Pawn이 100개 있어도, "이 플레이어"가 Possess한 Pawn의 InputComponent만이 의미가 있다
+
+입력의 관련성은 **소유 체인(PlayerController → Possess → Pawn)**에 의해 결정된다.
+
+"이 플레이어에게 관련된 InputComponent들만 모아라"
+
+공간 쿼리가 아니라 소유 그래프 순회이고, BuildInputStack이 정확히 그 순회를 수행한다
+
+---
+
+렌더링에서는 두 MeshComponent가 겹쳐 있으면 Z-buffer가 해결한다.
+물리에서는 두 바디가 겹쳐 있으면 충돌 해소(solver)가 처리한다. 
+
+각 도메인에 고유한 충돌 해소 메커니즘이 있다.
+
+입력에서 "충돌"은 두 InputComponent가 같은 IA에 대해 바인딩을 가진 경우이다
+이것의 해소 메커니즘이 스택 순서 + bConsumeInput이다
+
+---
+
+UI 오버레이가 작동 메커니즘
+
+인벤토리 창을 열면 PushInputComponent()로 UI의 InputComponent가 스택 최상위에 쌓이고, 
+게임 월드의 입력 바인딩을 가린다
+
+닫으면 Pop되고 게임 입력이 다시 보인다
+
+---
+
+PlayerInput
+
+"이 플레이어의 모든 키의 현재 물리 상태"
+"이 플레이어에게 유효한 모든 매핑 규칙"
+"각 액션의 이전 프레임 평가 상태"
+를 한 곳에 보유하면서, 
+
+매 Tick "물리 상태 × 매핑 규칙 × 이전 상태 → 이벤트"라는 연산을 수행하는 
+상태를 가진 쿼리 엔진이다.
+
+
+InputComponent가 "무엇이 일어나면 무엇을 해라"라는 **선언(바인딩)**을 보관하는 저장소라면,
+PlayerInput은 "지금 무엇이 일어났는가"를 판정하는 기관이다
+
+
+이 분리가 없으면 각 Actor가 자체적으로 키 상태를 폴링하고 트리거를 평가해야 하는데, 
+그러면 우선순위 해소(스택)도, 맥락 전환(IMC)도, 상태 전이 추적(LastTriggeredState)도 
+Actor 단위로 "파편화"되어 "일관성, 원자성"을 유지할 수 없다.
+
+---
+---
+---
+---
+---
+---
+---
+
+각 클래스가 보관하는 정보의 **수명/변화주기**가 다르다.
+
+FKey(EKeys::SpaceBar)는 엔진 빌드 시점에 고정된다
+하드웨어 추상화 층위의 상수이다
+
+
+FKeyState(bDown=true, RawValue=1.0)는 프레임 단위로 변한다
+이번 프레임에 true였다가 다음 프레임에 false가 된다
+1~수 프레임
+
+FEnhancedActionKeyMapping(SpaceBar → IA_Jump, Pressed)은 에셋 수명이다
+에디터에서 만들어져 디스크에 직렬화되고, 게임 실행 중에는 변하지 않는다
+
+
+IMC의 활성/비활성 상태는 게임 상태 전이 수명이다
+수십 초에서 수 분 단위
+
+
+FInputActionInstance의 LastTriggeredState는 인접 프레임 간 수명이다
+이전 Tick의 결과를 현재 Tick까지만 보관하면 되고, 그 이후에는 덮어써진다.
+2 프레임의 연속
+
+
+InputComponent의 바인딩(IA_Jump → OnJump)은 Pawn 수명이다
+SetupPlayerInputComponent()에서 설정되고, Pawn이 파괴될 때까지 유지된다.
+
+
+ULocalPlayer는 세션 수명이다.
+맵이 바뀌어도, Pawn이 죽어도 살아남는다.
+
+
+PlayerController는 월드 수명이다
+맵 전환 시 파괴되고 재생성된다
+ULocalPlayer보다 짧다.
+
+
+UGameInstance는 프로세스 수명이다
+엔진이 시작되면 생기고, 프로세스가 종료될 때 사라진다
+
+---
+
+APlayerController가 UEnhancedPlayerInput을 소유한다
+PlayerController가 파괴되면 PlayerInput도 함께 파괴된다
+PlayerInput은 PlayerController 없이 의미가 없다
+
+UGameInstance가 TArray<ULocalPlayer>를 소유하는 것도 같은 원리이다. 
+로컬 플레이어의 수명은 게임 인스턴스의 수명 안에 포함된다.
+
+---
+
+ULocalPlayer가 APlayerController를 WeakObjectPtr로 참조한다
+ULocalPlayer(세션 수명)가 PlayerController(월드 수명)보다 오래 산다
+맵 전환 시 PlayerController는 파괴되고 새로 만들어지지만, ULocalPlayer는 유지된다
+
+WeakPtr은 이 비대칭적 수명을 표현한다
+
+
+FViewport가 UGameViewportClient를 멤버 포인터로 참조하는 것,
+FWindowsApplication이 FSlateApplication을 MessageHandler로 참조하는 것도 같은 원리이다
+양쪽의 생성/파괴 시점이 독립적이므로 소유가 아니라 참조이다.
+
+---
+
+매개변수 전달
+"이 관계는 이 호출이 지속되는 동안만 유효하다"는 관계
+
+
+왜 UEnhancedPlayerInput이 InputStack을 멤버로 소유하지 않는가? 
+InputStack의 구성은 매 틱 변할 수 있기 때문이다. 
+PushInputComponent/PopInputComponent가 언제든 호출될 수 있고, 
+Possess/UnPossess가 Pawn을 바꿀 수 있다. 
+
+스택의 유효 수명은 한 번의 ProcessInputStack 호출 동안이다. 
+다음 틱에는 다시 BuildInputStack으로 새로 구축해야 한다.
+
+
+만약 PlayerInput이 InputStack을 멤버로 보유했다면, 
+PlayerInput은 "이 스택이 아직 유효한가"를 매 틱 확인해야 하고, 
+스택 변경 시 PlayerInput에게 통지하는 메커니즘이 필요하고,
+PlayerInput이 PlayerController의 Possess 상태를 감시해야 한다
+
+
+즉, PlayerInput이 자기 관심사(입력 평가)가 아닌 것(스택 유효성 관리)까지 책임져야 한다. 
+매개변수 전달은 이 책임을 호출자(PlayerController)에게 남겨둔다
+"스택을 올바르게 구축하는 것은 네 일이고, 나는 받은 스택을 평가만 한다."
+
+---
+
+PlayerController BuildInputStack
+
+"이 플레이어에게 관련된 InputComponent들을 수거하라"는 소유 그래프 순회
+
+"자기 InputComponent"는 자기 멤버이고,
+"현재 Pawn의 InputComponent"는 GetPawn()(자기 멤버 참조)을 통해 접근 가능하고, 
+"Push된 InputComponent"는 자기 멤버 배열이다.
+
+
+UEnhancedPlayerInput ProcessInputStack
+
+이 함수는 "물리 상태 × 매핑 규칙 × 이전 상태 → 이벤트"라는 연산
+
+물리 상태(KeyStateMap)와 매핑 규칙(EnhancedActionMappings)과 이전 상태(ActionInstanceData)를 전부 멤버로 보유
+InputStack만이 외부에서 오고, 그래서 매개변수
+
+
+AddMappingContext가 서브시스템에 있는 이유
+
+IMC의 활성/비활성은 게임 로직이 결정
+게임 로직이 PlayerInput에 직접 접근하는 것은 캡슐화 위반
+
+서브시스템은 PlayerInput의 내부 구조를 감추면서 "매핑 맥락 관리"라는 공개 인터페이스를 제공하는 파사드
+
+---
