@@ -1,0 +1,324 @@
+게임 상태를 단일 값으로 저장하는 대신, 그 값을 구성하는 모든 인과적 기여(causal contribution)를 독립적으로 보존한다
+
+GameplayEffect 하나하나가 "나는 이 속성에 이런 이유로 이만큼 기여하고 있다"는 선언이며
+최종 값은 언제든 이 기여들의 합성으로부터 재계산된다.
+
+상태(state)가 아니라 상태의 근거(ground)를 일급 객체로 다루겠다는 결정
+
+---
+
+GAS가 Add → Multiply → Override라는 정규 순서(canonical ordering)를 부과하는 것은, 
+연산들의 합성에 유일한 결과를 보장하기 위한 제약이다
+
+---
+
+GameplayTag
+
+게임플레이 개념들 사이의 부분순서(partial order)를 런타임에 질의 가능한 형태로 인코딩하는 것
+
+"Damage.Fire"는 "Damage"의 하위 개념이므로, "Damage에 면역"이라는 규칙은 자동으로 화염 데미지도 차단한다.
+
+국소적 개방-폐쇄 구조의 이점을 가져온다
+새로운 태그가 기존 태그의 하위에 삽입되는 순간 기존의 모든 상위-태그 기반 규칙을 자동으로 상속받는다
+기존 코드를 건드리지 않아도 된다
+
+---
+
+AbilitySystemComponent
+
+"누가 이 효과를 발동했는가"(Instigator)와 "누가 이 효과를 받고 있는가"(Target)라는 두 질문에 답하는 하나의 Truth Source
+
+Replication의 단위가 명확
+
+Ability, Effect, Attribute가 각각의 시스템이었다면, 세 시스템 사이의 일관성을 네트워크 지연 하에서 보장하는 것은 
+분산 합의 문제가 되어버린다
+ASC로의 수렴은 이 복잡성을 우회하는 아키텍처적 결정이다.
+
+---
+
+GameplayAbility
+Activate → Tick/Wait → End라는 수명 주기
+그 내부에서 AbilityTask들을 기다릴 수 있다
+
+"3초 동안 시전한 후 데미지를 가한다"와 같은 능력
+시전 시작과 데미지 적용 사이에 수십 프레임이 흘러야 한다
+
+상태 기계를 명시적으로 작성하거나, 실행을 중단했다가 재개할 수 있는 코루틴을 쓰거나.
+
+PlayMontageAndWait, WaitForGameplayEvent 같은 Task들이 
+"이 조건이 충족될 때까지 이 Ability의 실행을 논리적으로 중단한다"는 역할을 수행하며,
+조건 충족 시 콜백을 통해 재개된다
+
+---
+
+조합적 폭발의 길들이기
+
+N개의 능력과 M개의 상태 효과가 있을 때, 이들의 가능한 상호작용은 O(N×M)이다
+여기에 K개의 속성, T개의 태그가 얽히면 공간은 급격히 팽창한다
+
+이 공간을 if-else로 탐색하는 것은 일정 규모를 넘으면 인지적으로 불가능해진다.
+
+
+Effect의 선언적 구조, 
+Tag의 계층적 분류, 
+Modifier의 정규 적용 순서,
+ASC를 통한 소유권 집중, 
+Cue를 통한 시각/청각 피드백의 분리
+
+이 조합 공간을 직교하는 축들로 분해하여, 각 축을 독립적으로 확장할 수 있게 만드는 전략이다
+
+---
+---
+---
+
+GAS의 진입점
+
+ASC->TryActivateAbility(AbilitySpecHandle);
+
+---
+
+FGameplayAbilitySpec
+
+"클래스 참조 + 인스턴스 풀"
+TSubclassOf<UGameplayAbility> Ability
+TArray<UGameplayAbility*>
+
+동일한 능력이 여러 번 동시에 활성화될 수 있는 경우
+
+---
+
+UGameplayAbility CDO
+  FGameplayTagContainer AbilityTags (이 능력을 식별하는 태그)
+  FGameplayTagContainer ActivationRequiredTags
+  FGameplayTagContainer ActivationBlockedTags(이것이 있으면 발동 불가)
+
+ASC 자신이 현재 보유한 태그 집합과 이 조건들이 대조
+
+FActiveGameplayEffectsContainer가 관리하는 활성 이펙트들 각각이 태그를 부여하고 있으며,
+ASC는 이들의 합산된 태그 맵을 FGameplayTagCountContainer GameplayTagCountContainer로 캐싱
+
+---
+
+TSharedPtr<FGameplayAbilityActorInfo> AbilityActorInfo
+  OwnerActor — ASC를 소유하는 액터(예: PlayerState)
+  AvatarActor — 월드에서 실제로 물리적 존재를 가지는 액터(예: Character)
+  AbilitySystemComponent — ASC에 대한 역참조
+  AnimInstance, MovementComponent — AvatarActor로부터 캐싱된 참조들
+
+Owner와 Avatar가 분리
+"게임플레이 상태의 주체"와 "월드에서의 물리적 현현"이 반드시 동일 액터가 아닐 수 있음
+PlayerState가 ASC를 가지면서 Character는 죽었다 살아나는 패턴
+
+---
+---
+---
+
+double-entry bookkeeping의 혁신은, 
+잔액(balance)을 직접 수정하는 것을 금지하고, 
+대신 모든 변경을 분개(journal entry)라는 독립된 기록으로 남기는 것이었다
+각 journal entry는 "언제, 왜, 어떤 계정에서 어떤 계정으로 얼마가 이동했는가"를 나타낸다
+
+잔액은 이 분개들의 합산으로 언제든 재계산 가능하다
+어떤 분개가 잘못되었으면 그것만 취소하면 된다 — 다른 분개들에 영향을 주지 않고.
+
+---
+
+계정(Account) → Attribute. 체력, 마나, 이동속도 같은 수치적 속성. 
+복식부기에서 "현금", "매출", "부채" 등의 분류에 대응
+
+원장(Ledger) → AttributeSet. 관련된 계정들을 하나의 장부로 묶은 것. 
+"전투 관련 속성 원장", "자원 관련 속성 원장"처럼 분류된다.
+
+분개(Journal Entry) → GameplayEffect. "이 계정에 이런 이유로 이만큼 기여한다"는 표지
+Journal Entry가 여러 줄(line item)을 가질 수 있듯, 하나의 Effect는 여러 Modifier를 가진다.
+
+분개의 개별 줄(Line Item) → Modifier. "체력에 +20을 Add한다"라는 하나의 원자적 변경 선언
+
+거래 행위(Transaction) → GameplayAbility
+분개를 생성하는 비즈니스 프로세스 자체
+"물건을 판다"라는 거래 행위(Ability)가 "매출 +100, 재고 -1"이라는 분개(Effect with two Modifiers)를 생성한다
+
+---
+
+Ability ──생성한다──→ EffectSpec ──적용된다──→ ActiveEffect ──수정한다──→ Attribute
+
+---
+
+Modifier는 원자적 변경 단위이다. Effect 내부의 하나의 줄이다
+Effect를 도입하는 이유는, 여러 변경(Modifier)이 하나의 수명주기를 공유해야 하기 때문이다
+Effect가 여러 Modifier를 일관적으로/원자적으로 제거한다
+
+---
+
+UGameplayEffect CDO는 약의 설명서이다 — "이부프로펜 400mg, 경구 복용, 8시간 간격"이라는 정의. 
+FGameplayEffectSpec은 처방전이다 — "환자 김철수에게, 2026년 4월 15일, 박의사가 처방, 7일간 복용"이라는 맥락이 바인딩된 구체적 지시.
+FActiveGameplayEffect는 현재 복용 중인 약
+
+약의 설명서는 영구적이다(에디터 에셋). 
+처방전은 발동 시 생성되어 적용 시 소비된다(스택 프레임 수준의 수명). 
+활성 약은 Duration 동안 살아 있다가 만료되면 사라진다(게임플레이 수준의 수명)
+
+---
+
+Attribute의 정의는 C++ 코드에서
+
+class UMyHealthSet : public UAttributeSet
+    FGameplayAttributeData Health;
+    FGameplayAttributeData MaxHealth;
+
+---
+
+ASC는 GetOwnerActor()를 통해 Owner를 찾고, 
+그 Actor에 부착된 모든 UAttributeSet 서브오브젝트를 수집하여 SpawnedAttributes 배열에 캐싱
+
+Owner와 Avatar가 분리되는 아키텍처
+(예: ASC가 PlayerState에 있고 AttributeSet도 PlayerState에 있으며, Character는 Avatar로만 존재)
+
+---
+
+UGameplayEffect 
+
+어떤 Modifier들을 가지는지, Duration 정책, 스택킹 규칙, 부여할 Tag들, 적용 조건 Tag들
+절차적 로직이 없으므로 데이터만으로 완전히 기술 가능하다
+
+
+UGameplayAbility 
+
+절차적 로직(몽타주 재생, 타겟팅, 이펙트 적용 순서)
+
+---
+---
+---
+
+GAS가 말할 수 있는 문장들: 시스템의 표현력
+
+이 시스템이 표현할 수 있는 자연어 문장들의 목록을 작성
+
+---
+
+"캐릭터A는 체력, 최대체력, 마나라는 속성을 가지고 있다."
+Actor가 UCombatAttributeSet을 서브오브젝트로 소유하고, ASC가 이를 캐싱하고 있다
+
+
+"캐릭터A는 화염구, 자가치유, 구르기라는 능력을 보유하고 있다."
+ASC의 ActivatableAbilities에 세 개의 FGameplayAbilitySpec이 등록되어 있다
+
+
+"캐릭터A는 현재 '독 상태'이고 '전투 중'이다."
+ASC의 GameplayTagCountContainer에 State.Debuff.Poison과 State.InCombat이 카운트 ≥ 1로 존재한다
+
+---
+
+"화염구는 마나가 30 이상이어야 사용 가능하다."
+UGameplayAbility의 Cost로 지정된 UGameplayEffect가 마나 -30의 Modifier를 가지며, 
+마나가 부족하면 Cost를 지불할 수 없어 발동이 실패한다.
+
+
+"기절 상태에서는 어떤 능력도 사용할 수 없다."
+모든 Ability의 ActivationBlockedTags에 State.Debuff.Stun이 포함되어 있다
+
+
+"자가치유는 전투 중일 때만 사용 가능하다."
+해당 Ability의 ActivationRequiredTags에 State.InCombat이 있다.
+
+
+"화염구는 3초 쿨다운이 있다. 지금은 쿨다운 중이라 못 쓴다."
+Ability의 Cooldown으로 지정된 UGameplayEffect가 Duration 3초이며 Ability.Fireball.Cooldown 태그를 부여한다. 
+이 태그가 ASC에 존재하는 동안 ActivationBlockedTags에 의해 발동이 차단된다
+
+---
+
+"캐릭터A가 캐릭터B에게 화염구를 맞혀서 50의 화염 피해를 입혔다."
+캐릭터A의 Ability가 FGameplayEffectSpec을 생성(Context에 A가 Instigator로 기록)하고, 캐릭터B의 ASC에 적용. 
+Instant Effect이므로 B의 Health BaseValue가 즉시 -50
+
+
+"캐릭터B에게 지금 3초짜리 독 디버프가 걸려 있다. 매초 10의 피해를 준다."
+B의 ActiveGameplayEffectsContainer에 FActiveGameplayEffect가 등록되어 있고, 
+Period 1초의 Duration Effect로서 매 주기마다 Health -10 Modifier를 실행한다
+
+
+"캐릭터B에게 5초짜리 이동속도 감소 디버프가 걸려 있다. 이동속도가 30% 느려진 상태이다."
+ActiveEffect의 Modifier가 MoveSpeed에 Multiply 0.7을 적용 중. 
+이 Effect가 만료되면 Modifier가 제거되고 MoveSpeed의 CurrentValue가 재계산되어 원래 값으로 복원된다
+
+
+"독 디버프가 2번 중첩되어 있다. 매초 피해가 20으로 올랐다."
+UGameplayEffect의 Stacking 정책이 StackCount에 따라 Magnitude를 스케일하도록 설정되어 있다
+
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
