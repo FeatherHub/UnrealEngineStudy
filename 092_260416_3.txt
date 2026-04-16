@@ -1,0 +1,426 @@
+
+Niagara - GPGPU 스크립팅 플랫폼
+
+---
+
+GPU는 GC 도 모르고, UPROPERTY 리플렉션도 모르고, 가상 함수 디스패치도 모르고, 포인터조차 모른다
+
+Niagara 는 UE 의 표준 인프라 바깥으로 빠져나가 자기만의 작은 런타임을 구축한다
+
+자기 언어를 갖고, 자기 컴파일러를 갖고, 자기 VM 을 갖고, 자기 타입 시스템을 갖고, 자기 메모리 레이아웃을 갖는다
+
+---
+
+System, Module, Emitter, Particle
+
+"에미터에 모듈을 쌓아 파티클을 스폰한다"는 멘탈 모델
+
+---
+
+Houdini 의 VOP/VEX 어휘와 유체 시뮬레이션 코드베이스의 관용어
+
+Simulation Stage, Grid2D, Grid3D, Data Interface, Attribute, Neighborhood Grid
+
+
+연기 볼륨을 시뮬레이션하려면 Grid3D 라는 추상이 필요하고,
+다중 패스 이터레이션을 표현하려면 Simulation Stage 라는 개념이 필요
+
+---
+
+UPROPERTY 는 UObject 인스턴스의 필드
+Attribute 는 배열의 한 열
+
+---
+
+UNiagaraDataInterface가 노출하는 메서드는 Niagara 스크립트에서 호출 가능해야 하고, GPU 에서도 호출 가능해야 한다.
+
+---
+---
+---
+
+Niagara 
+
+기존 실행 모델로는 표현 불가능한 데이터 병렬 시뮬레이션을 수행하기 위해, 
+자기만의 언어·컴파일러·VM·메모리 레이아웃·타입 시스템을 구축한 시스템
+
+---
+---
+---
+
+머티리얼
+
+입력은 UV, 월드 좌표, 노멀, 버텍스 컬러, 시간, 텍스처 샘플
+출력은 BaseColor, Metallic, Roughness, Normal, Emissive 등 고정된 슬롯 집합
+
+입력도 고정이고, 출력도 고정이고, 
+실행 컨텍스트도 고정 (버텍스 셰이더, 픽셀 셰이더)
+
+---
+
+Niagara 
+
+파티클이 언제 태어나는가
+태어날 때 무엇을 들고 있는가
+매 프레임 어떻게 변하는가
+언제 죽는가
+죽으면서 무엇을 남기는가
+다른 파티클과 어떻게 상호작용하는가
+외부 세계와 어떻게 상호작용하는가
+어떻게 그려지는가
+
+---
+
+머티리얼은 엔진이 정한 고정 스키마를 채운다
+
+렌더링 파이프라인이 머티리얼로부터 어떤 값을 기대하는지 알고 있고, 머티리얼 저자는 그 빈칸을 채운다
+
+
+Niagara 
+
+스키마가 개방된 시스템
+
+그 개방성을 관리할 어휘 — 네임스페이스, Data Interface, Attribute
+
+---
+
+Niagara 의 "주기"들
+
+System Spawn, System Update, 
+Emitter Spawn, Emitter Update, 
+Particle Spawn, Particle Update, Particle Event Handler, 
+Simulation Stage
+
+---
+---
+---
+
+Visual Edit 이 가능해야 한다
+  데이터 기반 유연성
+  빠른 이터레이션
+
+GPU 병렬 인프라를 사용할 수 있어야 한다
+  
+---
+
+System 
+월드에 배치되는 것
+자산으로 저장
+UNiagaraComponent 를 통해 액터에 부착
+여러 Emitter 를 포함
+
+---
+
+Emitter 
+
+불꽃 에미터 하나, 연기 에미터 하나, 잔해 에미터 하나
+세 개의; 에미터들이 한 System 안에서 조합되어 "폭발"을 만든다
+자산으로 저장
+Spawn 규칙, Update 규칙, Renderer, 시뮬레이션 타겟(CPU 혹은 GPU) 을 가진다
+
+---
+
+Particle 
+
+시뮬레이션 대상
+
+자산이 아니라 런타임에만 존재
+Particle은 Emitter 의 SoA 배열 안의 한 슬롯일 뿐이다
+
+만 개의 파티클이 있다면 만 개의 슬롯을 가진 배열들이 있고,
+파티클 하나는 그 배열들의 같은 인덱스 원소들의 묶음이다
+
+System 과 Emitter 는 자산
+Particle 은 "인스턴스"
+
+---
+
+Emitter 
+
+스택에 모듈들을 쌓는다
+스택은 Emitter Spawn, Emitter Update, Particle Spawn, Particle Update 같은 섹션으로 구성되어 있다
+각 섹션은 다른 실행 컨텍스트를 의미한다
+
+---
+
+Script 
+Module Script, Function Script
+
+네임스페이스
+변수의 저장 위치·쓰기 권한·수명을 선언
+
+스크립트는 이 네임스페이스 규약을 지켜 변수에 접근해야 하며, 어기면 컴파일 에러
+
+
+컴파일러는 Niagara Script를 두 백엔드 각각으로 번역한다
+Niagara VM 바이트코드(CPU 용), 다른 하나는 HLSL 컴퓨트 셰이더 소스(GPU 용)
+시뮬레이션 타겟이 CPU 면 전자가, GPU 면 후자가 런타임에서 사용된다.
+
+---
+
+System Tick 이 가장 바깥에서 매 프레임 한 번 돈다.
+그 안에서 각 Emitter 의 Tick 이 돈다
+
+Emitter Tick 의 Spawn 단계에는 새로 태어난 파티클에 대해 Particle Spawn Script를 실행한다 (초기화)
+Emitter Tick 의 Update 단계는 살아있는 모든 파티클에 대해 Particle Update Script 를 실행한다
+
+이 중첩된 루프가 파티클 시뮬레이션의 시간 구조다
+
+---
+
+CPU 실행 경로 는 Niagara VM 위에서 돈다
+
+Niagara VM은 SIMD 벡터화되어 있다
+한 명령어가 4개 혹은 8개의 파티클의 상태를 동시에 처리한다
+실행은 Worker Thread Pool 에서 이뤄진다
+
+---
+
+GPU 실행 경로 는 컴퓨트 셰이더를 디스패치한다
+
+게임 스레드에서 Emitter 가 "이 프레임에 몇 개를 스폰하고 싶다" 는 의사를 렌더 스레드로 넘기면, 
+렌더 스레드가 컴퓨트 디스패치를 큐에 넣는다
+
+GPU 는 워크그룹 단위(보통 64 혹은 128 스레드) 로 파티클들을 병렬 처리한다
+파티클 데이터는 GPU 메모리 버퍼에 상주하며 CPU 로 Read-back되지 않는 것이 원칙이다 (프레임 스톨 방지)
+
+---
+
+한 Emitter 는 자신이 선언한 각 Attribute 마다 하나의 배열을 가진다.
+
+Particles.Position 은 FVector 배열, Particles.Color 는 FLinearColor 배열, Particles.Age 는 float 배열
+
+배열의 길이는 살아있는 파티클 수와 같고, 파티클 하나의 "정체"는 이 모든 배열에서 같은 인덱스 원소들의 묶음이다
+파티클이 죽으면 그 인덱스는 회수되고 재사용된다
+
+---
+
+Simulation Stage
+확장 메커니즘
+
+기본 실행 모델은 "모든 파티클에 한 번씩 Update" 지만, 
+유체·반응-확산·볼류매트릭 시뮬레이션은 다중 패스와 그리드 반복을 요구한다
+
+
+이 Simulation Stage 메커니즘을 통해 Niagara 는 파티클 엔진을 넘어 범용 GPGPU 스크립팅 플랫폼으로 확장될 수 있다
+
+---
+
+Event 
+
+한 Emitter 가 "파티클이 방금 죽었다" 같은 사건을 브로드캐스트하면 
+다른 Emitter 의 Event Handler Script 가 실행된다
+
+체인 반응(피격 → 파편 스폰 → 파편 낙하 후 먼지 스폰) 을 공유 상태로 표현하지 않고 pub-sub 으로 분리한다
+
+CPU 에서는 간단한 이벤트 버퍼로, GPU 에서는 원자 연산 기반 링버퍼로 구현된다.
+
+---
+
+파티클은 월드의 메시 위에서 태어나야 하고, 
+캐릭터의 본을 따라가야 하고, 
+음악에 맞춰 터져야 하고, 
+물리 오브젝트와 충돌해야 한다
+
+
+UNiagaraDataInterface 
+
+각 인터페이스는 Niagara Script에서 호출 가능한 메서드 집합을 선언한다
+각 Data Interface는 CPU 측 구현(VM 에서 호출) 과 GPU 측 구현(HLSL 함수를 셰이더 링크 시 주입) 을 동시에 제공한다
+
+Static Mesh DI 는 GetTriPosition(TriangleIndex) 을, 
+Skeletal Mesh DI 는 SampleBoneTransform(BoneIndex) 을, 
+Physics Volume DI 는 Raycast(Start, End) 를 제공한다
+
+---
+
+User 네임스페이스 Parameter
+게임 로직 → 시뮬레이션 방향의 단방향 통로
+Blueprint 에서 Set Niagara Variable (Vector) 를 호출해 User.Target 에 값을 주입
+시뮬레이션은 이 값을 매 틱 관찰한다
+
+
+일반적으로 Niagara → 게임 로직은 비싸고 권장되지 않는다
+DataChannel 
+
+---
+
+Renderer 
+시뮬레이션 결과를 특정한 시각 표현으로 변환
+
+Sprite Renderer 는 각 파티클을 카메라를 향하는 사각형으로 그린다
+Mesh Renderer 는 각 파티클에 인스턴스 메시를 배치한다(GPU 인스턴싱을 활용)
+Ribbon Renderer 는 같은 에미터의 파티클들을 시간순으로 이어 리본을 그린다
+Beam Renderer 는 두 점 사이에 지글거리는 광선을 그린다
+Light Renderer 는 각 파티클을 동적 라이트로 만든다
+
+Volumetric Renderer, Decal Renderer, Component Renderer 등
+
+
+Renderer 는 자기가 필요한 Attribute 목록을 계약으로 선언
+
+Sprite Renderer 는 Position, Color, SpriteSize, SpriteRotation 을 요구
+Mesh Renderer 는 Position, MeshOrientation, Scale, MeshIndex 를 요구
+
+시뮬레이션은 누가 그 Attribute 를 소비할지 모르는 채로 채우고, 
+Renderer 는 누가 그 Attribute 를 채웠는지 모르는 채로 소비한다
+
+---
+
+시뮬레이션 타겟
+
+둘 중 하나를 선택 가능
+에디터에서 뷰포트 프리뷰를 볼 때, CPU 에미터는 CPU 에서 시뮬레이션되어 렌더링되고, GPU 에미터는 GPU 에서 시뮬레이션되어 렌더링된다
+
+하지만 어떤 모듈이나 Data Interface 는 CPU 에서만 혹은 GPU 에서만 지원된다
+복잡한 레이캐스트 DI 는 CPU 전용일 수 있고, 고급 Neighbor Grid 는 GPU 전용일 수 있다
+
+---
+
+Script
+"C++ 재컴파일 없이 사용자가 기능을 정의한다"라는 기능적 성격
+
+Niagara Script 는 에디터에서 작성·편집·컴파일되며 엔진 재빌드 없이 파티클 거동을 정의한다
+
+---
+
+사용자가 그린 Niagara 그래프는 먼저 HLSL 텍스트로 생성되고, 그 텍스트가 다시 컴파일된다
+직접 HLSL 을 쓸 수 있는 Custom HLSL 노드도 제공된다
+
+---
+
+Niagara 내부에서 "스크립트" 라는 단어는 두 용례로 쓰인다
+
+자산 단위로서의 Script — UNiagaraScript 자산
+
+다른 하나는 실행 컨텍스트로서의 Script — "Emitter Spawn Script", "Particle Update Script"
+
+---
+
+모듈의 뉘앙스
+
+자유로운 코드 조각이 아니라 정해진 섹션에 부착되는 슬롯형
+
+Cascade 의 용법
+
+"모듈 클래스들을 에미터에 쌓는다"
+즉, 쌓아서 조합하는 기본 블록
+
+---
+
+Niagara GPU 실행 경로와 기존 3D 렌더링 파이프라인의 관계
+같은 GPU 하드웨어 위에서, 프레임 내 다른 단계에 자리 잡는다
+
+
+3D 렌더링 파이프라인
+래스터화 파이프라인
+가시성 결정 → GBuffer 채우기(메시 드로우) → 라이팅 → 포스트프로세스 → 파이널 컴포지트 → 프레젠트
+버텍스 셰이더·픽셀 셰이더가 핵심
+
+Niagara GPU 시뮬레이션은 컴퓨트 파이프라인을 사용
+래스터화와는 별개의 GPU 실행 경로
+래스터화처럼 "삼각형을 그리는" 틀에 갇히지 않는 범용 병렬 계산이다
+
+---
+
+게임 스레드가 틱한다. 
+게임 스레드에서 Niagara System Tick 이 실행되고, 
+각 GPU Emitter 는 "이 프레임에 시뮬레이션해 주세요" 라는 의사를 렌더 스레드로 넘긴다
+(FNiagaraGPUSystemTick 구조체가 큐잉된다)
+
+렌더 스레드가 프레임 렌더링을 시작하면, "PreRender" 단계에서 GPU 파티클 시뮬레이션이 컴퓨트 디스패치된다. 
+이 디스패치는 각 Emitter 의 Particle Update/Spawn 스크립트를 GPU 에서 실행해 Attribute 버퍼를 갱신한다.
+
+
+그 뒤 렌더링 파이프라인의 단계들이 진행된다
+메시 드로우, GBuffer, 라이팅. 
+그 단계들 사이에서 Niagara 파티클이 렌더링된다. 
+
+Translucent Renderer(반투명 파티클 — 불꽃, 연기) 는 Forward Translucent 패스에서, 
+Opaque Renderer 는 GBuffer 패스에서, 
+Light Renderer 는 라이팅에 기여하는 별도 경로로. 
+
+여기서 시뮬레이션에서 갱신된 Attribute 버퍼를 직접 읽어 버텍스 셰이더에 입력으로 넣는다. 
+CPU 로의 Read-back 없이 GPU 메모리 안에서 시뮬레이션 결과가 렌더링 입력으로 흐른다.
+
+
+Niagara GPU 시뮬레이션은
+프레임의 이른 부분에 자기 컴퓨트 디스패치를 수행해 파티클 상태를 갱신하고, 
+프레임의 중간~후반에 자기 파티클 렌더러들이 각자 적절한 패스에 끼어들어 드로우된다
+
+---
+
+현대 GPU 와 현대 그래픽 API(DirectX 12, Vulkan) 는 async compute 라는 기능을 제공한다. 
+컴퓨트 작업을 그래픽스 작업과 동시에 실행 가능하게 한다
+
+---
+
+그러나 VRAM 과 대역폭은 여전히 공유다. 
+파티클 버퍼가 차지하는 메모리는 텍스처·지오메트리와 같은 풀에서 나온다. 
+
+수백만 파티클의 Attribute 배열이 수백 메가바이트를 먹기 시작하면 다른 자원을 압박한다. 
+대역폭도 마찬가지다. 파티클이 매 프레임 모든 Attribute 를 읽고 쓰면 그만큼의 대역폭이 소비되고, 
+그 대역폭은 GBuffer 패스 같은 다른 단계가 쓸 수 있었던 대역폭이다.
+
+---
+---
+---
+
+CPU 시뮬레이션 타겟이 유리하거나 필수적인 지점
+
+게임 로직과의 양방향 통신
+
+투사체 파티클이 적에게 피해를 입혀야 한다
+파티클이 특정 위치에 도달했을 때 게임 이벤트를 트리거해야 한다
+
+GPU 에서 CPU 로 데이터를 읽어오는 Read-back은 파이프라인 스톨을 일으키며
+(GPU 가 해당 프레임 작업을 끝낼 때까지 CPU 가 기다려야 함), 
+실시간 게임에서는 거의 쓸 수 없다
+
+
+소수의 복잡한 파티클
+
+보스 몬스터가 발사하는 10개의 특수 탄환, 캐릭터 손끝의 3개 마법 구 
+
+
+에미터 간 이벤트 패싱은 CPU 에서 훨씬 구현과 디버깅이 쉽고 지연이 예측 가능하다
+CPU 파티클은 Attribute Spreadsheet 로 각 파티클의 상태를 실시간으로 관찰하기가 GPU 보다 쉽다
+
+---
+
+GPU 병렬성은 공짜가 아니다 
+작업을 큐잉하고 디스패치하고 동기화하는 고정 비용이 있고, 
+이 비용은 작업이 충분히 클 때만 병렬성 이득에 묻힌다
+
+---
+
+CPU 시뮬레이션은 현재 프레임 내에서 일어나 즉시 게임 로직에 반영 가능하다. 
+GPU 시뮬레이션은 GPU 가 자기 속도로 처리하고, CPU 가 그 결과를 알려면 다음 프레임(혹은 그 이후) 까지 기다려야 한다.
+
+이 한 프레임의 지연은 게임 로직의 인과성에는 치명적이다. 
+피격 이펙트가 데미지 판정보다 한 프레임 늦으면 시각과 판정이 어긋난다. 
+"보이는 것" 과 "작동하는 것" 이 함께 묶여야 하면 CPU 가 맞다.
+
+---
+
+시뮬레이션 타겟 선택은 "파티클이 게임 세계와 맺는 관계를 설계하는 문제" 다
+
+---
+
+William Reeves 가 1983 년 Lucasfilm 에서 발표한 논문 
+"Particle Systems — A Technique for Modeling a Class of Fuzzy Objects" 에서 확립
+
+물리학의 점입자(point particle) 개념에서 은유를 빌려, 
+각 점이 자기 위치·속도·수명·색을 가지고 독립적으로 진화(evolve) 하는 계(system) 
+
+파티클 시스템의 중심은 "그림을 그리는 것" 이 아니라 "시간에 따라 상태를 변화시키는 것" 이다
+
+"시뮬레이션" 이라는 용어는 바로 이 수치적 진화 의 성격에서 왔다
+수천 개의 입자 각각이 운동방정식을 따라 시간에 대해 진화하고, 그 결과 집단적 거동이 Fuzzy한 자연 현상을 흉내 낸다.
+
+---
+
+같은 시뮬레이션 결과를 여러 방식으로 렌더링할 수 있다
+
+렌더링 없이 시뮬레이션만 쓸 수도 있다(충돌 감지용 파티클, 다른 시스템에 공급되는 데이터)
+
+시뮬레이션을 바꾸지 않고 렌더링만 교체할 수 있다
