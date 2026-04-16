@@ -1,0 +1,811 @@
+타입의 레이아웃
+
+각 필드가 몇 번째 바이트에 있고 (오프셋)
+크기가 얼마이고
+
+타입이 무엇이고
+이름이 무엇이고
+Specifier는 무엇인지
+
+---
+
+컴파일이 끝나면 타입, 이름 정보는 사라진다
+player.Health 는 "player 포인터에 오프셋 N을 더한 주소에서 4바이트를 읽어라"로 치환된다
+바이너리에는 "Health"라는 이름, "float"라는 타입 정보가 없다
+
+---
+
+FField
+  FProperty
+    FNumericProperty, FBoolProperty, 
+    FStrProperty, FNameProperty, FTextProperty
+    FObjectProperty, FStructProperty
+    FArrayProperty, FMapProperty,
+    FDelegateProperty, FEnumProperty
+
+각 subclass 는 자신이 담당하는(represent하는) type 의 특수성/의미를 처리한다
+e.g. 복사, 직렬화
+
+virtual Copy()
+virtual Destroy()
+virtual IsEqual()
+virtual Serialize()
+virtual ToText()
+virtual FromText()
+
+---
+
+UField
+  UEnum
+  UStruct
+    UClass, UFunction, UScriptStruct
+
+---
+
+UStruct
+  UStruct* Parent <- 상속 체인 
+  FField* ChildProperties <- FField->NextProperty 로 연결되는 linked-list
+  int32 Size <- 총 바이트 크기
+  int32 Alignment
+
+---
+
+UFunction : UStruct
+  FProperty* ChildProperties <- 파라미터들과 리턴값
+  FNativeFuncPtr NativeFunc <- C++ 구현
+  EFunctionFlags Flags
+
+bool (int32 Damage, AActor* Instigator)
+=>
+UFunction: UStruct
+  ChileProperties
+  [0]: "Damage, int32"
+  [1]: "Instigator, AActor*"
+  [2]: "ReturnValue, bool"
+
+---
+
+FProperty
+  FName PropertyName <- "Health", "ApplyHealthChange"
+  int32 Offset_Internal <- Base 에서부터 바이트 오프셋
+  int32 ElementSize <- 바이트 크기
+  EPropertyFlags PropertyFlags <- BlueprintVisible | Net | SaveGame ...
+  FProperty* NextProperty
+
+---
+
+float health = MyActor->Health;
+
+FProperty* Prop = MyActorClass->FindPropertyByName("Health");
+float health = (float) Prop->GetValue(MyActor); 
+// return &MyActor + Prop->Offset_Internal
+
+---
+---
+---
+
+UCLASS()
+class AHero : public AActor {
+  UPROPERTY()
+  float Health;
+
+  UFUNCTION()
+  bool TakeDamage(float Amount);
+
+}
+
+
+그림자 분리
+
+class AHero : public AActor {
+  flost Health;
+  bool TakeDamage(float Amount);
+}
+
+UCLASS() {
+  UPROPERTY()
+  UFUNCTION()
+}
+
+C++ 선언에 그림자로 존재
+리플렉션 접근은 네이티브 접근과 동일한 메모리를 건드려야 한다
+
+리플렉션은 같은 세계에 대한 다른 인덱스이다
+
+
+---
+
+UClass "AHero"
+  SuperStruct = UClass "AActor"
+
+  ChildProperties[]
+    [0] FFloatProperty "Health"
+    
+  Children[]
+    [0] UFunction "TakeDamage"
+      ChildProperties[]
+        [0] FFloatProperty
+        [1] FBoolProperty
+
+---
+
+UPROPERTY(EditAnywhere, BlueprintReadWrite) 
+=>
+CPF_Edit | CPF_BlueprintVisible
+
+---
+
+thunk
+UFunction TakeDamage 의 NativeFunc 필드가 가리키는 것
+thunk는 모두 (UObject* Context, FFrame& Stack, void* Result)라는 동일한 형태를 가진다
+
+generated.h
+DEFINE_FUNCTION(AHero::execTakeDamage)
+{
+  ...
+  P_THIS->TakeDamage(...);
+  ...
+}
+
+TakeDamage
+=>
+execTakeDamage
+=>
+TakeDamage
+
+---
+---
+---
+
+UFUNCTION(BlueprintCallable)      
+  C++ 구현, 블루프린트가 호출함
+
+
+UFUNCTION(BlueprintImplementableEvent) 
+  C++가 선언 및 호출, 블루프린트가 구현
+  "C++은 이 함수가 호출되는 '시점'만 결정하고, 실제 '동작'은 전적으로 블루프린트에게 위임한다"
+  UHT가 해당 함수의 Body를 작성함 (BP VM 연동)
+
+
+UFUNCTION(BlueprintNativeEvent)   
+  C++ 기본 구현 (*_Implementation)
+  블루프린트가 오버라이드 가능
+  
+---
+
+UFUNCTION(Exec)
+void KillAllEnemies();
+
+=> 콘솔창에 "KillAllEnemies" 입력 가능
+
+---
+
+리플렉션의 전역 싱글턴 "런타임 도서관"
+
+
+GUObjectArray  (전역 UObject 레지스트리)
+모든 UObject 인스턴스 보관
+UClass, UFunction, UScriptStruct, UEnum 모두 이 안에 있음
+
+FName 이름 테이블
+모든 식별자의 정규화된 저장소
+
+FUObjectHashTables  
+이름 → UObject
+
+---
+
+FName(TEXT("Health"))를 생성할 때마다 전역 FName 풀에 이 문자열이 정규화되어 등록되고, 인덱스가 반환된다
+
+---
+
+GUObjectArray
+
+리플렉션 메타데이터 객체들도 "일반 UObject 인스턴스"와 같은 자리에서 살고 있다
+
+---
+
+이 테이블들 위에 다음 API들이 구축된다
+
+UClass* HeroClass = FindObject<UClass>(nullptr, TEXT("AHero"));
+UClass* HeroClass = FindObjectFast<UClass>(SomeOuter, FName("AHero"));
+
+// 클래스의 모든 인스턴스 순회; FUObjectHashTables.ClassToObjectListMap 사용
+for (TObjectIterator<AHero> It; It; ++It)
+{
+    AHero* Hero = *It;
+}
+
+
+---
+
+UClass* C = AHero::StaticClass();
+
+UClass* C = MyHero->GetClass();
+
+UClass* C = FindObject<UClass>(ANY_PACKAGE, TEXT("AHero"));
+
+---
+
+가능한 질의들
+
+UClass* Parent = C->GetSuperClass()
+
+C->IsChildOf(AActor::StaticClass())
+
+C->FindPropertyByName(FName("Health"))
+
+// 모든 프로퍼티 순회 (상속 포함)
+for (TFieldIterator<FProperty> It(C); It; ++It)
+{
+    FProperty* Prop = *It;
+    FString Name = Prop->GetName();
+    FString TypeName = Prop->GetCPPType();
+}
+
+// 특정 타입의 프로퍼티만 순회
+for (TFieldIterator<FFloatProperty> It(C); It; ++It)
+{}
+
+C->FindFunctionByName(FName("TakeDamage"))
+
+// 모든 함수 순회
+for (TFieldIterator<UFunction> It(C); It; ++It)
+{
+    UFunction* Func = *It;
+}
+
+Prop->GetMetaData(TEXT("Category"))
+Prop->GetFloatMetaData(TEXT("ClampMin"))
+
+---
+
+TFieldIterator는 이중 체인(ChildProperties / Children)의 추상화(Uniform Interface)
+
+---
+
+FName       Name        ← 이 객체의 이름
+UClass*     Class       ← 이 객체의 타입
+UObject*    Outer       ← 소유/포함하는 상위 객체
+int32       Index       ← GUObjectArray에서의 인덱스
+
+같은 이름의 객체가 여러 개 존재할 수 있다
+(Outer, Name) 튜플은 고유하다
+(Outer, Name) 을 통해 경로가 구축된다
+
+---
+
+UObject의 생성자가 호출되는 순간, 
+AddObject가 불려서 
+1 GUObjectArray에 슬롯을 할당받고 Index가 채워진다. 
+2 FUObjectHashTables에 (Outer, Name) → this 매핑이 등록된다
+
+---
+
+생명주기 훅
+
+PostLoad()                ← 디스크에서 로드
+PostEditChangeProperty()  ← 에디터에서 값 편집 
+PostCDOContruct()         ← 에디터에서 CDO 편집
+
+PostInitProperties()      ← 모든 경로에서 불리는 초기화 완료 지점
+
+BeginDestroy()            ← GC 결정 후 파괴 시작 (비동기 리소스 해제 요청)
+IsReadyForFinishDestroy() ← 주기적으로 호출
+FinishDestroy()           ← 메모리 정리
+
+---
+
+리플렉션 인터페이스
+
+GetClass()               
+GetOuter()               
+GetName(), GetFName()    
+GetPathName()            ← Outer 체인을 경로 문자열로 변환
+GetFullName()            ← 경로 + 클래스 이름
+GetOutermost()           ← 최상위 Outer (보통 UPackage)
+GetTypedOuter<T>()       ← 특정 타입의 Outer 탐색
+IsA(UClass*), IsA<T>()                 
+FindFunction(FName)      
+
+---
+
+자기 자신을 바이트로, 바이트에서 자기 자신으로
+
+Serialize(FArchive& Ar)           
+SerializeScriptProperties(Ar)     ← UPROPERTY 필드들 순회
+IsAsset() / IsSelected() / ...    ← 직렬화 범위 판정
+
+---
+
+네트워킹 
+
+GetLifetimeReplicatedProps(TArray<FLifetimeProperty>&)  ← 복제할 프로퍼티 목록을 동적으로 구성
+IsSupportedForNetworking()                              ← 이 객체가 네트워크 대상?
+CallRemoteFunction()                                    
+
+실제 구현은 AActor와 UActorComponent 계층에서 이뤄진다
+
+---
+
+편집기/개발 지원
+
+PreEditChange()               ← 에디터 변경 전
+PostEditChangeProperty()      ← 에디터 변경 후 (단일 프로퍼티)
+PostEditChangeChainProperty() 
+CanEditChange()               
+Modify()                      ← 트랜잭션 시스템과 연동 포인트
+GetDesc()                     
+
+이 훅들에서 파생 상태 갱신(예: 메시를 바꾸면 바운딩 박스 재계산)을 수행
+
+에디터가 객체에 대해 지시를 내리는 것이 아니라 객체에게 질문하는 방식으로 설계되었음을 뜻한다.
+
+---
+
+텍스처에게 BeginPlay를 부르는 것, 머티리얼에게 Tick을 부르는 것
+
+대부분의 UObject가 사용하지 않을 가상 함수를 지불하게 되는 것
+추상화 오류
+
+---
+
+월드에 참여하는 것들 
+  AActor, UActorComponent
+
+월드가 시작되면 BeginPlay가 호출되고, 
+월드가 진행되면 Tick이 호출된다
+
+---
+
+UClass 자체가 UObject이므로, 최초의 UClass를 만들려면 UObject 인프라가 이미 작동해야 한다
+이 부트스트랩 단계에서 "최소한의 UObject"가 필요하다
+
+엔진 시작
+  │
+  ▼
+UObjectBase 수준의 객체들을 만들 수 있다 (리플렉션 없이)
+  │
+  │  ← UClass의 UClass, UObject의 UClass 등을 이 단계에서 부트스트랩
+  │
+  ▼
+리플렉션 시스템 등록 완료
+  │
+  ▼
+이제부터 UObjectBaseUtility의 기능(경로, 타입 검사 등)이 작동
+  │
+  ▼
+UObject의 풀 기능 사용 가능
+
+---
+
+CreateDefaultSubobject<T>(FName, bool bTransient = false)
+GetDefaultSubobjects(TArray<UObject*>&)
+
+---
+
+UObject = 교차로
+
+어떤 시스템이 이 객체에 대해 무엇을 묻는가
+
+GC → Reference 수집, Internal 플래그
+
+직렬화 → Serialize 계열 훅
+
+네트워크 → RPC와 Replication 인터페이스
+
+에디터 → PreEdit/PostEdit 훅, 메타데이터
+
+리플렉션 → GetClass, FindFunction, 필드 접근
+
+인스턴싱 → CreateDefaultSubobject
+
+---
+---
+---
+
+UWorld* GetWorld() const
+
+UObject 본체에 정의되어 있지만 기본 구현은 nullptr을 반환한다
+
+---
+
+Cast<T>(UObject*)
+
+내부적으로 UObject::IsA<T> 검사 후 static_cast를 수행한다
+
+
+ImplementsInterface
+IsA와는 별도로 질의해야 한다
+
+---
+
+IsValid(UObject*)
+
+nullptr도 아니고 가비지 마킹도 안 됐는지
+
+5.0 이전에는 RF_PendingKill 플래그
+
+---
+
+Engine/Engine.h
+
+extern ENGINE_API UEngine* GEngine;
+
+GEngine을 통해 접근하는 것들
+
+---
+
+UE_LOG, UE_LOGFMT
+
+내부적으로 GLog를 호출
+
+DECLARE_LOG_CATEGORY_EXTERN, 
+DEFINE_LOG_CATEGORY
+
+LogDef.h가 기본 로그 카테고리들을 정의하고,
+각 서브시스템이 자신의 카테고리를 추가한다.
+
+---
+
+Misc/AssertionMacros.h
+
+check, ensure, verify 매크로
+
+---
+
+Core 모듈의 정체성
+Source/Runtime/Core/
+
+게임 엔진이 아니어도 필요한 것
+
+HAL (Hardware Abstraction Layer): FPlatformProcess, FPlatformTime, FPlatformMisc, FPlatformMemory..
+플랫폼별로 Windows/Linux/Mac/Android/iOS 구현이 있다
+
+Containers: TArray, TMap, TSet, TLinkedList, TCircularBuffer
+
+Math: FVector, FMatrix, FQuat, FTransform, FBox, FBoxSphereBounds...
+
+Types: FString, FName, FText, FDateTime, FParse, FConfig, FPaths...
+
+Templates: TFunction, TSharedPtr, TWeakPtr, TOptional, TVariant, TTuple...
+
+Async: FEvent, FRunnable, FQueuedThreadPool, FAsyncTask...
+
+로깅, 어서션
+설정 파일 파싱 (GConfig)
+시간 측정
+
+
+이것들은 엔진 외에도 쓸모가 있다
+
+UnrealBuildTool
+UnrealHeaderTool
+ShaderCompileWorker
+CrashReporter
+DatasmithExporter
+
+이 도구들은 "엔진을 실행"하지 않는다. 윈도우도 없고, 월드도 없고, 렌더링도 없다.
+그래서 Core를 엔진 없이도 링크 가능한 하위 계층으로 분리해 둔 것이다
+
+---
+
+CoreUObject 모듈
+Source/Runtime/CoreUObject/
+
+UObject, UObjectBase, UObjectBaseUtility
+
+UClass, UFunction, UScriptStruct, UEnum: 타입 기술자
+
+FField, FProperty 및 모든 서브클래스: 프로퍼티 기술자
+
+GC: IncrementalReachabilityAnalysis, FReferenceCollector, GUObjectArray
+
+직렬화 인프라: FArchive, 패키지 시스템, UPackage, FLinker
+
+UObjectGlobals: NewObject, FindObject, CollectGarbage 같은 전역 함수들
+
+블루프린트 VM의 런타임 부분: FFrame, ProcessEvent, 바이트코드 인터프리터
+
+
+에셋 변환 도구, 빌드 도구 중 UObject 에셋을 읽는 것들 등이 CoreUObject까지만 링크해서 사용할 수 있다.
+
+---
+
+
+Engine 모듈
+Source/Runtime/Engine/
+
+Engine의 역할 "각 전문 시스템을 액터/컴포넌트라는 통일된 언어로 묶는 것"
+렌더링, 물리 별도 모듈
+
+게임플레이 프레임워크   : GameMode, GameState, PlayerController
+월드 시스템             : UWorld, ULevel, UWorldPartition
+렌더링 통합             : UPrimitiveComponent, UMaterialInterface, UMeshComponent, UStaticMeshComponent
+애니메이션 통합         : USkeletalMeshComponent, UAnimInstance
+물리 통합               : UPhysicalMaterial, FBodyInstance
+오디오 통합             : USoundBase, UAudioComponent
+입력 통합               : UInputComponent, UInputSettings
+네트워킹 통합           : UNetDriver, UNetConnection, FRepLayout
+엔진 서브시스템         : UEngine, UGameEngine, UEditorEngine
+Kismet 라이브러리       : BP에 노출되는 수많은 유틸리티
+
+---
+
+Source/Runtime/RHI/
+그래픽 API 추상화 계층
+
+D3D11, D3D12, Vulkan, Metal, OpenGL ES를 동일한 인터페이스로 다룰 수 있게 한다
+
+빌드 시점에 또는 런타임에 적절한 RHI가 선택되어 GDynamicRHI에 연결된다.
+
+---
+
+Source/Runtime/RenderCore/
+렌더링 스레드 인프라와 셰이더 시스템
+
+렌더 커맨드 큐, 셰이더 컴파일러 인터페이스, 셰이더 파라미터 바인딩, 글로벌 셰이더 타입
+게임 스레드와 렌더 스레드를 연결하는 ENQUEUE_RENDER_COMMAND 매크로
+
+---
+
+Source/Runtime/Renderer/
+실제 렌더링 파이프라인
+
+디퍼드 렌더링 패스, 포워드 렌더링 패스, 섀도우 맵 생성, 포스트 프로세스, 
+Lumen, Nanite
+
+
+Renderer는 Engine에서 직접 참조되지 않는다. 
+Engine은 USceneComponent가 Scene에 등록되어 있다는 사실만 알고, 실제 렌더링은 Renderer가 독립적으로 처리한다
+이 분리가 "렌더링 스레드"라는 비동기 경계를 구현 가능하게 한다.
+
+---
+
+Source/Runtime/Experimental/Chaos/
+
+Source/Runtime/Slate/
+Source/Runtime/UMG/
+
+Source/Runtime/Networking/ 
+Source/Runtime/Sockets/
+
+---
+---
+---
+
+게임플레이 프레임워크
+
+이 질문들에 대한 표준 답안
+"이런 것들은 이런 클래스로 표현하고, 이런 관계로 연결하라."
+
+의미론적 어휘 체계
+**"어떤 생각을 프레임워크의 어휘로 표현하는 것"**
+
+
+세계가 있어야 한다
+세계에 뭔가 놓여 있어야 한다 (풍경, 적, 아이템, 플레이어)
+플레이어의 입력을 받아야 한다
+플레이어가 화면으로 세계를 봐야 한다 (카메라)
+게임에는 규칙이 있어야 한다 (승리/패배 조건, 스폰 규칙, 팀 구성)
+여러 플레이어가 있을 수 있다 (로컬, 네트워크)
+게임이 저장되고 로드될 수 있어야 한다
+
+---
+
+UWorld
+  1 Persistent ULevel 
+      AActor[]
+        UActorComponent[]
+  2 AGameMode
+  3 AGameState
+
+UWorldContext
+  World
+  OwningGameInstance
+    LocalPlayer[]
+      APlayerController
+      APlayerState
+
+UGameInstance
+  UWorld
+
+---
+
+각 AActor는 RootComponent를 가진다
+USceneComponent 타입
+이 루트에 다른 SceneComponent들이 자식으로 붙는다.
+
+---
+
+UPrimitiveComponent
+
+FPrimitiveSceneProxy로 렌더 씬에 등록
+FBodyInstance로 물리 씬에 등록
+트레이스/오버랩 질의의 대상
+
+
+충돌 전용 컴포넌트 (충돌형상)은 렌더링 가능한 컴포넌트의 "렌더링 꺼짐" 케이스로 본다
+
+SetVisibility(bool)
+SetCollisionEnabled(ECollisionEnabled::Type)
+SetGenerateOverlapEvents(bool)
+SetHiddenInGame(bool)
+
+---
+
+USceneComponent
+
+한 점의 Transform
+계층 구조
+
+---
+
+UWorld
+  ULevel - .umap
+
+---
+
+사용자 친화성: "맵"은 일반 게임 문화의 표준 용어. (.umap)
+"레벨"도 통용되지만 플랫포머 장르의 뉘앙스가 강함. FPS/RPG/샌드박스에서는 "맵"이 더 자연스러움.
+
+내부 클래스명은 왜 ULevel인가
+엔진 내부에서 "map"이라고 부르면 해시 맵 자료구조와 혼동된다
+
+확장자는 사용자가 보는 개념을 반영한다
+.uasset vs .umap
+
+---
+---
+---
+
+에디터 자산(UBlueprint)
+-> Kismet Compiler
+런타임 클래스(UBlueprintGeneratedClass)
+
+---
+
+UBlueprintGeneratedClass
+
+UberGraphFunction 
+블루프린트의 이벤트 그래프 전체를 담은 하나의 거대한 UFunction
+
+UberGraphFunction (단일 UFunction)
+  ├── BeginPlay 진입점 → 오프셋 0
+  ├── Tick 진입점 → 오프셋 342
+  ├── OnDamaged 진입점 → 오프셋 891
+  └── ... 
+
+이벤트 그래프의 노드들이 지역 변수와 중간 상태를 공유할 수 있게 하기 위함
+
+---
+
+class UBlueprint : public UBlueprintCore
+
+    // 편집 중인 그래프들
+    TArray<UEdGraph*> UbergraphPages;       // 이벤트 그래프 페이지들
+    TArray<UEdGraph*> FunctionGraphs;       // 사용자 정의 함수 그래프들
+    MacroGraphs, DelegateSignatureGraphs
+
+    // 변수 정의들
+    TArray<FBPVariableDescription> NewVariables;
+
+    // 컴포넌트 트리 (에디터 버전)
+    USimpleConstructionScript* SimpleConstructionScript;
+
+    // 컴파일 결과
+    UClass* GeneratedClass;         // → UBlueprintGeneratedClass*
+    UClass* SkeletonGeneratedClass; 
+
+    // 부모 클래스
+    TSubclassOf<UObject> ParentClass;
+
+---
+
+사용자가 블루프린트 에디터에서 Compile 버튼 클릭
+FKismetCompilerContext 생성
+
+[단계 1] SkeletonGeneratedClass 생성 또는 갱신
+  - 변수와 함수의 "서명"만 있는 빈 UClass 생성
+  - 다른 블루프린트가 이 블루프린트를 참조할 수 있도록
+
+[단계 2] UBlueprintGeneratedClass 생성 또는 갱신
+  - 부모 클래스의 FProperty들 상속
+  - FBPVariableDescription들을 FProperty로 변환하여 추가
+
+[단계 3] 함수 그래프, 이벤트 그래프 컴파일
+
+[단계 4] UBlueprintGeneratedClass의 CDO 구성
+
+[단계 5] 후처리
+  - 참조 갱신 (이 클래스를 참조하는 다른 블루프린트들)
+  - 핫 리로드 (Reinstancing)
+
+---
+
+블루프린트 VM은 JIT이 아니다. 각 바이트코드마다 핸들러를 인터프리트한다
+
+단순 산술 연산: 10~50배 느림
+함수 호출: ProcessEvent의 파라미터 마샬링 오버헤드
+
+---
+---
+---
+
+C++ 생성자는 CDO 생성 시에도 실행되고, 일반 인스턴스 생성 시에도 실행된다. 생성자는 매 인스턴스마다 불린다.
+
+[1] 메모리 할당 (엔진이 담당)
+    │
+    ▼
+[2] C++ 생성자 호출
+    - 사용자 작성 생성자 본문 실행
+    - 멤버 초기화, CreateDefaultSubobject 등
+    │
+    ▼
+[3] CDO로부터 프로퍼티 값 덮어쓰기
+    - 생성자가 채운 값 위에 CDO의 값을 복사
+    │
+    ▼
+[4] PostInitProperties 등 생명주기 훅
+
+---
+
+StaticConstructObject_Internal
+
+[1] UClass로 부터 메모리 할당 크기 계산
+[2] GUObjectAllocator로부터 메모리 획득
+[3] GUObjectArray 등록 
+[4] C++ 생성자 호출
+[5] 후속 Hook 호출
+
+Class->ClassConstructor(FObjectInitializer(Object, Template, ...))
+
+---
+
+GUObjectAllocator
+
+GC 시스템, 레지스트리, 해시 테이블이 모두 GUObjectAllocator가 관리하는 객체만 보고 있다
+UObject를 new 로 만들면 GUObjectAllocator에 연결이 안 된다
+
+---
+
+void (*ClassConstructor)(const FObjectInitializer&)
+
+void AMyActor::__DefaultConstructor(const FObjectInitializer& X)
+{
+    new((EInternal*)X.GetObj()) AMyActor(X);
+    // placement new로 이미 할당된 메모리에 대해 C++ 생성자 루틴 실행
+    // vtable이 설정되고, 멤버가 초기화되고, 사용자 생성자 본문이 실행된다
+    // placement new 덕분에 엔진이 메모리 관리를 하면서도
+    // C++ 생성자 기능이 정상 작동한다
+}
+
+// 이후 바인딩
+AMyActor::StaticClass()->ClassConstructor = &AMyActor::__DefaultConstructor;
+
+---
+
+
+엔진 초기화 (한 번)
+AMyActor의 CDO 생성
+  AMyActor::AMyActor() 실행
+  CDO 완성
+  RF_ClassDefaultObject 플래그 설정
+
+에디터의 조작
+  CDO의 Health 멤버가 직접 수정됨
+  디스크에 저장 시 이 값이 기록됨
+
+런타임 스폰
+  AMyActor::AMyActor() 실행
+  CDO로부터 프로퍼티 복사 <- 에디터에서 조작된 값이 오버라이드됨
+
+---
+
+생성자(코드 기반 구조화)와 CDO 복사(데이터 기반 값 설정)의 분리
+
+C++ 객체의 구조적 유효성(vtable, 가상 함수 디스패치)은 생성자 없이는 불가능하다.
+
+반면 "디자이너가 편집 가능한 기본값"은 코드에 하드코딩될 수 없다 - 재컴파일 없이 바뀌어야 하므로
+
+---

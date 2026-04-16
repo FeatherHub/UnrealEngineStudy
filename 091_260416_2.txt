@@ -1,0 +1,388 @@
+Core
+Engine/Source/Runtime/Core
+CORE_API
+
+
+Containers: TArray, TMap, TSet, TLinkedList
+
+Strings: FString, FName, FText,
+
+Math: FVector, FVector2D, FVector4, FMatrix, FQuat, FTransform, FBox
+
+Templates: TSharedPtr, TWeakPtr, TUniquePtr, TFunction, TOptional
+
+HAL: FPlatformProcess, FPlatformTime, FPlatformMisc, FPlatformMemory, FPlatformFile
+
+Async: FEvent, FRunnable, FQueuedThreadPool, FAsyncTask, TFuture
+
+그외에 FDateTime, FParse, FConfigCacheIni, FPaths, FGuid, FOutputDevice, SCOPE_CYCLE_COUNTER, DECLARE_STATS_GROUP
+
+---
+
+CoreUObject
+Engine/Source/Runtime/CoreUObject
+COREUOBJECT_API
+
+UObject 시스템 전체
+리플렉션, GC, 직렬화, 블루프린트 VM
+
+
+UObject 계층: UObject, UObjectBase, UObjectBaseUtility
+
+타입 기술자: UClass, UFunction, UScriptStruct, UEnum, UInterface, UPackage
+
+프로퍼티 계층: FField, FProperty, FFloatProperty...
+
+GC: FGCObject, FReferenceCollector, GUObjectArray, FUObjectHashTables
+
+직렬화: FArchive, FLinker, FLinkerLoad, FLinkerSave, FPackageReader, FPackageWriter
+
+전역 함수: NewObject, FindObject, LoadObject, DuplicateObject... (UObjectGlobals.h)
+
+블루프린트 VM: FFrame, ProcessEvent, 바이트코드 인터프리터
+
+---
+
+Engine
+Engine/Source/Runtime/Engine
+ENGINE_API
+의존성: RHI, RenderCore, InputCore, NetCore, PhysicsCore...
+
+게임플레이 프레임워크:  AController, AGameMode, AGameState, APlayerState, UGameInstance
+
+월드 시스템: UWorld, ULevel, ULevelStreaming, UWorldSubsystem
+
+렌더링 통합: UMaterialInterface, UTexture, USkeletalMesh, FPrimitiveSceneProxy
+
+애니메이션: UAnimInstance, UAnimSequence, USkeleton
+
+물리 통합: FBodyInstance, UPhysicalMaterial
+
+오디오: USoundBase, USoundWave, UAudioComponent
+
+입력: UInputComponent, UPlayerInput
+
+네트워킹: UNetDriver, UNetConnection, FRepLayout
+
+Kismet 라이브러리: UKismetSystemLibrary, UKismetMathLibrary, UGameplayStatics
+
+---
+---
+---
+
+RHI 
+Engine/Source/Runtime/RHI
+RHI_API
+
+리소스 추상화: FRHIBuffer, FRHITexture, FRHISampler, FRHIShader, FRHIRenderTargetView
+
+명령 실행: FRHICommandList, FRHICommandListImmediate, FRHIComputeCommandList
+
+파이프라인 상태: FRHIGraphicsPipelineState, FRHIComputePipelineState
+
+바인딩 리소스: FRHIShaderResourceView, FRHIUnorderedAccessView
+
+전역 핸들: GDynamicRHI, GRHIGlobals
+
+
+Engine/Source/Runtime/Windows/D3D11RHI/, D3D11RHI_API
+Engine/Source/Runtime/D3D12RHI/, D3D12RHI_API
+Engine/Source/Runtime/VulkanRHI/, VULKANRHI_API
+Engine/Source/Runtime/Apple/MetalRHI/, METALRHI_API
+Engine/Source/Runtime/OpenGLDrv/, OPENGLDRV_API
+
+---
+
+RenderCore
+Engine/Source/Runtime/RenderCore
+RENDERCORE_API
+
+렌더링의 "배관"
+
+렌더링 스레드 인프라
+셰이더 컴파일/로드, 
+렌더 그래프 기반 프레임 구성
+
+
+렌더 스레드 관리: ENQUEUE_RENDER_COMMAND, FRenderCommandPipe
+
+셰이더 시스템: FShader, FGlobalShader, FShaderParameters, FShaderResource
+
+셰이더 파라미터 바인딩: FShaderParameterMap, BEGIN_SHADER_PARAMETER_STRUCT
+
+렌더 그래프: FRDGBuilder, FRDGTexture, FRDGBuffer
+
+렌더 타겟 풀: GRenderTargetPool
+
+---
+
+Engine/Source/Runtime/Renderer
+RENDERER_API
+
+실제 렌더링 파이프라인 
+게임 스레드가 갱신한 프록시 정보를 받아 렌더 스레드에서 화면의 픽셀을 생성.
+Renderer가 Engine의 데이터를 간접적으로 소비.
+
+씬 표현: FScene, FPrimitiveSceneInfo, FLightSceneInfo, FStaticMeshBatch
+
+패스 구현: 베이스 패스, 라이팅 패스, 섀도우 패스, 포스트 프로세스
+
+디퍼드/포워드 렌더링: FDeferredShadingSceneRenderer, FMobileSceneRenderer
+
+고급 기능: Lumen (글로벌 일루미네이션), Nanite (가상 지오메트리)
+
+가시성: FViewInfo, 컬링, 오클루전
+
+---
+---
+---
+
+Engine/Source/Runtime/Experimental/Chaos
+CHAOS_API
+
+
+강체: FRigidBodyHandle, FPBDRigidsSolver
+
+충돌 형상: FImplicitObject, FImplicitBox, FImplicitSphere, FImplicitCapsule
+  물리 수학에만 최적화된 표현. 리플렉션 없고, 블루프린트 노출 없고, 에디터 편집 없음
+
+조인트/컨스트레인트: FPBDJointConstraints, FPBDCollisionConstraints
+
+필드: FFieldSystem
+
+파괴: FGeometryCollection
+
+천 시뮬레이션: FClothingSimulation
+
+---
+
+Engine/Source/Runtime/PhysicsCore
+PHYSICSCORE_API
+
+
+FPhysScene
+FPhysicsInterface
+
+---
+---
+---
+
+Engine/Source/Runtime/AnimationCore
+ANIMATIONCORE_API
+
+애니메이션 저수준 수학
+
+
+본(bone) 수학
+IK 솔버 기본형 (2본 IK, FABRIK, CCD)
+FTransformConstraint
+
+---
+
+Engine/Source/Runtime/AnimGraphRuntime
+ANIMGRAPHRUNTIME_API
+
+
+FAnimNode_Base 및 파생 노드들 (Blend, StateMachine, LayeredBlendPerBone 등)
+FAnimInstanceProxy
+UAnimClassInterface
+
+---
+
+Engine/Plugins/Animation/ControlRig/
+CONTROLRIG_API
+
+---
+---
+---
+
+Engine/Source/Runtime/SlateCore/
+SLATECORE_API
+
+Slate 위젯 트리의 기본 타입과 렌더링/레이아웃 수학
+
+
+SWidget 
+FSlateBrush 
+FSlateBrushInfo
+FGeometry, FArrangedWidget
+FSlateStyleSet
+
+---
+
+Engine/Source/Runtime/Slate
+SLATE_API
+의존성: Core, CoreUObject, SlateCore, InputCore, ApplicationCore
+
+
+Slate UI 프레임워크 본체
+에디터 UI의 기반. 또한 런타임 UI의 저수준 옵션
+
+표준 위젯들: SButton, STextBlock, SImage, SBox, SVerticalBox, SHorizontalBox, SOverlay, SScrollBox, SListView
+
+선언적 구문: SNew, SAssignNew, SLATE_ARGUMENT
+
+FSlateApplication 
+
+---
+
+Engine/Source/Runtime/UMG
+UMG_API
+의존성: Engine, Slate, MovieScene, MovieSceneTracks
+
+블루프린트 친화적 UI 시스템
+Slate 위에 리플렉션/블루프린트 통합 계층을 얹은 것
+
+
+UWidget (Slate 위젯의 UObject 래퍼)
+UUserWidget (블루프린트에서 만드는 위젯의 기반)
+UButton, UTextBlock, UImage 등 (S 접두사 위젯들의 UMG 대응)
+UWidgetTree, UWidgetBlueprintGeneratedClass
+
+---
+---
+---
+
+Engine/Source/Runtime/NetCore/
+NETCORE_API
+
+네트워킹 저수준 공통 타입.
+의존성 순환을 피하기 위해 분리됨
+
+---
+
+Engine/Source/Runtime/Networking/
+NETWORKING_API
+
+Engine/Source/Runtime/Sockets/
+SOCKETS_API
+
+OS 소켓 API 래퍼. TCP/UDP 송수신의 플랫폼 독립 계층
+
+FSocket, FInternetAddr, ISocketSubsystem
+
+---
+
+Engine/Plugins/Online/OnlineSubsystem/
+ONLINESUBSYSTEM_API
+의존성: Engine, Sockets
+
+로그인, 친구 목록, 매치메이킹, 업적 등 플랫폼 차이를 감추는 인터페이스
+
+
+IOnlineSubsystem, IOnlineSession, IOnlineFriends, IOnlineAchievements
+
+OnlineSubsystemSteam
+OnlineSubsystemEOS
+OnlineSubsystemPS5
+OnlineSubsystemGoogle
+
+---
+---
+---
+
+Engine/Source/Runtime/InputCore/
+INPUTCORE_API
+
+입력의 원시 타입
+
+FKey, EKeys, 
+FInputActionKeyMapping, FInputAxisKeyMapping
+
+---
+
+Engine/Plugins/EnhancedInput/
+ENHANCEDINPUT_API
+의존성: Engine, InputCore
+
+UInputAction 
+UInputMappingContext 
+UInputModifier, UInputTrigger
+UEnhancedInputComponent, UEnhancedInputSubsystem
+
+---
+---
+---
+
+Engine/Source/Runtime/AudioMixer/
+AUDIOMIXER_API
+
+Engine/Source/Runtime/AudioMixerCore/
+AUDIOMIXERCORE_API
+
+FMixerDevice, FMixerSource, FAudioMixerSourceBuffer
+DSP 처리 체인
+
+---
+
+Engine/Plugins/Runtime/MetaSound/
+METASOUNDENGINE_API
+
+---
+---
+---
+
+Engine/Source/Runtime/GameplayTags/
+GAMEPLAYTAGS_API
+
+FGameplayTag, FGameplayTagContainer
+UGameplayTagsManager
+
+
+---
+
+Engine/Source/Runtime/ApplicationCore
+APPLICATIONCORE_API
+
+
+플랫폼별 애플리케이션 생명주기
+
+FGenericApplication, FWindowsApplication, FMacApplication
+플랫폼 윈도우 관리
+
+---
+---
+---
+
+STL의 std::vector, std::string, std::map이 있었지만 성능 특성이 게임에 적합하지 않았다
+당시 게임 콘솔(PS2, Xbox, PSP 등)의 컴파일러가 최신 STL을 제대로 지원하지 않았다.
+STL 자체의 예외 처리가 문제였다
+
+std::vector<int32>는 UE 리플렉션이 모른다
+
+---
+
+GMalloc
+FMemory::Malloc
+
+FMemory 통계 반영
+
+---
+
+서로 다른 컴파일러(MSVC, Clang, GCC, 콘솔별 커스텀 컴파일러) 간의 차이
+
+---
+
+std::shared_ptr은 항상 원자적 참조 카운팅
+
+TSharedPtr<FMyClass>                       // 스레드 안전하지 않음 (기본)
+TSharedPtr<FMyClass, ESPMode::ThreadSafe>  // 스레드 안전
+TSharedPtr<FMyClass, ESPMode::Fast>        // 별칭, 스레드 안전하지 않음
+
+---
+
+만약 UE가 자체 언어를 만들었다면 
+
+물리 엔진, 이미지 라이브러리, 오디오 코덱, 네트워크 프로토콜 구현, 수학 라이브러리
+컴파일러, 디버거, IDE 통합, 프로파일러, 정적 분석기, 린터
+C++ 컴파일러(MSVC, Clang, GCC)는 수십 년 최적화 축적
+C++는 모든 게임 콘솔, 모바일 OS, 데스크톱에서 지원됨
+그래픽 드라이버, 오디오 드라이버는 C ABI로 제공됨
+
+---
+
+엔진 코어와 성능 민감 영역은 C++
+게임플레이 로직은 Verse (블루프린트보다 표현력 있는 텍스트 언어)
+블루프린트는 비주얼 편집 선호자를 위해 유지
+
+---
