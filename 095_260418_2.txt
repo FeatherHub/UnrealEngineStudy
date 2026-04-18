@@ -1,0 +1,923 @@
+
+엔진 수준의 "tick" 은 다른 리듬을 가진 시간계열들의 synchronization barrier
+
+subsystem 마다 내재적 시간 해상도 (자연 리듬)이 다르다
+
+엔진 Tick 은 "모든 subsystem 이 같은 속도로 뛰어야 하는 지점" 이 아니라 
+"모두가 최소 한 번은 접선(tangent) 에서 만나는 지점"이다
+
+---
+
+Physics Substep
+
+FPhysScene::TickScene
+Chaos 의 물리 solver
+
+물리적 수치 적분(특히 PBD 의 constraint solver)은 안정성을 위해 작은 dt 를 요구
+
+프레임 rate 가 떨어져 Δt 가 33ms 가 되어도 
+solver 는 이것을 Max Substep Delta Time (예: 16.67ms) 단위로 쪼개 n 번 반복 step 한다
+이 경우 한 번의 Game Thread tick 이 물리 세계에서는 두 번의 연속 시뮬레이션 step 이 되는 것이다.
+
+
+이 substep loop 안에서 또 다른 loop 가 nested 되어 있다
+constraint solver 의 iteration
+
+관절, 접촉, 마찰 같은 constraint 들은 한 번의 풀이로는 수렴하지 않으며 
+Gauss-Seidel 방식으로 여러 번 반복해야 한다
+Position Iterations, Velocity Iterations 같은 설정이 이 루프의 횟수다.
+
+
+Game Thread Δt ─┬─ Substep 1 (fixed dt) ─┬─ Solver iteration 1
+                │                        └─ Solver iteration 2
+                │                        
+                └─ Substep 2 (fixed dt) ─┬─ Solver iteration 1
+                                         └─ Solver iteration 2
+
+"바깥 tick + 고정 dt 분할 + 수렴 iteration"
+
+---
+
+Animation Update Rate Optimization (AURO)
+
+Skeletal mesh 의 animation 은 기본적으로 매 tick 평가되지만, 
+AURO 가 활성화되면 여러 tick 마다 한 번만 본 transform 을 새로 계산하고 
+중간 tick 에서는 이전 결과를 interpolation 하거나 그대로 재사용한다
+
+엔진 Tick 의 시간 해상도와 animation 의 시간 해상도가 분리된 것이다
+
+내부 루프가 "여러 번" 돌지 않고 "가끔씩" 돈다
+바깥 시계( 엔진 tick ) 위에 자기 고유 리듬의 내부 시계가 있다.
+
+---
+
+AActor::NetUpdateFrequency
+
+Actor 의 state 를 클라이언트에 얼마나 자주 복제할지를 결정
+기본 사고방식은 매 tick 이 아니라 1초에 N 번
+
+UNetDriver::ServerReplicateActors 는 매 tick 호출되지만
+각 Actor 에 대해 "이번 tick 이 너의 update 차례인가?" 를 따져서 해당하는 Actor 만 실제 diff 계산을 수행한다
+
+
+tick 이라는 빠른 시계 위에 Actor 별로 (느린) 자기 시계가 얹혀 있다
+
+---
+
+Renderer 의 Temporal Accumulation
+프레임들 사이에 시간축을 건너 쌓이는 정보를 사용
+
+Temporal Anti-Aliasing(TAA), “안정화 + 안티앨리어싱”
+Temporal Super Resolution(TSR), “시간축 기반 업샘플링 + 안정화”
+
+각 픽셀의 최종 값은 "현재 frame 의 raw sample + 지난 N frame 의 re-projection" 의 가중합
+
+여기서의 내부 시간축은 tick 내부가 아니라 tick 들을 가로질러 누적되는 역방향 중첩이다
+
+---
+---
+---
+
+실행 경로의 계기가 scheduled tick 이 아니라 event인 계열
+주기적 실행만으로 표현할 수 없는 시간들의 존재
+
+
+플레이어 입력, 네트워크 패킷, asset 스트리밍 완료, 물리 충돌, timer 만료 등 
+기계 외부와 내부 양쪽에서 비주기적 사건이 끊임없이 발생한다. 
+
+이들을 tick 으로 polling 하자면 매 tick 모든 가능성을 검사해야 하는 낭비가 생기고, 
+이벤트를 즉시 처리하자면 tick 의 일관성이 깨진다
+
+
+해법은 이벤트 source 들이 공통의 queue 나 flag 구조에 등록하고,
+엔진 tick 의 정해진 slot 에서 일괄 소비하는 방식이다
+
+이벤트가 언제 오든, 그 효과는 다음 synchronization barrier 에 와서야 발현된다
+
+---
+
+UWorld::SpawnActor
+
+이 경로의 귀결은 엔진의 4 개 세계 각각에 이 Actor 의 대응물을 등록하는 것 
+
+Game Thread 의 UObject graph, 
+Render Thread 의 FScene, 
+Physics Thread 의 FPhysScene, 
+NetDriver 의 replication 대상 집합
+
+
+1 NewObject<AActor>
+
+2 AActor::PostSpawnInitialize
+    RegisterAllComponents
+      CreateRenderState_Concurrent
+      CreatePhysicsState 
+    PreInitializeComponents / PostInitializeComponents
+
+3 DispatchBeginPlay → AActor::BeginPlay
+4 NetDriver 측 신규 actor 의 initial replication 스케줄링
+
+
+Destroy 는 이 경로의 거울
+
+각 세계에서 이 Actor 의 흔적을 지워내는 연쇄
+
+---
+
+실제 효과 — 특히 Render Thread 로 전달된 command — 는 Render Thread 의 command queue consume 타이밍에 발현된다. 
+이 때문에 SpawnActor 가 완료된 직후 프레임 말미까지는 Render Thread 가 이 Actor 의 Proxy 를 FScene 에 실제로 삽입하지 않았을 수 있다.
+
+이벤트 발생 시점과 효과 발현 시점 사이의 gap 이 존재한다.
+
+---
+
+Dirty Marking — Art of Deferring
+
+dirty 함수들
+MarkRenderStateDirty, MarkRenderTransformDirty, MarkRenderDynamicDataDirty
+
+이벤트를 즉시 처리하지 않고 플래그만 세운 뒤 나중에 일괄 처리하는 구조다
+
+Game Thread 에서 값이 바뀔 때 subsystem 은 bit 하나만 set 한다. 이 set 자체는 거의 공짜다(atomic bit 연산 한 번). 
+Tick 의 render-state-update phase 에서 엔진이 dirty bit 이 켜진 Component 들을 순회하며 실제 업데이트 command 를 발행한다
+
+1 deduplication
+
+같은 frame 안에서 transform 을 10번 바꿔도 dirty bit 은 한 번만 set 된다. 
+10번의 업데이트가 아니라 마지막 값의 1번만 Render Thread 로 간다.
+
+2 batch
+일괄 처리 단계에서 Component 들을 grouping 하여 Render Thread command 를 배치로 보낼 수 있다.
+
+3 consistency
+모든 업데이트가 frame 경계의 한 시점에 처리되므로 
+Render Thread 가 보는 state 가 일관된 snapshot 이 된다.
+
+
+시점의 분리를 통해 동기화 지점, 일괄 처리의 기반을 얻는다
+
+---
+
+네트워크 패킷 도착
+
+UNetDriver::TickDispatch
+
+tick 의 후반부에 호출되어 지난 frame 동안 NIC 에 도착해 쌓인 packet 들을 읽어낸다
+Packet 의 도착은 OS 수준의 비동기 이벤트이고, 이것을 tick 이라는 정기 schedule 에 합류시키는 지점이 TickDispatch 다.
+
+UActorChannel::ReceivedBunch → property 역직렬화 → OnRep_* callback 호출 경로
+
+---
+
+Input Events
+
+Windows message queue → FWindowsApplication → FSlateApplication::ProcessInput → UPlayerInput::InputKey 로 입력이 흘러들어오는 경로
+
+OS 가 event 를 queue 에 넣는 시점과 엔진이 이를 소비하는 시점은 분리
+FSlateApplication::PumpMessages 가 이 queue 를 tick 의 입력 phase 에서 일괄 draining 한다.
+
+
+Enhanced Input System에서는 이 입력 이벤트 경로에 
+Modifier/Trigger stage 를 삽입해 해석 layer 를 추가한다
+
+---
+
+Async Loading Completion
+
+FAsyncLoadingThread 는 독립 스레드에서 package 를 IO bound 로 로드한다. 
+완료가 언제 일어나는지는 disk/decompression 속도에 달려 있어 tick 과 무관하다. 
+
+하지만 로드된 UObject 를 world 에 통합하는 단계는 Game Thread 에서만 가능하다
+그래서 IO 완료 이벤트는 FAsyncLoadingThread::TickAsyncLoading 을 통해 엔진 tick 으로 합류한다
+
+---
+
+Timer 와 Latent Action
+
+FTimerManager::SetTimer
+시간 경과 자체를 이벤트로 인코딩
+
+FTimerManager::Tick 이 매 tick 호출되어 만료된 timer 를 찾아 그 delegate 를 호출한다
+
+---
+---
+---
+
+평행 시간축
+서로 다른 frame 을 동시에 처리하는 스레드/하드웨어들
+
+GameThread    
+RenderThread, RHIThread, GPU        
+Audio Thread (= Audio Render Thread), Sound Chip
+AsyncLoading Thread, DMA & Disk
+Task Graph 의 worker threads
+  temporary forks
+  Animation, ParticleSystem CPU simulation
+
+---
+---
+---
+
+Engine Tick 의 시간구조
+
+00 Frame 경계 진입 (Delta Time Update)
+12 Frame 경계 이탈 
+
+
+00 Frame 경계 진입
+
+01 Input Draining
+02 N-1 Frame 에 대한 Render Command Flush 대기  
+03 World Tick main
+04 World Tick post
+05 Network 송신 
+06 Dirty Component 
+07 Audio
+08 3D Scene View
+09 Render Command Issue
+10 Slate Render
+11 Other Deferred Tasks (GC, AsyncLoad)
+
+12 Frame 경계 이탈
+
+
+02 World Tick main
+  PrePhysics
+  StartPhysics
+  DuringPhysics
+  EndPhysics
+  PostPhysics
+  PostUpdate
+
+03 World Tick Post
+  Latent action,
+  Timer, Timeline
+
+---
+
+TG_PrePhysics
+기본 그룹
+대부분의 AActor::Tick, UActorComponent::TickComponent
+
+Character 의 input-driven movement 도 여기서 반영된다
+이 그룹이 끝나는 시점에 "이번 frame 물리 solver 에 넣을 모든 force/velocity 변경이 준비 완료"
+
+
+TG_StartPhysics 
+(async physics 가 활성화된 경우)
+이 barrier 에서 physics simulation 을 kick-off 한다. 
+Physics Thread 가 자기 리듬으로 돌기 시작한다
+
+
+TG_DuringPhysics
+물리 sim 이 돌아가는 동안 그것의 결과에 의존하지 않는 작업을 병렬 수행
+SkeletalMesh 의 anim update 중 일부
+
+
+TG_EndPhysics
+물리 sim 결과를 Game Thread 로 회수
+이 barrier 이후로 GetActorLocation() 이 반영된 새 위치를 돌려준다.
+
+
+TG_PostPhysics 
+물리 결과가 반영된 세계를 전제로 도는 로직
+카메라 업데이트가 대표적으로 여기 배치된다
+캐릭터의 물리 이동이 확정된 후에야 카메라가 그 뒤를 따를 수 있다
+
+
+TG_PostUpdateWork 
+특정 attachment 동기화, debug drawing 등
+
+---
+
+이벤트(사건)의 생산(detection) 은 물리 엔진 내부에서 "이 두 body 가 이 tick 에 접촉/관통/겹침 관계에 진입했다" 는 
+사실이 기록 되는 시점이다
+
+이벤트의 발사(dispatch) 는 이 기록된 사실을 근거로 중간 계산을 거쳐 
+Game Thread 의 delegate(OnHit, OnBeginOverlap, OnEndOverlap) 를 호출 하는 시점이다
+
+
+생산은 TG_StartPhysics~TG_EndPhysics 사이의 Physics Thread 의 작업 내부에서 일어난다
+발사는 TG_PostPhysics, 물리 결과를 Game Thread 로 회수하는 단계에서 일어난다
+
+구체적으로 FPhysScene::SyncBodies 에 이어 DispatchPhysicsCollisionNotifies 경로가 호출된다
+
+
+OnHit: block 성 충돌에 대해 UPrimitiveComponent::DispatchBlockingHit → OnComponentHit.Broadcast(...) 발사
+
+OnComponentBeginOverlap / OnComponentEndOverlap: 이전 tick 의 overlap set 과 이번 tick 의 overlap set 의 차집합을 계산하여 
+신규 진입 / 이탈 각각에 대해 delegate 발사
+
+
+물리 sim 이 substep 을 여러 번 돌았고, 그 중 여러 번 접촉이 발생해도
+최종 Dispatch 는 중복된 이벤트들을 Coalesce 해서 단일 dispatch 로 정리된다
+
+---
+
+OnHit 에는 두 종류의 source 가 있다
+
+Physics sim 이 만드는 hit
+
+Movement 계가 만드는 hit
+SetActorLocation(..., bSweep=true), MoveComponent, CharacterMovementComponent 의 safe-move 등이 
+sweep test 를 수행하다가 장애물과 부딪혔을 때 그 호출 내부에서 즉시 OnComponentHit 를 발사
+
+---
+
+UWorld::SpawnActor 는 호출된 스레드의 해당 지점에서 동기적으로 registration 을 수행한다. 
+게임플레이 로직 중 SpawnActor 가 불리면, 그 호출의 call stack 안에서 
+RegisterAllComponents → CreateRenderState_Concurrent 까지 즉시 진행된다.
+
+---
+---
+---
+
+Frame 진입부
+
+Frame Bookkeeping
+
+GFrameCounter 증가, 
+FApp::SetCurrentTime, SetDeltaTime 로 글로벌 시간 정보 갱신, 
+FThreadManager::Tick 으로 backgrouted thread 들의 frame 통지
+
+
+Slate Pre-Tick
+FSlateApplication::PollGameDeviceState (force feedback 등)
+실제 input 드레인은 이후
+
+
+Core Ticker
+FTSTicker::GetCoreTicker().Tick(DeltaTime) // TS: Thread Safe
+등록된 delegate 가 있으면 그 수만큼 delegate 호출.
+HTTP response processing, Analytics batching, custom engine subsystem 의 polling
+
+
+Slate Tick의 input phase
+
+FSlateApplication::Tick(ESlateTickType::Time | PlatformAndInput)
+FSlateApplication::PumpMessages
+  focused widget 을 찾아 key/mouse/touch event 발사
+  Game viewport 이 focus 인 경우, UGameViewportClient::InputKey / InputAxis 가 불림
+
+  이 경로가 APlayerController::InputKey 로 전달
+  APlayerController 는 받은 input 을 내부 버퍼(FInputActionValue, KeyState) 에 축적만 한다. 
+  실제 로직 반영은 UWorld::Tick 에서 일어난다
+
+---
+
+UWorld::Tick
+BroadcastTickDispatch (NetDriverName 별로)
+UNetDriver::TickDispatch(DeltaTime)
+
+  IpNetDriver → 소켓에서 packet 읽기
+  For each packet:
+    UNetConnection::ReceivedPacket
+    UChannel::ReceivedRawBunch
+      UControlChannel 
+      UVoiceChannel 
+      UActorChannel
+
+
+UNetDriver (UIpNetDriver, UWebSocketNetDriver, USteamNetDriver), 소켓 관리
+
+UNetConnection (UIpConnection) 
+
+UChannel (UControlChannel, UVoiceChannel, UActorChannel), 메시지 분류
+
+FObjectReplicator, FRepLayout, 
+APlayerController, client-bound RPC 의 대표 수신자
+
+
+주목해야 할 부분: OnRep_* 콜백이 이 slot 안에서 동기적으로 호출된다
+world tick 이 본격 시작하기 전에 client 측 world state 가 서버 state 에 가깝게 동기화된다
+
+---
+
+UWorld::Tick
+For each local player controller
+  APlayerController::TickPlayerInput, ProcessPlayerInput
+  UPlayerInput::ProcessInputStack
+  APlayerController::BuildInputStack
+    AHUD::InputComponent
+    APlayerController::InputComponent
+    Possessed pawn의 InputComponent
+    Level script의 InputComponent
+
+---
+
+UWorld::Tick
+TickGroup 순회
+TG_PrePhysics → TG_PostUpdateWork 6 단계
+
+---
+
+소리가 들린다는 것과, 그 소리가 무엇인지 안다는 것은 다릅니다. 
+같은 건반이 어느 방에서는 뛰어오르라 이고 어느 방에서는 승낙합니다 입니다
+
+---
+
+가장 먼저 열리는 문으로 멀리 있는 편지가 들어온다. 
+다른 시계에서 보낸 소식들이 이 문을 통과하며 이쪽 세계의 모양을 바꾼다.
+
+이 세계는 다른 세계들의 말을 먼저 듣고 시작한다
+
+---
+
+약속 장부의 시간
+
+장부를 넘기면서 만료된 약속을 찾아 약속을 수행한다
+
+
+서랍 정리의 시간
+  
+이 tick 안에서 누군가가 "나 변했어요" 라고 쪽지를 붙여 둔 서랍들이 여기서 한꺼번에 정리된다
+쪽지는 아무 때나 붙여도 되지만, 읽히는 것은 이 순간뿐이다
+
+
+다른 기계에 보낼 편지의 시간
+
+---
+
+음악은 따로 사는 자이다. 
+그는 이쪽의 소식을 받아만 간다.
+
+---
+
+AsyncLoading
+멀리서 도착한 짐 풀어놓기
+
+---
+
+"이 모든 문이 매 번 다 열립니까."
+"열립니다. 그러나 어떤 문 너머에는 아무 것도 없을 수 있습니다."
+"그래도 문은 있어야 합니까"
+"있어야 합니다"
+서버, 화면을 가진 기계, 오프라인 플레이어
+이것들은 같은 방을 다르게 쓸 뿐 다른 방을 쓰지 않습니다
+
+---
+---
+---
+
+TG_StartPhysics — Physics Thread 에게 "가라" 는 신호를 보내는 barrier
+TG_EndPhysics — Physics Thread 가 결과를 돌려주는 걸 기다리는 barrier
+TG_DuringPhysics — 그 사이의 빈 시간을 놀리지 않고 Game Thread 가 다른 일을 하는 구간
+
+SkeletalMesh 의 anim update 중 많은 부분은 물리 결과(예: 새 위치의 캡슐)와 무관하게 "이전 frame 까지의 정보" 로 평가 가능하다
+
+---
+
+Game Thread 가 TG_StartPhysics 시점까지, 즉 PrePhysics에서 모든 입력 을 물리에게 확정해 주어야 한다. 
+이 barrier 이전에 velocity 변경, force 적용, kinematic target 설정 등
+
+TG_EndPhysics: Physics Thread 의 출력 이 Game Thread 로 건너오는 경계
+여기 이후로 GetActorLocation() 이 새 값을 돌려준다.
+
+---
+
+Slate 가 game viewport 를 자기 child widget 으로 품고 있다
+
+game world 는 UI 트리 안의 한 widget 의 내부 동작 이다
+
+---
+---
+---
+
+VRAM
+
+캐릭터 텍스처, shadow map, GBuffer, depth buffer, 등
+중간 계산의 재료
+
+특별한 texture
+swap chain 에 속한 texture 들
+display controller 가 이들을 직접 읽어 화면으로 스캔아웃(scan out) 하는 texture
+
+Front buffer — 현재 display 가 스캔아웃하고 있는 것
+Back buffer — GPU 가 다음 frame 을 그리고 있는 곳
+
+
+GPU 가 그린 것이 "어딘가로 전송" 되어 display 로 가는 게 아니라, 
+GPU 가 그린 자리(back buffer)가 곧 display 가 읽을 자리(front buffer)이다
+
+---
+
+Swap chain 은 OS 가 (OS 의 compositor 와 graphics driver 의 협력 하에) 생성하고 
+application 에게 빌려주는 자원 이다. 
+
+Windows 에서는 DXGI 가 이를 관리하고, 
+application 이 IDXGISwapChain::GetBuffer(0) 같은 방식으로 back buffer texture 에 대한 handle 을 얻는다.
+
+UE 에서 이 handle 을 쥐는 주체는 RHI 다.
+
+---
+
+Render Thread
+Deferred shading의 Pass 구조를 Orchestrate한다
+
+
+Game Thread 는 scene 의 상태를 알지만 Rendering 전략에 대해서는 무지하다
+
+
+FDeferredShadingSceneRenderer::Render
+한 frame 의 rendering 전체 시나리오를 Orchestrate한다
+
+
+각 pass 는 자기 전용 출력 render target (=texture)를 가진다
+  GBuffer pass → GBufferA/B/C/D/E 라는 다섯 장의 texture
+  Shadow pass → Shadow atlas 의 특정 영역
+  Lighting pass → SceneColor 라는 HDR texture (High Dynamic Range)
+  Bloom pass → 여러 해상도의 다운샘플 pyramid texture 들
+  Tone mapping → LDR 결과 texture (Low Dynamic Range)
+
+이 모든 texture 들이 VRAM 에 머문다
+
+---
+
+Game Thread: "이 view, 이 scene, 이 camera 로 그려라" 라는 high-level 요구만 넣음. BeginRenderingViewFamily 호출.
+
+Render Thread (FSceneRenderer): 이 요구를 받아 pass 시나리오를 구성. RDG builder 에 pass 들을 등록.
+
+RDG: 등록된 pass 그래프를 분석하여 실행 순서, resource lifetime, barrier 를 자동 결정
+
+RHI Thread: RDG 가 생산한 RHI command 를 플랫폼별 API 로 번역
+
+GPU: 실제 실행
+
+---
+
+Widget 트리 walking
+  ├─ Root SWindow::OnPaint
+  ├─ 자식 widget 들의 OnPaint 재귀 호출
+  │    각 widget 이 FSlateWindowElementList 에 draw element 추가
+  │    - element: "이 사각형을 이 색으로", "이 텍스트를 이 폰트로", ...
+  └─ 결과: 한 개의 flat element list, 그 안에 "이 순서로 그려라" 가 새겨짐
+
+
+Render Thread 로 전달:
+  FSlateRHIRenderer::DrawWindows_RenderThread
+    └─ Element list 를 vertex/index buffer 로 batch
+       └─ Back buffer 에 직접 draw call 발행 (게임 world 가 그려진 후에)
+
+---
+
+Retainer Box. 
+자주 바뀌지 않는 복잡한 widget 계층의 rendering 결과를 texture 로 "retain" 해 두고 
+매 frame 재그리는 대신 그 texture 를 뿌림. 전형적 cache 최적화
+
+Background blur. 
+Back buffer 의 해당 영역을 sampling 해서 blur 한 후 덧그림. 
+이 경우 back buffer 자체가 "읽혀야" 하므로 texture copy 가 필요.
+
+Effects 가 걸린 widget.
+Glow, outline 같은 post effect 를 widget 단에서 적용하려면 그 widget 의 rendering 을 먼저 texture 에 하고 
+그 texture 에 effect 를 적용 후 back buffer 에 덧그리는 경로가 필요.
+
+---
+
+UGameEngine::RedrawViewports
+  For each FSceneViewport
+    FSceneViewport::Draw
+      UGameViewportClient::Draw(SceneCanvas)
+        View family 구성
+        For each local player
+          ULocalPlayer::CalcSceneView
+            → FSceneView 만들어 View family 에 추가
+
+        BeginRenderingViewFamily(SceneCanvas, &ViewFamily)
+          ENQUEUE_RENDER_COMMAND(FDrawSceneCommand)
+
+---
+
+FSlateApplication::DrawWindows
+  For each SWindow
+    PaintWindow
+      Widget tree walking (OnPaint 재귀)
+      FSlateDrawElement 누적
+      SViewport의 경우
+        Viewport 같은 특수 element 추가
+        "이 영역은 viewport"
+      
+    완성된 FSlateWindowElementList → DrawWindow_RenderThread 로 전달
+
+---
+
+FDrawSceneCommand — RedrawViewports 에서 나온 것, game world 렌더링
+FSlateDrawWindowsCommand — DrawWindows 에서 나온 것, UI 렌더링
+
+RedrawViewports 가 DrawWindows 보다 먼저 실행되므로 game scene command 가 
+Slate command 보다 먼저 enqueue 되고, 따라서 Render Thread 에서도 먼저 실행된다.
+
+---
+
+Viewport 의 수와 World 의 수는 일치하지 않는다
+
+한 World 가 여러 Viewport 로 그려질 수 있다
+  Split-screen multiplayer
+  Picture-in-picture
+  Scene Capture Component
+
+---
+
+FSceneViewport  (FViewport 의 주요 구현)
+
+FViewport 의 Slate 연동 버전
+
+---
+
+SViewport 
+Slate widget tree 안의 한 노드
+Widget tree 안에서 "여기에는 viewport 가 놓인다" 는 슬롯 역할
+
+---
+
+SWindow                        ← OS window 에 대응
+  └─ SGameLayerManager         ← game overlay / HUD 의 총괄
+      └─ SViewport             ← 여기가 "게임 3D 화면 슬롯"
+
+c.f. FSceneViewport, UGameViewportClient
+
+
+편집기처럼 복잡한 UI 에서는 한 SWindow 안에 여러 SViewport 가 있을 수 있다
+e.g. 여러 3D 뷰 패널
+
+---
+
+Windows는 window 개념을 안다
+이 window는 Windows 가 관리하는 rectangle 이다.
+이 window는 자신의 영역에 연결된 swap chain (back buffer) 를 받는다
+
+---
+---
+---
+
+OS 의 메시지 큐 앞에 줄이 서 있다. 
+한 시간 전에 누른 스페이스바, 삼 초 전에 움직인 마우스, 방금 눌린 W 키. 
+이들은 모두 각자 과거의 다른 시점에서 왔지만 지금 같은 줄에 서 있다. 
+
+FWindowsApplication 이 FSlateApplication::PumpMessages 라는 이름의 큰 양동이로 이 줄을 한 줄 한 줄 퍼낸다.
+
+퍼낸 물은 아직 해석되지 않는다. W 키가 앞으로 걷기인지 이름을 저장하기인지, 이 시점에서는 모른다
+APlayerController 의 서랍(KeyState, FInputActionValue)에 넣어두기만 한다.
+
+---
+
+먼 곳에서 온 편지
+
+UWorld::Tick 이 오늘의 프레임을 연다. 가장 먼저 하는 일 이 이것이다 — 우체통을 확인한다.
+
+UNetDriver::TickDispatch
+소켓으로 부터 도착한 패킷들이 잔뜩 쌓여 있다
+
+"너희 캐릭터 A 가 저기로 움직였어."
+"캐릭터 B 는 죽었어."
+"아이템 X 가 생성됐어."
+
+UActorChannel::ReceivedBunch 가 봉투를 뜯고, FObjectReplicator 가 내용을 역직렬화한다.
+속성 하나가 바뀔 때마다 해당 OnRep_* 함수가 그 자리에서 즉시 호출된다
+
+---
+
+아까 퍼낸 양동이의 건반들이 이제 해석된다
+
+현재 Input-Mapping Context 에서 W 는 "앞으로 걷기" 이고, 스페이스바는 "점프" 이다
+
+인풋 스택을 위에서부터 걸어 내려온다
+먼저 HUD 가 "내가 먼저 먹을게", 그 다음 PlayerController 가, 그 다음 Pawn 이, 마지막으로 Level Script 가.
+
+HUD 의 지금 Input 지도가 스페이스바를 먹는다. 스페이스바는 "승낙합니다" 가 된다
+
+
+그러나 오늘은 열린 메뉴가 없다. 
+스페이스바는 스택을 통과해 내려와 마침내 Pawn 에게 온다. 
+ACharacter::Jump 가 불린다. 캐릭터의 종이에 bPressedJump = true 가 기록된다.
+그러나 아직 캐릭터는 공중에 뜨지 않았다. 그는 단지 점프하고 싶다고 마음만 먹었을 뿐이다
+
+---
+
+PrePhysics
+
+캐릭터의 CharacterMovementComponent 가 tick 되며 "점프하고 싶다" 는 의도를 속도로 번역한다
+
+이번 프레임에 물리에게 맡길 모든 입력 이 지금 확정된다. 
+
+
+StartPhysics
+
+Physics Thread 에게 달려가 말한다 "가라."
+그것으로 끝이다
+
+
+DuringPhysics
+Physics Thread가 substep 을 여러 번 적분하는 동안 — 16.67ms 씩 나누어, 
+각 substep 안에서 Gauss-Seidel 이 여덟 번 iteration 을 돌며 constraint 를 풀어내는 동안
+Skeletal Mesh 가 자기 애니메이션 그래프를 평가한다
+
+
+EndPhysics
+Physics Thread 가 돌아온다. "다 풀었어. 여기가 너의 새 위치야."
+GetActorLocation() 이 드디어 새 값을 돌려주기 시작한다
+
+
+PostPhysics
+APlayerCameraManager 가 캐릭터의 새 위치를 바라본다.
+
+
+PostUpdateWork
+디버그 선 그리기
+
+---
+
+Physics Thread 는 substep 을 돌며 많은 것을 기록 했다.
+"A 와 B 가 접촉했다", "C 가 D 에 들어왔다", "E 가 F 에서 나왔다". 
+그러나 이것은 기록일 뿐, 발사 가 아니다.
+
+발사는 FPhysScene::SyncBodies 에 이어 DispatchPhysicsCollisionNotifies 가 불리는 순간에 일어난다. (TG_EndPhysics)
+
+물리가 substep 을 세 번 돌았고, 그 중 두 번에서 A 와 B 가 접촉했다 해도, OnHit 는 두 번 불리지 않는다. 
+세 substep 의 관찰이 한 꾸러미로 묶여 — coalesce 되어 — 한 번으로 축약된다
+
+---
+
+누군가 이번 프레임에 SetActorLocation(..., bSweep=true) 를 호출했을 때, sweep test 가 벽과 부딪혔다면, 
+그 호출 내부에서 즉시 OnHit 가 발사된다
+
+같은 이름의 이벤트, 두 개의 출신지. 
+하나는 barrier, 하나는 즉시.
+
+---
+
+S07f — Deferred Component Update
+서랍 정리의 순간이 온다 (UWorld::SendAllEndOfFrameUpdates)
+
+이번 프레임 여러 Component 가 "나 변했어요" 라고 쪽지를 붙여두었다
+MarkRenderStateDirty, MarkRenderTransformDirty, MarkRenderDynamicDataDirty
+
+한 캐릭터의 Transform 이 프레임 중 열 번 바뀌었어도 Render Thread 로 가는 업데이트는 한 번이다. 
+마지막 값 하나. 나머지 아홉 번의 중간 걸음은 Game Thread 안에서 조용히 사라진다
+
+---
+
+FEngineLoop::Tick
+  UGameEngine::Tick  // UEngine
+    UWorld::Tick
+  
+  UEngine::RedrawViewports 
+  UEngine::ConditionalCollectGarbage
+
+---
+
+Render Thread 는 자기 리듬으로 뛴다. Game Thread 보다 한 프레임 늦게, RHI Thread 보다 한 프레임 빠르게.
+
+
+FDrawSceneCommand 의 람다가 실행되면 FDeferredShadingSceneRenderer::Render 가 불린다
+
+---
+
+Back buffer 가 완성된다. Present 가 호출된다
+Display Controller 라는 GPU 내부 하드웨어가 새 front buffer 를 scan-out 하여 HDMI 케이블로 픽셀을 흘려보낸다
+모니터가 그 스트림을 받아 panel 에 표시한다.
+
+---
+
+FCoreDelegates::OnEndFrame.Broadcast()
+이 종소리를 듣고 싶어했던 자들이 각자 자기 일을 한다.
+
+RHIEndFrame 이 Render Thread 로 enqueue 되어 다음 프레임 경계를 marking 한다.
+Stat system 이 이번 프레임 수치를 flush 한다
+
+---
+
+어제의 점프한 캐릭터는 이제 공중에 있다. 물리가 다음 substep 에서 중력을 적분할 것이다. 
+바닥에 닿으면 OnHit 가 발사될 것이다. 만약 그 위에 몬스터가 있었다면 OnBeginOverlap 이 발사되어 데미지가 들어올 것이다. 
+그 데미지는 네트워크로 서버에 보고되고, 서버는 다른 클라이언트들에게 복제한다. 
+몇 ms 후, 지구 반대편의 어느 스크린에서 그 캐릭터가 공중에 뜬 모습이 보일 것이다.
+
+이 모든 것들이 오늘 하루와 똑같은 구조로 일어날 것이다
+
+---
+
+입력은 갑자기 옵니다.
+네트워크 패킷도 갑자기 옵니다.
+비동기 로딩 완료도 갑자기 옵니다.
+타이머 만료도 갑자기 옵니다.
+
+입력은 큐에 서고,
+패킷은 큐에 서고,
+dirty bit도 켜진 채 기다리고,
+타이머도 장부에 이름을 적고 기다립니다.
+
+그리고 정해진 slot이 오면
+엔진은 말합니다.
+
+“좋아요.
+이제 당신 차례입니다.”
+
+---
+
+SpawnActor가 끝났다고 해서
+Render Thread에서 이미 보인다는 보장도 없습니다.
+그쪽 창구는 아직 번호표를 안 불렀을 수 있으니까요.
+
+“생성되었다”와 “보인다” 사이에는 틈이 있습니다.
+“발생했다”와 “효과가 발현되었다” 사이에는 틈이 있습니다.
+
+---
+
+Actor 하나가 태어났다고 해서
+곧바로 세계 전체가 그것을 아는 것은 아닙니다.
+
+Game Thread는 말합니다.
+
+“좋아요, UObject graph에 이름 올리겠습니다.”
+
+Render Thread는 "의상을 가져오세요"라고 말합니다.
+Physics Thread는 “신체검사 서류 가져오세요”라고 말합니다.
+NetDriver는 “전산망에도 등록해야 합니다”라고 말합니다.
+
+---
+
+값이 바뀌었습니다.
+Transform이 바뀌었습니다.
+Material이 바뀌었습니다.
+Dynamic data가 바뀌었습니다.
+
+철없는 시스템이라면 그 즉시 소리칩니다.
+
+“지금 바뀌었어요.
+지금 보내요.
+지금 갱신해요.
+당장!”
+
+하지만 엔진은 손을 듭니다.
+
+“조용.”
+
+그리고 작은 비트 하나만 켭니다.
+
+dirty.
+
+같은 프레임 안에서 열 번 바뀌어도
+마지막 한 번만 의미 있게 남기기 위해.
+비슷한 것들을 모아 배치로 처리하기 위해.
+Render Thread가 바라보는 세계가
+찢어진 중간상태가 아니라 한 장의 스냅샷이 되게 하기 위해.
+
+---
+
+물리에 입력을 넘겨주기 전의 시간
+물리에게 “가라”고 말하는 시간
+물리가 다른 방에서 일하는 동안 다른 일을 하는 시간
+물리의 결과를 받아오는 시간
+그 결과를 전제로 카메라와 후속 로직이 움직이는 시간
+모두 끝난 뒤 마지막 단추를 채우는 시간
+
+---
+
+게임 월드는 UI 밖에 있는 것이 아닙니다.
+UI 트리 안의 한 widget의 내부 동작입니다.
+
+SWindow 안에 SGameLayerManager가 있고,
+그 안에 SViewport가 있고,
+바로 거기가 3D 화면 슬롯입니다.
+
+광활한 월드,
+산과 하늘,
+총알, 캐릭터, 그림자, 폭발, 안개, 반사, 나이아가라, 스켈레탈 메시,
+그 모든 것이
+UI 트리 안의 한 자식입니다.
+
+---
+
+같은 집을
+서버도 쓰고,
+클라이언트도 쓰고,
+오프라인 플레이도 쓰고,
+에디터도 씁니다
+
+엔진 설계는
+“언제나 모든 것이 일어나게 하는 것”이 아니라,
+“언제나 같은 자리가 준비되어 있게 하는 것”입니다.
+
+---
+
+서버라면 화면 문 뒤가 비어 있을 수 있고,
+오프라인이라면 네트워크 문 뒤가 비어 있을 수 있고,
+조용한 프레임이라면 오디오 문 뒤가 비어 있을 수 있고,
+아무도 안 건드린 프레임이라면 dirty 서랍이 텅 비어 있을 수 있습니다.
+
+---
+
+SceneCaptureComponent2D는 장면을 한 번 더 렌더해서 TextureRenderTarget2D에 출력하고, 
+그 render target은 머티리얼에서 읽을 수 있는 출력 텍스처입니다
+
+GPU가 만든 텍스처를 다시 GPU가 샘플링해서 표면에 붙이는 구조예요
+
+SceneCapture는 “작은 카메라 하나를 더 돌리는 것”에 가깝습니다
+
+**“월드의 어떤 곳을 한 번 더 렌더해서, 그 결과를 다른 표면의 텍스처로 쓰는 것”**
+
+---
+
+“거울을 SceneCapture2D로 만들 때 반사 카메라 위치를 어떻게 계산하는가”
+
+---
