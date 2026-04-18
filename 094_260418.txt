@@ -1,0 +1,425 @@
+
+attribute 
+
+시뮬레이션은 PARTICLES.Position, PARTICLES.Color 같은 명명된 속성을 write 하고,  (시간적 Evolution)
+Renderer 는 이 속성들을 binding 을 통해 read 한다 (Visual Rendering)
+
+---
+
+Niagara 의 모든 로직은 세 가지 scope 중 하나에 속한다 
+
+per-System(프레임당 1회, System 전체에 대해), 
+per-Emitter(프레임당 1회, 각 Emitter 에 대해),
+per-Particle(프레임당 N회, 살아있는 모든 파티클에 대해)
+
+---
+
+Local Space: false
+spawn 순간의 Emitter 위치에서 출발해 이후 독립적으로 진화
+
+
+Determinism: true
+난수 호출의 parallelism 이 제한
+(<=> 병렬 thread 가 실행 순서에 제약을 갖지 않고 돌 수 있었던 상황)
+
+---
+
+Interpolated Spawn Mode
+
+문제:  고속으로 이동하는 Emitter(예: 총알, 레이저) 에서 파티클을 spawn 하면 
+frame 단위로 뭉쳐서 스폰되어 점선처럼 보인다
+
+해결: 한 frame 내에 N 개를 spawn 할 때 각 파티클에 sub-frame time offset 을 부여하고, 
+이전 프레임과 현재 프레임의 Emitter transform 을 보간한 위치에서 각 파티클을 탄생시킨다
+
+---
+
+Sim Target (CPUSim / GPUCompute Sim)
+
+CPU 모드에서 script 들은 Niagara VM bytecode 로 컴파일되어 
+Game Thread(혹은 worker thread) 에서 실행
+
+GPU 모드에서는 같은 module stack 이 HLSL compute shader 로 transpile 되어 GPU 에서 실행된다
+  CPU Event 통신 불가능: GPU sim 은 CPU 로 readback 하지 않으므로 CPU 쪽 로직에서 파티클 상태를 알 수 없다
+  Allocation Mode: GPU 는 정적 버퍼 할당
+  GPU 에서는 wavefront 스케줄링 비결정성 때문에 Determinism 보장이 약해짐
+  일부 Data Interface 는 CPU 에서만 작동
+
+---
+
+Calculate Bounds Mode
+Dynamic 
+매 frame 파티클들의 실제 분포를 계산해 AABB 를 갱신
+
+Fixed 
+bound 를 고정 사용한다(GPU sim 에서 권장)
+
+Programmable 
+script 가 직접 bound 를 write
+
+view frustum culling, shadow caster culling, occlusion culling 등 렌더러의 컬링 시스템이 
+이 bound 를 근거로 draw call 을 skip 할지 결정
+
+---
+
+Requires Persistent IDs
+
+Niagara 의 기본 자료구조는 SoA 이고 파티클이 죽으면 배열의 마지막 파티클로 덮어쓰는 방식(swap-and-pop) 으로 compaction 한다. 
+이 과정에서 파티클의 배열 index 는 의미를 잃는다. 
+Persistent ID 는 이와 별개로 유지되며 "파티클의 동일성(identity)" 을 배열 위치와 분리하는 장치다.
+
+
+Ribbon renderer(이전 파티클과 현재 파티클을 순서대로 연결해야 함)나 
+particle-to-particle event reference 가 필요할 때 사용
+
+---
+
+Sim Stage Loops
+
+표준적인 Spawn-Update 싸이클 외에 추가 compute stage 를 정의
+각 stage 는 여러 iteration 을 돌 수 있다
+"한 frame 안에서 여러 번 풀어야 수렴하는" 계산에 쓰인다
+
+tick 이라는 단일 시간축 위에 iteration 이라는 내부 시간축을 추가하는 장치
+
+---
+
+Module 은 HLSL 또는 Niagara node graph 로 작성된 함수
+stack 에 쌓인 순서대로 위에서 아래로 실행
+앞 module 이 write 한 attribute 는 뒤 module 이 read 할 수 있다
+
+---
+
+Emitter Update script -> Particle Spawn script -> Particle Update script
+ 
+script는 여러 module로 구성된다
+script는 scope 개념을 갖는다
+
+---
+
+Emitter Update script
+scope: per-emitter
+
+Emitter-scope 변수 갱신
+얼마나 많은 파티클을 이 frame 에 스폰할지
+lifecycle 상태 전이(Loop 재시작 등)
+
+Spawn Rate, Spawn Burst Instantaneous, Emitter State(loop count, duration) 등의 module
+
+파티클 배열을 직접 건드리지 않는다
+이 script 는 "얼마나 만들어라" 라는 결정만 내리고, 실제 생성은 다음 단계 script로 위임한다.
+
+---
+
+Particle Spawn script
+scope: per-new-particle
+
+Emitter Update 가 "이번 frame 에 K 개를 만들어라" 하면, 그 K 개 각각에 대해 한 번씩 실행된다
+여기서 갓 태어난 파티클의 초기 상태를 설정한다
+
+Initialize Particle module
+
+Particle Spawn script 가 read 할 수 있는 것은 Engine/System/Emitter scope 의 값과 자기 자신의 attribute 뿐이다
+다른 파티클과의 상호작용은 여기서 할 수 없다.
+
+---
+
+Particle Update script
+scope: per-alive-particle
+살아있는 모든 파티클에 대해 frame 마다 실행
+
+Kill Particles When Lifetime Has Elapsed, Gravity, Drag, Curl Noise Force, Collision 등 module
+
+---
+
+Parameter Namespace
+
+PARTICLES.*     — 파티클별 속성 (SoA 배열 원소)
+MODULE.*        — 한 module scope 내 지역변수
+EMITTER.*       — Emitter 단위 변수 (1 인스턴스당 1개)
+SYSTEM.*        — System 단위 변수
+ENGINE.*        — 엔진 공급 값 (DeltaTime, Time, Position, …)
+NPC.*           — Niagara Parameter Collection)
+USER.*          — Component 외부에서 set 하는 parameter
+
+각 Parameter namespace 는 scope를 가진다
+scope를 통해 VM 이 해당 변수의 메모리 영역 배치, read/write 권한을 결정한다
+
+---
+
+Emitter State — Life Cycle 자치권 설정
+
+System: Emitter 의 활성화/비활성화/loop 반복을 상위 System 의 결정에 위임
+Self: Emitter 가 자기 loop duration, loop count, auto-deactivation 등을 독립적으로 관리
+
+
+System 은 기본적으로 Emitter 들의 단순 집합체 역할만 할 수 있고 선택적으로 조율자 역할을 할 수도 있다.
+
+
+Scalability Mode
+이것 역시 "System 이 감독하는 조직" vs "자치 공동체" 의 선택
+
+---
+
+Initialize Particle module 
+Attribute Schema 의 실질적 선언
+SoA 배열의 column
+
+
+거의 모든 Emitter 의 Particle Spawn script 에 맨 처음 오는 module
+모든 표준 particle attribute 의 초기값을 한자리에서 설정
+
+Point / Sprite / Mesh / Ribbon  탭은 renderer type 에 따른 attribute 계열 을 구분한다. 
+같은 파티클이라도 어떤 renderer 로 그릴지에 따라 필요한 attribute 가 다르다
+
+
+Point Attributes: 모든 renderer 가 공유하는 근본 속성
+Position, Lifetime, Color, Mass
+
+Sprite Attributes: 2D billboard 에만 필요
+SpriteSize, SpriteRotation, SpriteUV
+
+Mesh Attributes: 3D mesh renderer 에만 필요
+MeshScale, MeshRendererArrayVisibility
+
+Ribbon Attributes
+RibbonWidth, RibbonFacing, RibbonTwist
+
+---
+
+Render — Visualization Layer
+위까지가 Evolution 이라면, 여기부터는 Visual
+
+
+한 Emitter 는 여러 Renderer 를 가질 수 있다
+Sprite 로도 그리고 동시에 Mesh 로도 그리고 Light 도 심어줄 수 있다
+같은 파티클 데이터를 여러 개의 다른 Renderer 가 병렬로 소비할 수 있다
+예컨대 하나는 불꽃 본체, 다른 하나는 그 위에 덧그리는 glow 후광일 수 있다
+
+---
+
+Sprite Rendering — Billboard Renderer 의 내부
+
+
+Material 은 실제 shader 다
+
+Material User Param Binding 은 material 의 user parameter(Blueprint/Instance parameter) 를 Niagara User parameter 에 bind 한다
+
+---
+
+Sorting Mode
+
+Translucent 파티클은 depth-sort 없이는 올바르게 합성되지 않는다
+
+
+Visibility 
+
+Camera Distance Culling — 카메라에서 멀리 있는 파티클을 개별적으로 숨긴다
+Renderer Visibility -  VisibilityTag binding 과 함께 쓰여 파티클 중 특정 tag 를 가진 것만 이 renderer 로 그리게 한다
+
+---
+---
+---
+
+Primitive Component 하나당 Scene Proxy 하나
+
+
+즉 Level 에 StaticMeshComponent 가 1,000 개 놓여 있다면 FStaticMeshSceneProxy 는 1,000 개 생성된다.
+UStaticMeshComponent -> UMeshComponent -> UPrimitiveComponent -> USceneComponent -> UActorComponent -> UObject
+
+---
+
+Component ↔ Proxy 의 쌍
+
+Game Thread 세계에는 UPrimitiveComponent 
+Render Thread 세계에는 FPrimitiveSceneProxy
+
+---
+
+Scene Proxy 의 정보
+
+LocalToWorld transform
+Local bounds 와 World bounds: culling 용 AABB/Sphere
+
+Visibility flags: Cast Shadow, Receive Decal, Render In Main Pass, Render In Depth Pass
+
+Material relevance: 이 primitive 가 translucent 냐 opaque 냐, masked 냐, velocity 를 쓰냐
+어떤 render pass 에 참여할지 결정하는 메타데이터
+
+---
+
+Scene Proxy 는 vertex 데이터 자체를 소유하지 않는다. 
+Vertex buffer 와 index buffer 는 UStaticMesh 같은 asset 의 FRenderResource 에 있다
+
+같은 StaticMesh 를 Level 에 100 번 배치해도 vertex buffer 는 한 벌만 GPU 메모리에 있다
+Proxy 는 100 개 있지만 각 Proxy 는 같은 buffer 를 가리킨다
+
+---
+
+FScene 과 FSceneRenderer
+
+Scene 전체의 조율(culling pass, sorting, light assignment 등)
+
+---
+
+Local vs World bounds
+
+Local bounds are invariant
+World bounds need to be recomputed whenever transform changes
+
+---
+
+FScene 
+
+태어나는 스레드는 Game Thread
+그러나 "태어난 후의 삶"은 Render Thread 
+
+UWorld::InitWorld() → UWorld::CreateScene() 
+  GetRendererModule().AllocateScene(...) 를 호출
+  FScene 객체를 힙에 할당
+
+"World 가 태어날 때마다 FScene 이 하나 함께 태어난다"
+한 UWorld 당 하나의 FScene, 1:1 관계
+
+
+소유자는 UWorld 이다
+관리(상태 조작)하는 스레드는 Render Thread 이다.
+
+FScene 내부의 Primitives 배열에 항목을 추가/제거하는 것, Octree 에 삽입/제거하는 것, Light interaction 을 갱신하는 것
+
+Game Thread 는 변경을 직접 수행하지 않고 ENQUEUE_RENDER_COMMAND 매크로로 "이런 변경을 해달라" 는 람다를 
+Render Thread 의 command queue 에 투입한다
+Render Thread 가 자기 tick 에서 그 람다를 실행하며 비로소 FScene 이 변한다
+
+이 구조의 핵심은 "소유권(lifetime)" 과 "상태 수정권(mutation)" 이 서로 다른 스레드에 분리되어 있다는 점
+
+---
+
+FPrimitiveSceneProxy 
+
+태어나는 스레드는 Game Thread
+
+CreateSceneProxy() 
+  new FStaticMeshSceneProxy(this)
+
+---
+
+Engine 시간 구조 상의 지점은 Component 의 registration 경로
+
+UActorComponent::RegisterComponent()
+  └─ UActorComponent::CreateRenderState()  (virtual)
+       └─ UPrimitiveComponent::CreateRenderState_Concurrent(Context)
+            └─ SceneProxy = CreateSceneProxy()   [여기서 new]
+            └─ GetWorld()->Scene->AddPrimitive(this)
+                 └─ ENQUEUE_RENDER_COMMAND(…, [](){ Scene->AddPrimitiveSceneInfo_RenderThread(Proxy); })
+
+
+이 경로가 Engine Loop 시간 구조에서 촉발되는 계기
+  Level 로드
+  SpawnActor
+  Dynamic Component 생성
+  MarkRenderStateDirty() 이후의 재생성
+
+
+Proxy 는 Game Thread 에서 new 되지만 즉시 ENQUEUE_RENDER_COMMAND 에 포인터가 실려 Render Thread 로 "이양" 된다. 
+그 시점 이후로 Proxy 의 소유자이자 유일한 접근자는 Render Thread 이다. 
+
+UPrimitiveComponent::SceneProxy 멤버 포인터는 Game Thread 가 여전히 들고 있지만, 
+이 포인터의 용도는 존재 여부 확인과 파괴 요청 발신에 국한
+
+
+Transform 이 바뀔 때(SendRenderTransform_Concurrent) Game Thread 는 새 transform 값을 람다에 담아 Render Thread 로 보내고
+Render Thread 가 Proxy 의 LocalToWorld 멤버를 수정한다
+
+---
+---
+---
+
+deferred renderer 는 한 frame 에 여러 pass 를 순차 실행하며
+(Depth Prepass, Base Pass, Shadow Depth Pass, Decal Pass, Translucency Pass, …), 
+각 pass 는 "어떤 primitive 들을 입력으로 받는가" 의 list 를 가진다. 
+각 primitive 의 visibility flag 들은 "나는 어느 pass 의 입력 list 에 들어갈 것인가" 를 선언한다.
+
+
+Cast Shadow
+Shadow Depth Pass
+light 의 시점에서 scene 의 depth 만 렌더링하여 shadow map 을 만드는 pass
+
+view pass 와 분리되어 있으므로 "카메라에서 보이는가" 와 "그림자를 드리우는가" 가 독립적으로 선택 가능하다
+
+techniques
+보이지 않는 shadow caster
+시각적으로는 없지만 그림자만 드리우는 mesh 로 복잡한 mesh 의 그림자를 근사
+
+---
+
+Receive Decal
+Decal Pass 에서 decal projection 의 대상이 될지 
+
+---
+
+Render In Main Pass
+Base Pass(opaque) 또는 Translucency Pass 에 참여할지
+
+사실상 "카메라에 실제로 보이는가" 의 질문
+
+---
+
+Render In Depth Pass
+Depth Prepass 에 참여할지
+
+opaque 의 depth 만 빠르게 기록하여 base pass 의 Early-Z 최적화를 가능하게 하는 pass
+
+---
+
+(Main=T, Shadow=T, Depth=T, Decal=T) — 모든 것에 참여하는 평범한 opaque 오브젝트
+
+(Main=F, Shadow=T, Depth=T, Decal=F) — 보이지 않지만 그림자를 드리우는 proxy
+
+(Main=T, Shadow=F, Depth=F, Decal=F) — translucent particle effect
+
+(Main=T, Shadow=T, Depth=T, Decal=F) — 1인칭 무기(피 안 묻게)
+
+---
+---
+---
+
+Particle buffer 는 한 Emitter 의 모든 살아있는 파티클의 attribute 값을 담는 GPU/CPU 메모리 영역이다
+물리적으로는 SoA 레이아웃으로 배치된 연속 메모리 블록
+
+개념적으로는 각 particle이 row이고 각 attribute는 column 이다
+물리적으로는 각 attribute(column) 은 독립된 배열이다
+
+p0: {pos, vel, col, size}
+p1: {pos, vel, col, size}
+...
+
+Position:  [p0.pos, p1.pos, p2.pos, p3.pos, ...] 
+Velocity:  [p0.vel, p1.vel, p2.vel, p3.vel, ...] 
+Color:     [p0.col, p1.col, p2.col, p3.col, ...] 
+Size:      [p0.size, p1.size, p2.size, p3.size, ...]      
+
+---
+
+Update script 에서 "모든 파티클의 Position 에 Velocity*DeltaTime 을 더한다" 는 연산
+이 연산은 Position column 과 Velocity column 의 같은 index 를 순차 읽는다
+
+AoS 였다면 한 thread 가 struct 를 통째로 읽으면서 지금 필요 없는 Color/Size 까지 cache 에 끌어오는 낭비가 생긴다.
+
+---
+---
+---
+
+의존관계 정의의 두 위치
+
+의존자 쪽 선언(bottom-up): A 가 "나는 B 가 필요하다" 고 말함
+관리자 쪽 선언(top-down): System 이 "A 는 B 뒤에 와야 한다" 고 말함
+
+
+의존 관계가 System 에 선언되어 있다면, Emitter 를 다른 System 으로 옮길 때 개발자가 새 System 에서 의존 관계를 다시 셋업 해야 한다.
+이는 Emitter 의 재사용을 저해한다
+
+Emitter 가 자기 의존을 스스로 들고 다니면, 어느 System 에 drop-in 하더라도 
+"이 Emitter 를 쓰려면 그 전에 X 라는 이름의 Emitter 가 있어야 한다" 는 요구가 자동으로 따라온다
+
+---
