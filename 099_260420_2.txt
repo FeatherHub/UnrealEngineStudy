@@ -1,0 +1,1235 @@
+Bandwidth 
+
+아날로그 통신
+"주파수 대역의 폭"(Hz). 
+신호가 차지하는 주파수 구간의 너비
+
+Shannon–Hartley 정리를 통해 이것이 채널 용량(bits/sec)의 상한을 규정한다는 점이 드러나면서, 
+디지털 맥락에서는 "채널의 이론적 최대 전송 용량"으로 의미가 확장
+매체(channel)의 정적 속성
+
+---
+
+Throughput 
+산업공학/큐잉이론
+파이프라인을 통과해 단위시간당 실제로 완료되는 작업량
+
+프로토콜 오버헤드·경합·재전송 때문에 bandwidth 보다 작거나 같아
+
+
+Throughput = (completed work units) ÷ (unit time)
+work unit 이 무엇이냐에 따라 IPS, FLOPS, TPS, bytes/sec, packets/sec
+
+Instructions Per Second,
+Floating Point Operations Per Second,
+Transactions Per Second (DB)
+
+
+Instruction 하나가 반드시 Operation 하나랑 일치하지 않는다
+
+---
+
+Bandwidth = 채널의 잠재력(capacity, 정적)
+Throughput = 실제 전달률(rate, 동적)
+
+ideal ↔ actual 의 쌍
+
+---
+
+전송은 정보를 보존
+f(x) = x
+
+계산은 정보를 변환
+f(x, y) = x AND y
+비가역적
+
+---
+---
+---
+
+메모리 컨트롤러를 CPU 다이에 통합했어 (IMC, Integrated Memory Controller)
+"CPU ↔ Memory Controller" 구간은 on-die
+
+<=>
+FSB(Front Side Bus) + 별도 Northbridge 모델
+
+---
+
+on-die 구간 (코어 내부, 코어 ↔ 캐시, 코어 ↔ IMC)
+인터커넥트는 전용 on-chip fabric
+
+Intel 은 Ring → Mesh
+
+물리적 거리는 mm 이하
+신호 매체는 다이 내 금속 배선
+폭은 256/512/1024 비트 병렬
+지연은 수 ns
+대역폭은 수백 GB/s
+
+---
+
+off-die 구간 (IMC ↔ DIMM)
+
+DDR4/DDR5 라는 timing 을 가진 synchronous burst 프로토콜
+
+물리적 거리는 cm 단위
+(소켓 핀 → 메인보드 PCB trace → DIMM 슬롯)
+
+지연은 수십 ns (tCL, tRCD 등)
+
+대역폭은 채널당 수십 GB/s
+
+---
+
+tCL, tRCD
+
+t는 시간(Time) 혹은 클럭 사이클(Clock Cycles)
+
+Column Address Strobe Latency
+메모리 컨트롤러가 RAM에 특정 데이터를 요청한 후, RAM이 해당 데이터를 준비하여 출력을 시작할 때까지 걸리는 시간
+
+
+RAS to CAS Delay
+데이터가 들어있는 행(Row)을 활성화한 후, 그 행 안에서 정확한 열(Column) 주소에 접근할 수 있을 때까지 기다려야 하는 대기 시간
+도서관에서 원하는 책이 있는 '층(Row)'을 찾아 올라간 뒤, 그 층의 구체적인 '구역(Column)'으로 이동하기 전까지 필요한 시간
+
+---
+
+다이 내부에서는 신호가 ㎚ 스케일의 산화막/금속 구조 안에서 움직이고,
+메인보드에서는 ㎝ 스케일 PCB trace 에서 움직인다. 
+
+거리가 커지면 신호 무결성, 전력, EMI 문제가 심각해져서 프로토콜 구조 자체가 달라진다
+
+async parallel 에서 synchronous with training 으로, 다시 serial differential 로.
+
+---
+---
+---
+
+RAM 은 USB 로 가는 데이터 경로의 "경유지"가 아니라 staging 장소
+
+(1) CPU 가 RAM 에 데이터를 씀 — core → on-die interconnect → IMC → DDR bus → DIMM.
+
+(2) CPU 가 USB host controller 의 레지스터에 "이 RAM 주소의 데이터를 보내라"고 MMIO 로 명령함.
+
+(3) USB host controller 가 bus master 로서 직접 RAM 을 DMA 로 읽음 — controller → PCIe → IMC → RAM, 다시 반대 방향으로 데이터.
+
+(4) USB host controller 가 USB 프로토콜대로 패킷화해서 USB 버스로 송출.
+
+(5) USB flash drive 내부 컨트롤러가 NAND 에 씀.
+
+---
+
+"중앙 DMA 컨트롤러"라는 단일체가 있는 것이 아니라 
+DMA 능력이 각 PCIe 디바이스에 분산
+모든 PCIe bus master 가 자체 DMA 엔진을 갖고 있다
+
+---
+---
+---
+
+DDR bus
+
+Source-synchronous
+전송 거리가 짧고 신호 품질이 좋아야만 성립하는 스타일
+
+
+Burst-oriented
+한 번의 READ/WRITE 명령이 연속된 8~16 개의 beat 를 뱉어냄
+주소 하나로 연속 데이터를 퍼내는 식
+DRAM 의 row buffer 구조를 활용하기 위함
+
+
+Master-slave 완전 비대칭
+memory controller 만이 명령을 발행하고, DRAM 은 수동적으로 응답하기만
+DRAM 은 자발적 행위 능력이 없고, 거대한 수동 저장소일 뿐
+
+
+Parallel
+데이터선이 병렬로 다수
+DDR4 채널은 64 data + 8 ECC
+DDR5 는 32+32 두 sub-channel
+
+
+프로토콜 오버헤드가 거의 없고, 
+DRAM 의 물리적 특성(row activate, precharge, refresh)에 맞춰 타이밍이 얇게 깎여 있어.
+
+---
+
+On-die interconnect
+packet-switched network on chip
+
+
+Intel 의 Ring bus
+코어, LLC slice, IMC agent, System Agent 등이 stop 으로 배치된 링
+각 stop 에 agent 가 있고 packet 을 주고받는다
+
+
+LLC
+Last Level Cache, 보통 L3 캐시
+각 코어 옆에 Slice 단위로 쪼개져 배치
+모든 코어가 이 슬라이스들에 분산된 전체 L3 캐시 용량에 접근
+
+
+System Agent
+과거 Northbridge의 기능을 CPU 내부로 통합한 제어부
+이 안에는 IMC(Integrated Memory Controller, 통합 메모리 컨트롤러), 디스플레이 엔진(iGPU 출력), PCIe 컨트롤러, 전력 제어 유닛(PCU)
+등이 포함
+
+
+Skylake 이후 server 급은 Mesh
+2D grid 의 각 tile 에 agent, packet 이 mesh routing 됨
+
+
+이 네트워크가 cache coherence protocol (MESI 계열) 을 first-class 로 지원
+"읽기/쓰기 요청"만이 아니라 "누가 이 캐시라인을 소유 중인가"의 상태 메시지까지 포함
+DDR bus 와는 의미론적 층위가 다르다
+
+
+DDR 은 단순한 memory 요청 운반
+on-die fabric 은 coherent distributed system 의 메시지 버스
+
+---
+
+Bus master
+
+고전 PC 에서는 CPU 만이 master 였고, 모든 I/O 는 CPU 가 byte 단위로 중개 (PIO, programmed I/O)
+
+DMA(Direct Memory Access) 
+장치에게 bus 를 쓸 권한을 임시로 넘기는 것
+이게 더 급진화돼서 — 모든 PCIe endpoint 가 잠재적 bus master
+
+GPU, NVMe, NIC, USB host controller 전부가 CPU 없이 직접 RAM 을 읽고 쓸 능력을 가짐
+
+---
+
+USB host controller ↔ RAM
+
+단일 매체가 아니고 여러 구간의 이어 붙임
+
+---
+
+physical address space 는 RAM 이 아니다
+
+physical address space 는 "routing table 의 key space"다.
+
+CPU 는 mov [0x...], 0x42 같은 store 를 실행해. 
+CPU 는 이 주소가 RAM 인지 device register 인지 알지 못해
+CPU 는 그냥 "이 주소에 이 값을 써라"는 store 를 on-die interconnect 에 던져.
+
+interconnect 상에 address decoder 가 있어
+부팅 시 firmware(UEFI/BIOS) 가 설정한 mapping 에 따라
+
+주소가 RAM 영역 → IMC 로 라우팅 → DDR 트랜잭션
+주소가 PCIe MMIO 영역 → IIO(Root Complex) 로 라우팅
+주소가 local APIC 영역 → APIC 로 라우팅 (Advanced Programmable Interrupt Controller)
+
+---
+
+APIC
+과거의 PIC를 대체
+다중 코어 환경에서 인터럽트 신호를 배분하기 위해 설계
+
+Local APIC (LAPIC)
+각 CPU 코어 내부에 하나씩 존재
+해당 코어에 직접 전달되는 인터럽트를 관리
+주소가 Local APIC 영역으로 지정된 패킷은 외부로 나가지 않고, 링 버스에서 각 코어의 LAPIC 정류장으로 라우팅
+
+I/O APIC
+보통 칩셋(PCH)이나 System Agent 근처의 I/O 서브시스템에 위치
+외부 장치(키보드, 마우스, 네트워크 카드 등)에서 발생하는 인터럽트 신호를 받아 어떤 코어(LAPIC)로 보낼지 결정
+
+---
+
+MMIO는 별도의 명령 집합이 아니야
+평범한 load/store 인데, 목적 주소가 우연히 device 에게 매핑돼 있을 뿐
+
+CPU의 ISA에 "장치와 말하는 명령" 같은 걸 추가할 필요가 없고, 주소 공간이라는 기존 추상을 재사용해서 I/O 까지 포섭
+
+---
+
+부팅 시 어떻게 routing 이 설정되는가
+
+PCIe device 는 각자 BAR (Base Address Register) 를 갖고 "나는 이 만큼의 MMIO 공간이 필요" 라고 선언
+
+UEFI 가 enumeration 중에 이 요청을 모아서 physical address space 안의 각 BAR 에 non-overlapping range 를 배정 
+그 range 를 해당 device 로 라우팅하도록 decoder 를 프로그래밍
+
+이 과정이 끝나면 address space 가 "RAM | device A 영역 | device B 영역 | ..." 로 분할된 map 이 돼
+
+---
+
+UEFI (Unified Extensible Firmware Interface)
+
+과거 **BIOS(Basic Input/Output System)**를 대체
+
+하드웨어 초기화: 전원을 켜자마자 CPU, 메모리, 저장장치 등을 점검하고 사용할 준비를 마칩니다
+주소 할당 (Resource Allocation): PCIe 장치의 **BAR(Base Address Register)**를 읽어 MMIO 주소 범위를 배정
+부트 로더 실행: 하드웨어가 준비되면 저장장치에 있는 OS 부트 로더(예: Windows Boot Manager)를 찾아 제어권을 넘겨줍니다
+
+BIOS와의 차이
+대용량 지원: 2.2TB 이상의 고용량 디스크(GPT 파티션)를 인식
+보안 부트 (Secure Boot): 신뢰할 수 없는 악성 소프트웨어가 부팅 과정에 개입하는 것을 차단
+속도: 16비트 모드로 작동하던 BIOS와 달리 32비트 또는 64비트 모드로 작동
+유연성: 마우스 입력이 가능한 그래픽 인터페이스를 제공
+
+---
+
+GPT (GUID Partition Table)
+
+물리적인 하드 디스크나 SSD에서 파티션(영역)을 나누고 관리하는 표준 규격
+과거 MBR(Master Boot Record) 대체 
+UEFI 표준의 일부로 도입
+
+MBR은 주소 지정 방식의 한계로 최대 2.2TB까지만 인식
+GPT는 **9.4ZB(제타바이트)**까지 지원 (1ZB = 약 10억 TB)
+
+MBR은 기본 파티션을 4개까지만 만들 수 있으나
+GPT는 128개 이상의 파티션을 생성할 수 있습니다
+
+파티션 정보(헤더)를 디스크의 맨 앞뿐만 아니라 맨 뒤에도 복사본으로 저장합니다. 
+앞부분이 손상되어도 뒷부분의 데이터를 통해 복구가 가능합니다.
+
+파티션 테이블의 오류를 감지하기 위해 순환 중복 검사(CRC)를 수행하며, 
+데이터 오염 시 이를 스스로 감지할 수 있습니다.
+
+---
+
+device 는 자기 레지스터들에 write 가 오길 기다리고 있다가, write 가 오면 그 write 자체를 "명령"으로 해석
+
+USB host controller 의 "DoorBell" 레지스터에 1 을 쓰면 "새 descriptor 가 있으니 확인해라"라는 뜻
+CPU 의 명령은 *"장치야 이걸 해라"*가 아니라 "이 주소에 이 값을 써라" 로 표현
+그 의미는 장치가 자기 레지스터의 해석 규약을 통해 부여
+
+---
+
+CPU 는 "주소가 있는 공간에 값을 쓴다" 는 단일 행위만 해. 
+그 행위가 연산이 되는지 I/O 가 되는지는 address space routing 이라는 외부 구조가 결정
+
+---
+
+Root Complex (RC)
+
+
+위쪽 세계 — CPU 내부. 
+일관성 있는(coherent) 메모리 의미론
+load/store 명령의 세계
+
+
+아래쪽 세계 — PCIe
+"네트워크 위를 지나가는 패킷들"
+
+
+RC 가 이 경계에서 양방향 번역을 담당
+
+CPU 의 "mov [MMIO_addr], 값"을 받아  → PCIe Memory Write TLP 로 포맷팅
+
+PCIe device 가 DMA 로 보낸 Memory Write TLP 를 받아서 → on-die fabric 의 coherent write 요청으로 변환
+
+---
+
+Root Complex
+
+CPU 다이 안의 IIO (Integrated I/O) / System Agent / Uncore 영역
+
+"다이 안쪽" 과 "다이 바깥 I/O 세계"를 잇는 통로 (DDR/DRAM 제외 — 그건 IMC 담당).
+
+칩을 벗어나는 I/O 트래픽은 여기서 발원하거나 여기에 종착
+
+---
+
+Root Complex
+
+아래로 switch 와 endpoint 들이 매달려
+
+
+---
+
+MSI / MSI-X (Message Signaled Interrupts / Extended)
+
+과거에는 인터럽트를 보내기 위해 메인보드에 물리적인 "전용 선(Pin)"을 사용
+"MSI"는 물리적인 선 대신, 장치가 특정 주소에 데이터를 써서(Memory Write) 인터럽트를 발생시킵니다
+
+이 패킷은 PCIe 버스를 타고 RC로 전달됩니다
+"RC"는 이 패킷이 일반적인 RAM 쓰기가 아니라 인터럽트 신호임을 감지
+
+"RC"는 이를 시스템 버스(Ring Bus 등)를 통해 대상 코어의 "APIC"으로 전달
+
+---
+
+Root Complex 는 PCIe 스펙 안에서 정의되는 역할
+"이 아키텍처에는 root 에 Root Complex 라는 컴포넌트가 있어야 한다"
+
+---
+
+"CPU" — "FSB"(Front Side Bus) — "Northbridge" — RAM / AGP
+
+Northbridge
+메모리 컨트롤러를 내장
+"AGP"(Accelerated Graphics Port)를 제어
+
+---
+
+"CPU" — "FSB"(Front Side Bus) — "Northbridge" - "internal bus" - Southbridge — USB / IDE / PCI / audio / BIOS
+
+"Northbridge"가 고속 장치들을 담당했다면, 
+"Southbridge"는 상대적으로 속도가 느린 입출력 장치들을 한데 모아 관리
+
+
+IDE (Integrated Drive Electronics)
+HDD나 CD-ROM 드라이브를 메인보드에 연결하기 위해 사용된 인터페이스
+PATA(Parallel Advanced Technology Attachment)라고도 부릅니다
+
+현재는 직렬 방식인 ""SATA""(Serial ATA)에 대체되었습니다
+
+
+PCI (Peripheral Component Interconnect)
+사운드 카드, 랜 카드, 초기 그래픽 카드 등 다양한 확장 카드를 슬롯에 꽂아 사용할 수 있게 해주는 "범용 버스" 규격
+병렬 공유 버스 방식이라 여러 장치가 동시에 데이터를 보내면 속도가 느려지는 단점
+이를 개선하여 점대점(Point-to-Point) 직렬 방식으로 발전한 것이 현재의 ""PCIe""(PCI Express)
+
+---
+
+"CPU" — "FSB"(Front Side Bus) — "Northbridge" - "internal bus" - Southbridge — USB / IDE / PCI / audio / BIOS
+
+FSB parallel bus 가 bottleneck
+
+CPU ↔ 메모리 트래픽, CPU ↔ GPU 트래픽, CPU ↔ I/O 트래픽이 전부 이 하나의 버스에서 경합
+멀티코어·멀티소켓 시대가 오자 FSB 는 스케일 실패
+
+---
+
+멀티소켓
+
+하나의 메인보드에 두 개 이상의 CPU를 장착하는 구성
+
+3-Chip Architecture
+Northbridge/Southbridge Architecture
+
+CPU가 2배가 되어도 데이터를 나르는 길은 그대로니, 각 CPU가 쓸 수 있는 대역폭은 절반으로 줄어들었습니다
+
+CPU가 먼저 버스를 사용할지 결정하는 과정에서 지연 시간이 발생
+
+각 CPU의 캐시 데이터 일관성을 유지하기 위해 서로의 상태를 확인하는 신호가 "FSB"를 가득 채워 
+정작 실제 데이터가 흐를 공간이 부족해졌습니다
+
+=>
+
+Platform Controller Hub Architecture
+2-Chip Architecture
+System on Chip Architecture
+
+---
+
+메모리 컨트롤러는 CPU 다이로 들어가서 지연을 줄이고, 
+PCIe Root Complex 도 CPU 로 들어가서 GPU/NVMe 를 직접 잡고, 
+
+점대점 serial link (DMI) 가 공유 FSB 를 대체. 
+남은 잡다한 I/O 만 PCH 에 모아둠.
+
+---
+
+한 package 안에
+Compute tile / SoC tile / GFX tile / IO tile
+
+---
+---
+---
+
+Root Complex
+
+PCIe 트리의 루트
+CPU 의 대리인
+이 아래로 모든 PCIe 장치가 매달려
+RC 안에 여러 Root Port 가 들어 있어.
+
+
+Root Port
+"RC 의 팔"
+RC 에 속한 downstream 포트
+각 root port 가 하나의 PCIe 링크를 외부로 뻗어
+
+한 root port 가 x16 이든 x4 이든, 그 링크는 반드시 하나의 장치 또는 하나의 스위치로 이어져
+(점대점이 PCIe 의 기본 원칙)
+
+---
+
+Switch 
+
+레인이 모자라거나 한 포트를 여러 장치에 나눠 써야 할 때 분배기
+서버·워크스테이션에 많음
+
+
+Endpoint 
+
+실제 장치 (GPU, NVMe SSD, NIC, 캡처카드 등)
+
+---
+
+Capture Card
+
+외부의 영상/음성 신호(콘솔 게임기, 카메라 등)를 신호를 받아 실시간으로 
+컴퓨터가 처리할 수 있는 디지털 데이터로 변환해주는 장치입니다.
+
+외부 영상 신호 → 캡처카드 프로세서 → PCIe 버스 → PCH → DMI 링크 → CPU/RAM
+
+
+DMI (Direct Media Interface)
+
+CPU와 PCH 사이의 모든 통신은 DMI 링크를 통해 이루어집니다.
+
+PCH에 연결된 모든 주변기기의 데이터는 DMI를 거쳐야만 CPU와 메모리에 도달할 수 있습니다
+CPU가 PCH에 연결된 장치들에 명령을 내리거나 상태를 확인할 때도 이 통로를 사용합니다.
+
+---
+
+PCIe-to-PCI / PCI-to-PCIe Bridge
+
+legacy PCI 장치를 PCIe 트리에 합류시키는 번역기
+
+---
+
+Lane — 한 방향 차동쌍(2 선) + 반대 방향 차동쌍(2 선) = 4 선
+세대마다 고정 속도 (Gen4 ≈ 16 GT/s, Gen5 ≈ 32 GT/s).
+
+
+Link — 두 장치 사이를 잇는 레인 묶음
+x1, x4, x8, x16
+한 링크에는 두 장치만
+PCI 의 "공유 버스" 와의 결정적 차이
+
+
+Slot / Connector — 보드 위의 물리적 커넥터
+"x16 슬롯" 은 물리적으로 최대 16 레인을 받을 수 있는 커넥터
+물리 커넥터와 실제 연결 레인이 다를 수 있어 ("x16 slot running x4")
+
+---
+
+Physical layer
+인코딩(Gen1/2 는 8b/10b, Gen3+ 는 128b/130b)
+link training
+
+
+Data Link layer
+신뢰성. ACK/NAK
+
+
+Transaction layer 
+단위는 TLP (Transaction Layer Packet)
+
+
+Configuration Space
+각 장치가 가진 4 KB 레지스터 영역
+Vendor ID, Device ID, BAR
+
+---
+
+PCI 에는 실제로 공유 버스가 있었고 모든 장치가 거기 걸렸는데
+PCIe 는 switched point-to-point network 구조
+"Root Complex + Switch + Links 로 이루어진 트리 fabric"
+
+---
+
+IIO (Integrated I/O) 는 CPU 다이의 물리적 구역 이고,
+Root Complex 는 그 구역이 맡은 여러 역할 중 하나야
+
+IIO 는 더 큰 물리적 컨테이너고
+RC 는 그 안의 한 기능 블록
+
+---
+
+IIO 
+
+Root Complex — 외부 PCIe 장치들과 말하는 블록
+DMI 컨트롤러 — PCH 와의 전용 링크 관리
+UPI / QPI 컨트롤러 (서버급) — 다른 소켓 CPU 와의 링크
+
+
+IIO 는 "국제공항 청사", 
+RC 는 그 안의 "국제선 터미널". 
+국내선 터미널(DMI), VIP 전용(UPI)
+
+---
+
+왜 PCIe 라 하지 않고 DMI 라고 이름 붙였는가
+
+PCIe는 범용 슬롯
+DMI 는 CPU↔PCH 만 을 위해 존재
+고정 파트너와의 고정 대화에 최적화한 shortcut.
+
+
+CPU↔PCH 만의 특수 메시지
+PCIe 표준 TLP 로만 표현하기 불편
+레거시 인터럽트 라우팅, 호환성 SMI (System Management Interrupt), 전력 상태 전이
+
+
+---
+
+address decoder 는 CPU 안에 계층적으로 여러 군데 분산
+
+
+ALU / AGU (Address Generation Unit)
+  피연산자로부터 virtual address 계산
+
+MMU / TLB — virtual address → physical address 번역
+  TLB miss 면 page table walk
+
+L1 → L2 캐시
+  physical address 로 조회
+  hit 이면 끝. miss 면 코어 바깥
+
+on-die Ring 진입
+  라우팅 결정
+  주소의 특정 비트로 hashing 해서 어느 LLC slice / home agent 로 갈지 결정
+
+System Address Decoder (SAD)
+  System Agent 안에 있음
+  흔히 "the address decoder" 라 부르는 게 이것
+  이 주소가 DRAM 영역인가, MMIO 영역인가
+  DRAM 이면 어느 채널인가
+  MMIO 면 어느 root port / DMI / UPI 로 보낼 것인가
+
+
+DRAM 이면
+
+IMC 내부의 Target Address Decoder (TAD) 로 "어느 채널, 어느 rank, 어느 bank, 어느 row/column" 까지 계산 → DDR 트랜잭션
+
+MMIO 이면
+
+SAD 판정에 따라 IIO 안의 해당 Root Port / DMI / UPI 로 라우팅 
+그 Root Port 안의 BAR 매칭 로직 이 어떤 endpoint 의 어느 BAR 영역인지 식별
+TLP 로 포장해서 링크로 내보냄.
+
+---
+
+CPU 내부의 주소는 여러 decoder 를 통과하는 동안 조금씩 구체화
+
+---
+
+Root Port 는 "RC 가 바깥 세계로 내는 출구 하나하나"를 가리키는 내부 역할
+
+물리적으로 "링크"는 Root Port 와 장치(Endpoint)를 잇는 선이고, 
+Root Port 는 그 링크의 RC 쪽 끝점
+
+RC (= 루트, CPU 다이 안)
+├ Root Port 0 ── (PCIe link) ── GPU (Endpoint)
+├ Root Port 1 ── (PCIe link) ── Switch ── Endpoint A
+│                                     ├── Endpoint B
+│                                     └── Endpoint C
+├ Root Port 2 ── (PCIe link) ── NVMe SSD (Endpoint)
+└ Root Port N ── ...
+
+---
+
+각 링크는 점대점
+PCI 에서처럼 "같은 버스 위의 여러 장치들이 차례를 기다리며 공유"하는 일이 근본적으로 없어
+
+여러 장치를 한 Root Port 뒤에 두고 싶으면 반드시 Switch 가 있어야 해
+
+---
+
+Sandy Bridge 이후로 Uncore을 System Agent라 부르기 시작
+코어가 아닌 CPU 다이의 나머지 영역
+
+QPI/UPI 컨트롤러, L3(LLC), snoop/coherence 로직, IMC, PCIe Root Complex, Thunderbolt 컨트롤러
+PCU (Power Control Unit), 디스플레이 엔진, DMI
+
+---
+
+Display Engine
+
+CPU 내부에 통합된 그래픽 하드웨어
+
+
+QPI / UPI (QuickPath Interconnect / UltraPath Interconnect)
+
+CPU 소켓 간 초고속 점대점 연결 통로
+
+---
+
+IIO (Integrated I/O) 는 System Agent 안의 I/O 담당 서브영역
+
+---
+
+PCH (Platform Controller Hub)
+
+메인보드 위의 별도 칩
+
+CPU 와 DMI 로 연결
+외부 I/O 를 담당
+
+USB (여러 세대의 xHCI 컨트롤러, 다수 포트), SATA, Gigabit Ethernet MAC, HD Audio
+네 메인보드에서 M.2 슬롯이 둘 있는데 하나는 "CPU 직결", 하나는 "PCH 경유"로 갈라지는 게 바로 이 구분
+
+부팅 펌웨어(UEFI/BIOS) 가 들어있는 flash 에 접근하는 SPI
+embedded controller 와 대화하는 eSPI/LPC
+보드 위 저속 센서용 SMBus/I²C, RTC(실시간 시계)
+HPET
+
+시스템 전체의 전력 상태 전이 (S0, S3, S5 등), 각 부품의 클럭 분배, 리셋 신호 라우팅
+
+legacy 인터럽트 컨트롤러(PIC), IOAPIC, 메인보드의 수많은 GPIO 핀
+
+---
+
+SPI (Serial Peripheral Interface)
+BIOS/UEFI 펌웨어가 저장된 플래시 메모리 칩과 통신
+CPU가 켜지자마자 이 SPI 통로를 통해 부팅 코드를 읽어옵니다
+
+
+EC (Embedded Controller):
+노트북의 배터리 상태, 팬 속도
+
+
+SMBus (System Management Bus) / I²C (Inter-Integrated Circuit)
+메인보드 위 각종 온도 센서, 전압 센서 등에 사용
+
+
+HPET (High Precision Event Timer)
+타이머(PIT, RTC 등)는 정밀도가 낮아 현대적인 고화질 영상이나 오디오 동기화에 한계
+매우 높은 주파수로 카운트하며 나노초 단위의 정밀한 인터럽트를 발생
+
+---
+
+ISA (Industry Standard Architecture)
+
+IBM PC의 버스 규격
+
+장치를 꽂을 때마다 충돌을 피하기 위해 사용자가 직접 점퍼 스위치를 조절해야 하는 등 관리가 까다로웠습니다
+
+
+SPD (Serial Presence Detect)
+
+모든 RAM 모듈에는 아주 작은 크기의 EEPROM(비휘발성 메모리) 칩이 붙어 있는데, 
+여기에 해당 RAM의 상세 정보가 기록되어 있습니다.
+
+"UEFI/BIOS"는 부팅 시 "SMBus"를 통해 이 칩에 접속하여 다음 정보를 읽어옵니다.
+
+동작 속도 및 타이밍: "이 RAM은 3200MHz에서 안정적으로 돌아가고, CL 값은 22구나."
+작동 전압: "1.2V를 공급해주면 되겠네."
+용량: "이 메모리는 16GB구나."
+
+
+사용자가 일일이 RAM 설정을 입력하지 않아도, CPU의 "IMC"가 "SPD" 정보를 보고 메모리를 최적의 상태로 가동합니다
+
+---
+
+CL, CAS Latency, Column Address Strobe Latency
+
+CPU가 메모리에 "이 데이터를 보내줘"라고 명령을 내린 뒤, 실제 데이터가 나오기 시작할 때까지 걸리는 대기 시간
+"22"는 이 대기 시간을 클록(Clock) 주기 단위로 센 값
+
+---
+
+Haswell-U 이후 모바일에서는 PCH 가 CPU 패키지 안에 작은 별도 die 로 들어갔고,
+Meteor Lake(2023) 이후로는 아예 패키지 내 "I/O tile" 로 통합
+
+PCH 는 논리적으로는 존재하되 물리적 위치는 점점 CPU 쪽으로 끌려들어오는 중
+
+데스크탑·서버에서는 여전히 별도 칩이 유리(I/O 다양성, 확장성, 교체성)
+
+"범주는 강인, 경계선은 이동"
+
+---
+
+bus 는 공유된 하나의 통로
+버스에 달린 모든 장치가 같은 선 한 묶음을 같이 씀
+한 번에 하나만 말할 수 있음, 그래서 순서대로 차례를 기다리는 모델
+
+
+fabric 은 수많은 점대점 링크가 규칙적 격자로 짜여 있는 것
+동시에 여러 쌍이 각자 말할 수 있고, 한 쌍의 대화가 다른 쌍을 막지 않아
+
+---
+
+Thread 
+
+논리적 연속성을 실이라는 가느다란 연속체로 은유한 것
+
+
+Fiber 
+
+thread 보다 가늘고 훨씬 많이 만들 수 있는 것
+실제 직물에서 여러 fiber 가 꼬여서 하나의 thread 를 이루듯
+fiber 는 "OS thread 보다 가볍고, 많이 만들어서 협력적으로 스케줄링하는 실행 단위"
+
+
+Warp — 직물의 날실(Warp). 베틀에 미리 팽팽히 걸어두고, 그 위를 씨실(Weft)이 가로지르며 천을 짜
+CUDA 의 warp — 32 개 스레드가 lockstep 으로 같이 움직이는 단위
+
+---
+
+CUDA (Compute Unified Device Architecture)
+엔비디아가 만든 병렬 컴퓨팅 플랫폼이자 프로그래밍 모델
+
+
+소수의 똑똑한 교수님들이 복잡한 문제를 순차적으로 해결하는 방식
+수천 명의 초등학생들이 단순한 덧셈 수만 개를 동시에 풀어버리는 방식
+
+---
+---
+---
+
+Die. 실리콘 웨이퍼에서 잘라낸 맨 실리콘 조각 자체
+
+
+Chip. 일상적 의미로는 "die + 패키지 + 핀/패드" 를 합친 것
+die 를 플라스틱/세라믹 패키지에 넣고 외부 세계와 전기적으로 연결할 핀을 낸 최종 물류 단위
+
+
+Package. chip 의 바깥 형태만을 따로 가리킬 때
+한 package 안에 여러 die 가 놓일 수 있다 (chiplet, MCM) 
+
+
+Module. 여러 chip 이 하나의 작은 sub-PCB 위에 묶여 한 단위로 판매·장착되는 것
+"한 기능을 위해 여러 chip 이 묶인 하위 PCB"
+
+예시1 DIMM (Dual In-line Memory Module)
+8~16 개 DRAM chip + SPD EEPROM 
+
+예시2 M.2 SSD 도 controller chip + NAND chip 들이 M.2 module 위에 얹혀 있어
+
+
+Card. 더 큰 PCB 
+시스템의 확장 슬롯에 꽂히는 독립 보드
+GPU card, sound card, network card, capture card
+IBM PC 의 ISA "expansion card"
+자체 전원 회로·방열 구조·외부 포트
+
+
+Board. 가장 큰 PCB 층위
+motherboard
+한 시스템의 가장 큰 기판으로, 거기에 chip·module·card 가 다 얹혀
+
+---
+
+그래픽 카드 
+GPU chip + VRAM chip 들 + VRM + 방열판 + DisplayPort/HDMI 출력포트
+PCIe 슬롯용 PCB
+
+
+BGA (Ball Grid Array)
+
+반도체 칩을 인쇄회로기판("PCB")에 실장(Mount)하는 방식 중 하나
+
+칩 바닥 전체를 접점으로 활용
+
+
+VRM (Voltage Regulator Module)
+
+전기를 변환해 주는 "변전소" 역할
+
+파워서플라이는 12V의 고전압을 보내주지만, GPU die는 1V 전후의 정밀하고 낮은 전압에서만 작동
+
+울퉁불퉁한 전압의 흐름을 평탄하게 다듬어 매끄러운 직류(DC) 상태로 만든다
+이 과정을 통해 출렁이던 전압이 일정한 높이를 유지하는 전기로 변합니다
+
+---
+
+PCIe 는 프로토콜이고, PCH 는 그 프로토콜을 써서 CPU 에 매달리는 하나의 chip
+
+
+PCH 는 CPU 와 DMI 로 연결
+DMI 는 PCIe 의 방언
+CPU↔PCH 링크 자체가 "PCIe 기반" 
+
+
+PCH 는 PCIe 트리의 한 노드
+PCH 에 USB xHCI controller, SATA AHCI controller, LAN controller, HDA controller이 PCIe endpoint로 붙어있다
+
+---
+
+xHCI
+Host Controller Interface
+과거의 "UHCI/OHCI"(USB 1.1)나 "EHCI"(USB 2.0)를 모두 통합
+키보드, 마우스 같은 저속 장치부터 외장 SSD 같은 고속 장치까지
+
+USB 장치 → xHCI 컨트롤러 → "PCH" → "DMI" → "CPU"
+
+---
+
+SATA AHCI Controller
+Serial Advanced Technology Attachment
+Advanced Host Controller Interface
+
+"NVMe" SSD가 보편화되면서 점차 비중이 줄어들고 있지만, 
+대용량 "HDD" 연결을 위해 여전히 "PCH"의 중요한 구성 요소로 남아 있습니다.
+
+---
+
+HDA
+High Definition Audio
+
+인텔이 2004년에 발표한 고음질 오디오 규격
+메인보드 내장 사운드의 표준
+(과거 AC97 규격을 대체)
+
+---
+
+Host Controller
+
+CPU(호스트)와 외부 주변기기 사이에서 **교통 정리**와 **통역**을 담당
+중간에서 CPU의 명령을 장치가 이해할 수 있는 신호로 바꾸고, 장치에서 오는 데이터를 정리해서 CPU에 보고
+
+"xHCI"(USB용), "AHCI"(SATA용), "NVMe 컨트롤러""등이 모두 호스트 컨트롤러의 일종
+
+---
+
+PCH 의 내부 구조는 외부에서 보기에 또 하나의 PCIe 부분 트리
+PCIe 생태계 안쪽에 잘 통합된 복합 노드
+
+---
+
+"컨트롤러는 PCH 안, 실제 물리 신호를 처리하는 아날로그 칩은 PCH 바깥" 
+
+PCH
+ └─ MAC (Media Access Control) 컨트롤러
+       │
+      ─── ( Media Independent Interface; MII 링크) ───
+       │
+     PHY 칩 (메인보드 위 별도 작은 칩)
+       │
+      ─── (아날로그 차동 신호, Cat5/6 케이블) ───
+       │
+      RJ45 포트
+
+MAC 은 프레임 만들기, 어드레싱, 충돌 감지, 체크섬 같은 디지털/프로토콜
+
+이더넷의 물리 신호 (전압 레벨, 라인 코딩, 클럭 복구, 차동 신호 구동) 는 아날로그 영역
+이건 PCH 바깥의 PHY 칩
+
+MAC <-> PHY 사이는 MII 계열의 짧은 전용 인터페이스로 연결
+
+
+10GbE 이상, 혹은 특수 NIC 은 PCH 를 우회해서 CPU 의 PCIe 에 직결된 별도의 NIC card 로 붙어 
+DMI 의 대역폭이 10GbE 한 개(1.25 GB/s) 는 감당해도 여러 개가 겹치면 포화되기 때문
+서버에서는 dual/quad 10GbE
+
+---
+
+PCH
+ └─ HDA (High Definition Audio) 컨트롤러
+       │
+      ─── (HDA link / 최근엔 SoundWire) ───
+       │
+     Audio Codec 칩 (예: Realtek ALC4080, 메인보드 위 별도 칩; Avance Logic Codec)
+       │
+       ├─ DAC (Digital-to-Analog) ──── line-out, headphone
+       └─ ADC (Analog-to-Digital) ──── mic-in
+
+
+고급 오디오 카드는 이 모든 걸 우회하고 PCIe로 직결되는 별도 card 로 구성
+
+---
+
+RC 는 "Root Port 들 + 그것들을 관리·조율하는 공통 로직"
+
+RC 안에 있는 것
+
+Root Port 들, 외부 PCIe 링크로 나가는 출구
+
+PCIe 쪽 Address decoder, CPU 가 발행한 MMIO store 의 주소를 보고 "어느 Root Port 로 보낼 것인가" 판정
+
+MSI/MSI-X 수신 및 라우팅
+PCIe device 가 인터럽트를 Memory Write TLP 로 보내면, 그 "interrupt message" 를 받아 CPU 의 APIC 쪽으로 전달.
+
+---
+
+MSI (Message Signaled Interrupts)
+
+과거의 "Legacy Interrupt"가 별도의 물리적 선(Sideband Pin)을 통해 전기 신호를 보내던 방식이라면, 
+MSI는 데이터를 전송하는 본래의 도로(PCIe 버스)를 통해 "특정한 메시지"를 메모리에 쓰는 방식으로 작동
+
+
+MSI-X
+
+"MSI"는 장치당 최대 32개의 인터럽트만 가질 수 있었지만, MSI-X는 최대 2,048개까지 지원
+각 인터럽트 메시지마다 다른 목적지 주소를 가질 수 있습니다. 
+예를 들어, 캡처카드의 1번 채널은 0번 코어가, 2번 채널은 1번 코어가 처리하도록
+
+---
+
+RC 는 공항 터미널이고, Root Port 는 그 터미널의 개별 게이트들
+
+게이트 집합만으로 터미널이 되는 게 아니라, 
+게이트들 + 체크인 카운터(config) + 수하물 라우팅(address decode) + 방송 시스템(MSI) + 관제(error)가 함께 있어야 터미널
+
+---
+---
+---
+
+이중 기록의 존재 자체가 "어긋남을 탐지하기 위해" 설계됐다는 점
+"어긋남", "비일관성"이 나오려면 두 개로 갈라져야 함
+
+---
+
+로마 제국.
+병렬 장부를 운영
+세리(稅吏) 가 보고한 금액과 실제 국고에 들어온 금액 사이의 어긋남
+
+---
+
+어사(御史)
+황제 직속의 감찰 계통. 
+행정 계통이 만든 기록에 맞서서 별도 기록을 유지하고, 어긋남을 황제에게 보고
+
+---
+
+하나의 기록만 있으면 그 기록의 주체가 속일 수 있다.
+
+두 번째 기록이 독립적으로 만들어지고, 두 기록을 대조 해야, 비로소 "실제"가 재구성
+
+contra- (반대편에, 대조하여) + rotulus (두루마리, 회계 장부)
+counter-roll-keeper
+반대쪽 두루마리를 쥔 자
+
+---
+
+"control" 이 "벗어남을 바로잡는다", "벗어나지 않게 막는다"의 의미로 확장
+
+대조 감사관, 감시관
+시정 조치의 권한
+
+---
+---
+---
+
+(1) 목표가 있다 (일정 수위, 일정 온도, 일정 속도, 장부 일치, 원하는 상태)
+(2) 드리프트 경향이 있다 (압력 강하, 불의 변동, 부하 변화, 인간의 오류·부정)
+(3) 감지가 있다 (float, 수은, 원심 원반, 병렬 장부, 레지스터 읽기)
+(4) 대조가 있다 (현재 vs 목표 — 이게 counter-roll 의 본질)
+(5) 작용이 있다 (밸브 움직임, damper 조절, 관리 파면, 다른 컨테이너 재시작)
+(6) loop 이 있다 (일회성 수정이 아니라 지속적 반복)
+
+controller 는 anti-drift agent 이다
+
+세계는 본질적으로(Default로) 드리프트한다. Controller 는 그 드리프트에 조직적으로 반대하는 기능이다.
+
+안정이 자연상태가 아니라 어긋남/Divergence가 자연상태
+
+---
+---
+---
+
+플레이어가 원하는 것. 입력 장치(키보드, 게임패드, 마우스) 의 상태
+Pawn 의 현재 상태. 월드 안에서의 위치, 속도, 애니메이션 상태
+
+플레이어가 "앞으로" 를 입력했는데 Pawn 이 아직 앞으로 안 갔으면, 그게 간극이야
+Controller 는 MoveForward 를 Pawn 에 지시해 간극을 좁혀
+
+플레이어가 카메라를 돌렸는데 view 가 아직 안 돌았으면, 그것도 간극이야
+Controller 가 ControlRotation 을 업데이트
+
+governor 는 "원하는 회전수" 와 "실제 회전수" 의 간극에 반응하여
+throttle 을 조절
+
+PlayerController 는 "플레이어가 원하는 상태" 와 "Pawn 의 실제 상태" 의 간극에 반응하여
+Pawn 명령을 발행
+
+---
+
+AIController 
+
+같은 자리에 다른 "desired state 의 공급원"
+
+---
+
+APlayerController 의 정체성은 "desired state 를 품고 있다" 는 데 있지, "어떤 특정 몸을 조종한다" 에 있지 않다
+
+"반대쪽 두루마리를 쥔 자"
+
+---
+
+"현실에 드리프트하는 몸" 과 "그에 맞서 목표를 유지하려는 의지" 
+
+---
+
+"control panel", "volume control", "controlled experiment"
+세밀한 조정 권한
+
+바라는 상태 -> 대상에 적용할 수 있음
+
+대상이 수동적임
+
+대상이 저항함
+"내가 원하는 상태" 와 "저게 하려는 상태" 의 간극
+
+---
+
+오류 검출에는 반드시 중복(redundancy)이 필요해.
+
+체크섬, 패리티 비트, ECC 메모리, RAID
+
+모두 "두 번째 기록" 의 변형이야
+
+
+한 기록의 사본
+<=> 
+진짜 두 기록이 되려면 두 기록의 생성 과정이 인과적으로 독립 이어야
+
+---
+
+ECC 메모리 (Error Correction Code Memory)
+
+Hamming Code
+
+---
+
+Byzantine fault tolerance 의 3f+1 정리
+
+---
+---
+---
+
+0단계 
+
+완전 수동
+
+볼륨 노브, 디지털 레지스터, 화분. 네가 쓴 상태가 곧 상태
+"control" 이 적용 또는 지정의 의미에 가장 가까운 곳
+
+1단계 
+
+물리적 드리프트, 동역학
+온도 조절되는 방, 물시계의 수조, 배의 선체
+바깥의 열손실·중력·관성·증발이 상태를 목표에서 흘려보내지만 교란 정도의 수준
+
+이 단계의 드리프트는 고차 미분방정식으로 결정
+
+---
+
+2단계
+
+흐르는 강, 바람, 복잡 유체, 군중의 브라운 운동
+
+댐 설계, 항공 관제, 유체역학적 제어
+
+---
+
+3단계
+
+간단한 AI, 동물. 말(馬), 소, 양떼
+각자의 국지적 충동 — 지금 배고프다, 지금 저쪽이 무섭다 — 이 있어서 가만 두면 그 충동을 따라 움직여
+
+네 desired state 와 우연히 일치할 때도 있고 우연히 어긋날 때도 있어
+
+기수의 고삐질, 목동의 지팡이
+
+---
+
+4단계
+
+상대가 너를 모델링해. 경쟁자, 적, 사용자, 시장, 정치
+
+네가 제어하려 한다는 걸 알고, 네 제어 방식을 예측해서 미리 반응해
+
+상대는 또 하나의 controller 야
+
+---
+
+ananke 
+planōmenē aitia
+
+drift 가 default state
+
+수동적이면서도 고집이 센 것
+
+---
+
+대상
+
+"아무 상태나 취할 수 있는 수동 공간" 이 아니야. 
+구조적으로 선호하는 상태와 거부하는 상태가 있어
+
+---
+
+대상은 우리가 기술할 수 있는 방식으로 기술될 수 있고, 우리가 기술한 대로 움직인다
+하지만 대상이 우리 기술 체계의 바깥에 일부를 갖고 있으면 우리의 logos는 부분적일 수밖에 없다
+
+logos 의 physis와 대상의 physis 의 불일치
+
+
+"대다수를"
+부분성
+
+---
+
+모델 불일치. 수학 모델이 대상의 동역학을 일부만 포착
+
+범주 불일치. 대상이 우리의 범주 체계를 넘어서 있는 경우
+
+존재론적 불일치. 우리가 대상을 "것" 으로 보는데, 대상이 "것" 으로 있지 않은 경우
+
+---
+
+peithein 
+read, induce, coax, align
+
+---
+
+기록 1 (desired understanding)         기록 2 (actual behavior)
+  네 머릿속의 UE 개념 지도        ←→    엔진이 실제로 하는 일
+  - Actor 는 뭐다                       - UObject 라이프사이클
+  - Component 는 이렇게 붙는다          - GC 의 마킹 패턴
+  - Tick 은 이 순서로 돈다              - 실제 tick 의 thread/group 순서
+  - Replication 은 이런 로직            - NetDriver 의 bunched packet
+
+---
+
+두 기록이 어긋나는 순간(놀라움)이 학습이 실제로 일어나는 순간이야
+간극 없이는 학습도 없어
+예측 가능한 것만 보면 아무것도 배우지 못해
+
+예측 → 검증 → 수정 루프
+손을 움직여 예측하고, 돌려보고, 어긋나면 지도를 고친다
+controller 의 loop 구조
+
+예측이 있어야 기록 1 이 구체화되고, 실행이 있어야 기록 2 가 관찰되고, 대조가 있어야 간극이 드러나
+
+---
+
+지도와 영토의 해상도를 현재 작업에 필요한 수준에서 일치시키는 것
+
+잘못된 추상은 너무 상세해서 loop 가 돌지 않거나, 너무 성겨서 간극을 못 잡아내.
+
+---
+
+경계 안쪽에는 놀라움이 없고, 경계 바깥에는 아직 지도조차 없어. 놀라움은 지도의 가장자리에서 일어나
+
+---
+
+phronesis, 기술지(技術知) 이해
+특정 함수를 디버거로 열고, call stack 을 따라 올라가며, 왜 이 함수가 이 순서로 호출되는지를 특정 실행의 physis 를 통해 체감해
+
+결의 지도는 logos 로 번역되지 않는 잔여를 남긴다
+
+---
+
+editor + runtime + packaging + replication + rendering 이 동시에 상호작용할 때, 
+누구의 머릿속에도 그 전체의 logos 모델이 없어. 이건 logos 의 양적 부족이 아니라 질적 한계야
+그 결합된 행동은 오로지 physis 로만, 즉 실제 돌아가는 것을 관찰해서만 알 수 있어.
+
+어디서 logos 가 끝나고 physis 가 시작되는지를 감지하는 감각을 길러야 한다
+
+---
+
+formalization
+대상을 형식 기호로 대치하고, 변환 규칙을 명시해
+
+---
+
+experimental induction
+
+대상의 physis 를 통제된 조건 아래서 반복적으로 묻기
+실험을 의도적 대조 로 설계
+
+물리 세계의 physis 가 반복 가능해
+
+대상이 반복 불가능 하면 (역사적 사건, 우주론적 고유 사건) 이 전략이 약해져
+대상이 관찰자를 의식 하면 (고에너지 물리의 관측 문제, 심리학의 관찰 효과) 약해져
+
+---
+
+interpretation
+
+대상이 text

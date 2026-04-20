@@ -1,0 +1,667 @@
+
+0. Naive - Material이 곧 Shader
+각 Material은 "색은 붉다, 금속성은 0.3이다, 법선은 이 텍스처를 쓴다" 같은 결정된 값들을 품고 있다
+
+붉은 공 하나와 파란 공 하나가 있으면 Material도 두 개이다.
+
+색만 다른 공 1000개를 화면에 띄우려면 1000개의 shader를 컴파일해야 하고,
+draw call마다 pipeline state change가 일어난다
+
+
+"붉은 공"과 "파란 공"은 계산의 형태는 같고 계산에 공급되는 값만 다르다
+Lambert 조명 계산의 구조, 법선을 읽어오는 방식, 광원 루프의 전개는 완전히 동일하다
+shape of computation
+
+---
+
+1. 첫 분리 — Material은 "계산 그래프 + parameter 스키마"가 된다
+
+Scalar Parameter, Vector Parameter, Texture Parameter로 표시된 노드들은 명령어 안에 immediate로 박히지 않고 
+constant buffer의 슬롯으로 번역된다
+
+상수로 박힌 값은 shader compiler가 constant folding, 곱셈을 시프트로 치환하는 등 온갖 접기(folding)를 수행할 수 있지만,
+parameter는 compiler 입장에서 "알 수 없는 값"이므로 이 접기가 봉쇄된다
+
+---
+
+Static Switch Parameter 범주
+
+shader permutation을 만들어내는 축
+
+---
+
+2. 두 번째 분리 — Material Instance
+
+Material이 "계산 + parameter schema"를 내놓았다면, 
+그 schema를 채우는 binding이 Material Instance
+
+그 자체로 새로운 계산 그래프를 정의하지 않는다
+단지 "부모 Material이 선언한 parameter들에 대해 어떤 값을 덮어쓸 것인가"를 선언
+
+Static Switch를 override하는 특수한 경우에만 새로운 shader permutation이 비용을 치르고 만들어진다.
+
+---
+
+3. 세 번째 분리
+
+MaterialInstanceConstant(MIC)
+
+에디터에서 만들어지고, .uasset 파일로 디스크에 저장되며, cook 타임에 최종 값으로 직렬화되어 패키지에 포함된다
+MIC 객체는 메모리상 하나이고 shader도 하나이고 constant buffer 내용도 하나이다
+
+
+MaterialInstanceDynamic(MID)
+
+인스턴스별로 독립된, mutable한 parameter binding을 담기 위해 기술적으로 다른 객체
+런타임에 생성되고, 디스크에 직렬화되지 않으며, 일반적으로 그것을 만든 Component·Actor가 독점적으로 소유한다.
+
+---
+
+Custom Primitive Data
+
+MID가 "parameter 값을 material 객체에 저장한 후 'material 단위'로 uniform buffer를 만들어 GPU에 올린다"는 접근이라면, 
+CPD는 "parameter 값을 CPD 객체에 저장한 후 primitive 데이터의 일부로 GPU에 올린다"는 접근이다
+
+
+shader는 vertex 단계에서 PrimitiveId로 이 레코드를 lookup한다
+
+"material uniform buffer의 특정 offset에서 읽어라"가 아니라 
+"primitive의 custom data 배열에서 특정 index를 읽어라"로 HLSL이 생성된다.
+
+
+100개의 primitive가 같은 UMaterial 또는 같은 MIC을 공유하고, 각자 자기 primitive에 다른 CPD 값만 찔러 넣으면 된다.
+메모리에 MID 100개가 살 필요가 없다
+
+---
+
+CPD vs MID
+
+Texture parameter는 못 바꾼다
+(GPUScene의 flat float 배열 모델과 맞지 않다)
+
+Static Switch도 못 건드린다
+
+
+순수 Scalar/Vector 값 수준의 mutability
+
+---
+---
+---
+
+OverlayMaterial
+5.0에서 추가된 슬롯
+
+섹션별 material 슬롯과 달리
+Mesh의 모든 section에 대해 일괄 적용
+
+캐릭터 선택 외곽선, 은신 실루엣, hit flash, frost/petrification 같은 상태 이상 오버레이
+
+---
+---
+---
+
+프로그램 전체 수명 / 프레임 간 유지 / 한 프레임만 존재 / 한 pass만 존재
+수백 MB~GB(asset) / MB(per-scene 구조) / KB(per-object uniform) / 바이트(per-draw push constant)
+
+---
+
+Resource Assets
+
+프로그램 전체 수명 동안 VRAM에 상주
+
+Texture
+색상 텍스처(base color/albedo), 법선맵, 거칠기·금속성·AO를 담는 material texture, 
+라이트맵, 섀도우맵, environment cubemap, BRDF LUT 
+
+"2D/3D 격자에 담긴 sampler로 읽히는 데이터"
+Mip chain이 함께 적재되어 원본 크기의 약 1.33배
+BC1~BC7이나 ASTC 같은 압축 포맷으로 4~8배 축소되어 저장
+
+텍스처 유닛이 압축 상태 그대로 디코딩해서 읽는다
+CPU RAM처럼 압축 해제 후 올리는 것이 아니다
+
+---
+
+메시 버퍼(Vertex/Index Buffer)
+
+Vertex buffer는 정점마다 위치·법선·탄젠트·UV·뼈 가중치 등을 담고, 
+Index buffer는 "이 삼각형은 정점 3, 7, 12로 이루어진다"는 연결성을 담는다
+
+최근에는 Meshlet 기반 파이프라인(Nanite, Mesh Shader)으로 구조가 복잡해졌다
+정점이 cluster로 묶이고, cluster별 bounding sphere와 culling 메타데이터가 함께 상주한다
+
+---
+
+컴파일된 shader 바이트코드(SPIR-V, DXIL 등)와 Pipeline State Object(PSO)
+
+PSO는 shader 뿐 아니라 blend state, depth state, rasterizer state를 묶은 GPU pipeline 구성의 완전한 기술이다
+
+---
+
+프레임 간 유지되는 공간 데이터베이스
+GPU가 주기적으로 갱신·참조하는 데이터들
+
+
+GPUScene, UE5의 핵심 구조
+씬 안의 모든 primitive에 대한 메타데이터 — world transform, 이전 프레임 transform, bounds, lightmap coordinate, visibility flag
+primitive id로 indexed된 하나의 거대한 structured buffer에 통합해서 상주시킨다
+
+씬 안의 primitive 수가 10만 개라면 GPUScene record도 10만 개가 VRAM에 상주한다
+
+---
+
+공간 Acceleration Structures
+BVH(Bounding Volume Hierarchy)가 대표적
+
+TLAS(Top-Level Acceleration Structure)와 BLAS(Bottom-Level AS)의 이중 구조로 관리
+
+---
+
+씬의 라이트 리스트
+
+라이트별 shadow map, cascaded shadow map의 level들, reflection probe들의 cubemap, 
+sky atmosphere LUT, volumetric fog의 froxel 볼륨 텍스처
+
+---
+---
+---
+
+프레임 내부에서 쓰고 읽히는 임시 데이터
+Render Targets
+pass들 간에 결과를 넘기는 역할
+
+
+G-Buffer
+Deferred shading
+BaseColor, Normal, Roughness, Metallic, AO, Emissive, Velocity, Custom Data, Material ID를 담는
+서너 개의 MRT(Multiple Render Target) 텍스처
+
+화면 해상도 × 4~8바이트 × N개 채널이어서 4K 해상도에서는 수백 MB가 된다
+
+한 프레임의 geometry pass가 여기에 쓰고, lighting pass가 여기서 읽는다.
+
+
+Depth/Stencil Buffer
+Early-Z culling, shadow projection, reconstruction, 각종 post-process에서 사용
+
+
+중간 라이팅 버퍼들
+Lumen의 radiosity cache, SSGI intermediate, SSAO full/half-res, volumetric lighting slice들
+(Screen Space Global Illumination) 
+
+
+Post-Process 체인 버퍼들
+Bloom의 downsample/upsample 피라미드, temporal accumulation용 history buffer(TAA/TSR의 이전 프레임 결과),
+motion blur tile buffer, DOF의 blur 결과 
+
+
+Render Graph의 transient pool
+pass 간 중간 결과를 위해 수명이 겹치지 않는 리소스들의 메모리를 공유한다
+1000개의 임시 텍스처가 있어도 실제 VRAM은 최대 동시 활성 수명 수만큼만 할당된다
+
+---
+
+프레임마다 바뀌는 작은 파라미터
+
+
+View uniform buffer
+카메라 view/projection 행렬, inverse 행렬들, 해상도, 시간, 프레임 인덱스
+"이 view를 그리는 데 필요한 전역 상수". 거의 모든 shader가 참조한다
+
+
+Per-object uniform buffer / Material uniform buffer
+Primitive마다, material instance마다 자기 uniform buffer를 가진다
+
+---
+---
+---
+
+GPU-driven rendering이 성립하려면 "CPU가 매 draw call마다 뭘 그릴지 지시"하는 대신 
+GPU가 자기 안의 데이터로부터 스스로 판단해야 한다. 
+이를 위한 간접 참조 구조들이 VRAM에 상주한다
+
+
+Bindless descriptor heap / tables
+모든 텍스처와 버퍼를 하나의 거대한 descriptor array에 등록해두고, shader가 인덱스로 원하는 것을 고른다
+씬의 텍스처가 수만 장이어도 바인딩 전환 없이 GPU가 직접 선택한다.
+
+
+Indirect Draw/Dispatch buffer
+GPU가 자기 계산 결과로 다음 draw의 파라미터를 쓰는 버퍼
+Frustum/occlusion culling이 compute shader로 일어나고, 
+그 결과가 이 버퍼에 "이번 프레임에 실제로 그릴 primitive들의 인덱스와 instance 수"로 쌓인다
+
+---
+---
+---
+---
+---
+---
+
+UE Delegate에서 이벤트는 타입 그 자체이다
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnHealthChanged, float)는 독립된 C++ 타입을 선언
+FOnHealthChanged라는 변수는 "체력 변경 이벤트"라는 의미를 내재화한 객체
+이 변수에 AddUObject 하는 행위 자체가 곧 "이 이벤트의 구독"이다.
+
+
+addEventListener에서 이벤트는 문자열 키이다
+모든 EventTarget은 내부에 리스너 맵을 가진 단일 라우터 같은 구조를 가지고 있다
+"click", "mouseover" 같은 문자열로 그 맵을 조회한다
+
+---
+
+DOM은 트리 라우팅이다.
+이벤트는 capturing → target → bubbling의 세 단계를 거치며 DOM 트리를 따라 흐른다.
+
+
+UE Delegate는 위상적으로 플랫하다
+"이벤트가 부모로 올라간다"라는 의미론을 만들려면 GetOwner()->OnEvent.Broadcast(...)를 호출해서 체인을 짜야 한다.
+
+
+addEventListener는 이미 존재하는 DOM 트리 위에 얹은 이벤트 계층이고
+UE Delegate는 아무 토폴로지도 가정하지 않는 순수한 1:N 통신 채널이다.
+
+---
+
+UE에서는 FDelegateHandle이 구독의 1차 신원이다. 
+Add...()는 핸들을 반환하고, 이 핸들을 들고 Remove(Handle)를 호출한다. 
+함수 포인터나 객체 포인터 자체가 아니라 별도의 토큰을 쓴다
+
+
+DOM에서는 리스너 함수의 참조 동일성이 구독의 신원이다. 
+removeEventListener(type, fn)이 작동하려면 fn이 addEventListener에 넘겼던 바로 그 함수 참조여야 한다
+최근의 AbortController과 addEventListener의 통합
+
+---
+
+UE의 AddUObject 계열은 대상 UObject의 수명을 관찰한다. 리스너 UObject가 GC되면 그 바인딩은 자동으로 무효화된다
+약한 참조에 가까운 의미론이다
+
+
+리스너가 클로저로 큰 객체를 캡처하고 있고 사용자가 명시적으로 removeEventListener를 부르지 않으면, 
+캡처된 객체는 DOM 노드가 살아있는 동안 해제되지 않는다
+
+---
+---
+---
+
+Delegate는 주체의 기능적 구멍을 채워주고, 
+Listener는 주체의 상태 변화에 기생한다.
+
+---
+
+청취 호출은 거의 항상 void이다. 
+주체는 자기 일을 다 한 뒤 "이런 일이 있었다"고 알리기만 하면 되고, 
+청자가 무엇을 하든 주체의 진행에는 아무 영향이 없다
+
+---
+---
+---
+
+functions use static names determined at compile time
+
+callbacks are runtime values passed as function pointers (type signature implied)
+
+---
+
+functions and callbacks are typically one-to-one
+
+delegates and event listeners can be one-to-many,
+
+---
+
+Function calls don't reify the invocation itself
+
+event objects materialize the occurrence
+
+delegates turn subscription relationships into variables
+
+---
+
+the caller receives the callback from outside without knowing what it is
+
+---
+
+jump
+the transfer of control
+
+---
+
+Activation is what triggers dormant things into motion
+
+---
+
+when abstract relationships become concrete
+
+---
+
+flow 의 기하학
+
+연속(한 선이 흐른다), 
+분기(한 점에서 선이 꺾인다), 
+불연속(선이 끊기고 다른 선이 끼어든다), 
+겹침(두 선이 동시에 흐른다)
+
+---
+
+호출자의 시간 위에 피호출자의 시간이 스택처럼 쌓인다
+
+---
+
+Interrupt는 불연속 — 한 선이 다른 선에 의해 찢어진다
+
+---
+
+명령어 시퀀스를 얼마나 조작할 수 있는 대상으로 끌어올리는가?
+
+전달할 수 있다
+저장할 수 있다
+제거할 수 있다
+
+파라미터를 나중에 바인딩할 수 있다
+파라미터를 부분적으로 바인딩할 수 있다
+
+---
+
+이름(컴파일 타임 심볼), 
+타입(구조적 호환성), 
+포인터(메모리 주소 값)
+
+---
+---
+---
+---
+---
+---
+
+strategies for determining what value the PC takes next
+
+automatic increment
+
+hardcoded addresses embedded directly in instructions
+
+addresses computed from data stored in registers or memory
+
+external hardware signals that override the normal fetch-execute cycle entirely.
+
+---
+
+Code sitting in RAM is inert until the PC points to it
+
+---
+
+cycle
+repetition of the same structured protocol
+
+---
+
+until the PC arrives at it
+a function's bytecode exists as static in memory
+
+potential fields
+instruction landscape in RAM
+
+the art of choreographing the PC through space
+strategies(protocols, bureaucracy) for computing what PC should be next
+
+---
+
+at that moment it transforms from static pattern 
+into dynamic series of circuit path activation pattern (combined with current state context of circuits)
+
+different arrival stories become different things
+
+---
+
+every control flow mechanism / design/ architecture
+reduces to the same primitive operation
+updating the program counter
+
+---
+
+Function calls bake it in at compile time, 
+virtual calls look it up from a vtable at runtime, 
+callbacks store it in a variable, 
+events pull from a subscription list, 
+interrupts fetch it from a hardware vector
+
+---
+
+A delegate says the address lives in a specific field on an object that the caller knows about. 
+A listener says the address sits in a list somewhere else, 
+the emitter is responsible for finding and invoking it. 
+
+These are different agreements about data flow
+
+---
+
+The PC is the register that store where we are in time
+it's meaning is the "now" inside the machine
+
+---
+
+PC 
+
+a reader moving through a static landscape of bytes
+execution is the trace of that reading
+
+---
+
+"Who argues?"
+
+instruction
+data-dependent branch
+
+---
+
+a program is a graph of basic blocks connected by possible jumps
+and execution is a single walker traversing it
+
+---
+
+Late binding isn't just a language feature
+it's the physical reality that the memory cell holding an address gets written after the instruction that reads it.
+
+---
+
+Every state change in a CPU is driven by clock cycles
+each one a voltage transition that cascades through the entire machine.
+
+The PC advances because the clock ticks
+
+---
+
+higher-level abstractions of that basic clock-driven state change
+
+---
+
+값들을 펼쳐놓는다
+
+공간 위에
+시간 위에
+
+여기의 공간에서 먼 곳의 공간으로
+지금의 시간에서 미래의 시간으로
+
+여기에 결정된 값, 저기에 있을 값
+지금 결정된 값, 나중에 결정될 값
+
+---
+
+constants in instruction (immediate)
+register values
+vtable slots in ram
+
+"pointer"
+  chainable
+  referrable (deferrable)
+
+---
+
+오직 인터럽트만이 "프로그램의 닫힌 궤적"을 깬다
+
+---
+
+referring is deferring 
+
+---
+
+어떤 수정 조각이 떠는 일을 이해할 수 있는 층위들로 수백 번 구조화한 결과물이다
+
+---
+---
+---
+---
+---
+---
+---
+
+"어디 있어?"
+
+모든 동작은 어딘가에 있는 것을 집어오는 행위로 분해된다
+
+기계에는 "연산"도 "호출"도 "이벤트"도 없다
+오직 집어옴(fetch) 과 맡겨둠(store)
+
+---
+
+"집어옴"은 항상 어디를 집어올지에 대한 선행 결정이 필요하다. 
+즉 데이터에 접근하려면 먼저 그 데이터의 위치를 아는 데이터에 접근해야 한다. 
+그런데 그 위치를 아는 데이터에 접근하려면 그 위치의 위치를 아는 데이터가 필요하다.
+
+이 무한 후퇴는 어디서 끝나는가
+
+하드와이어링된 회로
+
+부팅 시 PC가 고정된 리셋 벡터 주소를 갖고, 
+레지스터 파일이 실리콘에 파여 있는 배선으로 주소 지정되고, 
+클럭 신호가 외부 핀에서 들어온다
+
+---
+
+소프트웨어의 깊은 곳에는 배선이 있다
+
+---
+
+포인터 한 번은 결정을 한 사이클 뒤로 미룬다
+포인터 두 번은 결정을 두 사이클 뒤로 미룬다
+
+---
+
+CPU 내부의 손바닥만 한 메모리 — 30여 개의 작은 상자
+
+---
+
+mov rax, [rbx]
+
+답이 움직일 수 있는 장소에 있다
+같은 명령어가 실행될 때마다 다른 셀을 방문할 수 있다.
+
+---
+
+객체 포인터 → 객체 헤더의 vtable 포인터 → vtable 슬롯 → 함수 주소 → 함수 본체
+
+---
+
+"PC"
+매 사이클마다 레지스터의 동일한 플립플롭 집합이 새 값을 갖고 있을 뿐이다.
+
+---
+
+영화는 움직이는 이미지가 아니다. 영화는 정지 이미지들이 초당 24번 바뀌는 것이다.
+
+
+(a) 정적인 풍경 — RAM 속 비트 패턴
+(b) 그 풍경을 사이클마다 자기 자신의 다음 자리를 결정하는 데 사용하는 반복되는 물리 절차
+
+---
+
+RAM 풍경에 파놓은 서로 다른 지형의 양식들
+Callback, Event, Listener, Delegate
+
+---
+
+Function call은 "미리 고정된 골짜기로 유도하는 경사로"의 이름이고, 
+virtual call은 "보행자가 누구인지 확인한 후 유도하는 갈림길"의 이름이고,
+event dispatch는 "동시에 여러 경사로를 파고 모두로 유도하는 분기 구조"의 이름이고,
+interrupt는 "지형 바깥에서 보행자의 위치를 강제로 옮기는 손"의 이름이다.
+
+---
+
+PC에게 무엇을 하라고 명령하는 일이 아니다. 
+PC가 따라갈 수밖에 없는 공간을 빚는 일이다
+
+PC는 클럭의 박자에 따라 그 풍경의 기울기를 따라 흐를 뿐이다
+
+---
+
+매개된 공간이 훨씬 크다
+
+---
+
+"A"라는 자리가 "B"를 지목하면, A의 상태는 B라는 사실이다. A는 이제 B에 관한 것이 된다.
+
+---
+
+the meaning is only fixed at some later moment when the reference is actually followed.
+
+---
+
+At any given moment, one packet is active and others are latent. 
+Not all packets participate in the current step except one.
+
+attention
+and its workspace
+
+---
+
+discreteness (this and that)
+succession (order; before and after)
+
+<=>
+undifferentiated simultaneity
+
+---
+
+Computational power is proportional to how much of the system is not currently doing anything. 
+The dormant bulk is not overhead. It is the potential.
+
+---
+
+A reference points from the active cursor into the latent mass
+Cell B was latent. Now it becomes active
+
+---
+
+the pointing only exists in the instant of traversal. 
+The rest of the time, A and B are two unrelated packets, knowing nothing about each other
+
+---
+
+one writer leaves a single reference in a named slot, and one reader consults that slot at a specific moment
+
+one writer hands a reference to a reader who will visit it at an unspecified later moment
+
+---
+
+when a visit happens, what does the visit mean? 
+
+grammars of deferred visiting.
+
+---
+
+every attention, every reading, every perception is also such a traversal
+
+---
+
+아직 방문되지 않은 셀들, 등록되어 있지만 발화되지 않은 핸들러들, 예약되어 있지만 만료되지 않은 타이머들. 
+이것들은 미래에 대한 구속력 있는 물질적 약속이다. 
+addEventListener는 미래를 현재 물질에 설치하는 행위이다
+
+---
+
+일반적인 물질에는 "지금"밖에 없다. 바위는 지금이다. 강물은 지금 흐른다. 바위가 "어제"를 지금 여기에 물질적으로 품고 있지는 않다
+
+실행 중인 프로그램은 다르다. 실행 중인 프로그램은 물질적으로 세 개의 시간을 동시에 들고 있다.
+
+---
