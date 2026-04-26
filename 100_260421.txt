@@ -1,0 +1,410 @@
+Controller, 입력
+Pawn, 세계 안에서 공간을 점유하고 충돌하는 것
+Camera, 렌더러에 전달되는 viewpoint
+
+---
+
+AController::ControlRotation
+
+mouse/stick 이 PlayerInput → UpdateRotation() 경로로 갱신
+PlayerCameraManager::ViewPitchMin/Max 로 clamp
+
+---
+
+Pawn Rotation
+
+Actor 의 RootComponent 월드 회전 (Character 에선 Capsule 의 회전)
+
+bUseControllerRotationYaw/Pitch/Roll 플래그가 Control Rotation 의 각 축을 따라갈지를 결정
+
+CharacterMovementComponent::bOrientRotationToMovement 가 켜져 있으면 Control 대신 velocity 방향을 따릅니다
+
+SkeletalMesh 의 회전은 또 Capsule 과 다르게 처리될 수 있어서, 
+한 Character 안에서도 "control ≠ capsule ≠ mesh" 인 상태가 정상입니다.
+
+---
+
+Camera Rotation
+
+bUsePawnControlRotation 이 true 면 Control Rotation 을 받고, 
+아니면 (고정 카메라, cutscene, death cam) 완전히 독립
+
+PlayerCameraManager 가 ViewTarget::CalcCamera 를 호출해 얻은 POV 를 캐시하여 렌더러로 넘깁니다.
+
+---
+
+3인칭 게임에서 camera location (플레이어 뒤쪽 공중)과 eye location (캐릭터 머리)은 전혀 다른 지점입니다
+
+---
+
+GameMode 
+
+어떤 PlayerController, Pawn, HUD, PlayerState 클래스를 쓸지 선언
+스폰/승리 조건 같은 judge 역할
+
+"이 세션의 초기화 방법 / 세션 단위의 로직"
+
+---
+
+Pawn 은 자기 뒤에 사람이 있는지 AI 가 있는지 구별하지 않습니다
+
+Controller 계층
+AController 아래 APlayerController 와 AAIController
+
+---
+
+PlayerCameraManager 
+ViewTarget, "지금 누구의 시선을 쓰는가"
+
+SetViewTargetWithBlend로 무엇이든으로 부드럽게 전환 가능합니다
+
+---
+---
+---
+
+PlayerController - 네트워크 관점
+
+서버 입장
+
+각 remote 클라이언트마다 PC 가 하나씩 존재
+한 PC 는 해당 클라이언트에게만 replicate 됩니다 
+다른 클라이언트는 남의 PC 를 보지 못함
+
+
+클라이언트 입장
+
+자기 자신의 PC 하나만 가지며, 
+그 PC 는 서버 <-> 해당 클라이언트 간 채널의 actor-level endpoint
+
+---
+
+PlayerController 의 Fields
+
+UPlayer / ULocalPlayer
+
+UNetConnection - 서버에서 유효, 해당 클라이언트로의 채널
+
+IsLocalController - 실행 지점이 이 PC 를 "소유" 하는지 판정
+
+AcknowledgedPawn - 서버와의 possession 동기화 race 를 막기 위한 별도 슬롯.
+
+---
+
+Input ingress (클라이언트 전용 — 리모트 PC 엔 없음)
+
+UPlayerInput
+키 상태, axis 누적, press time 의 per-frame 상태 저장소
+
+
+InputComponent 
+델리게이트 바인딩 site
+
+
+Input mode
+FInputModeGameOnly / FInputModeUIOnly / FInputModeGameAndUI
+마우스 캡처/커서 노출/UI 포커스 라우팅
+
+
+bShowMouseCursor, DefaultMouseCursor, CurrentMouseCursor.
+
+---
+
+서버-클라이언트 경계에서 정확히 한 클라이언트에만 의미 있는 상태
+
+---
+
+PlayerCameraManager 
+
+이 PC 의 이번 프레임 FSceneView 를 만들 재료(FMinimalViewInfo)를 산출하고 
+그 과정에 modifier/shake/fade/PP 를 개입시키는 파이프라인 관리자
+
+---
+
+FTViewTarget, "이번 프레임 POV 를 누구에게 물어볼 것인가"
+
+
+FMinimalViewInfo, POV 자료형
+  Location, Rotation, FOV, AspectRatio, NearClip/FarClip, ProjectionMode, DesiredFOV, 
+  PreviousViewTransform (TAA/motion blur 용), PostProcessSettings + PostProcessBlendWeight
+
+---
+
+PC 의 ControlRotation 을 매 프레임 clamp 하는 실제 주체가 PCM
+
+ControlRotation 자체는 AController 필드지만, Valid Range는 PCM 이 결정.
+
+---
+
+UGameInstance 
+
+LocalPlayer 들의 container
+맵 전환에도 persist 하는 상위 객체
+
+---
+---
+---
+
+직접 스폰해서 소유하는 subobject
+외부가 세팅해 주는 참조 포인터
+런타임 누적 상태 슬롯
+
+---
+
+Subobject 
+  PlayerCameraManager 
+  PlayerInput, UPlayerInput / UEnhancedPlayerInput
+  InputComponent, UInputComponent / UEnhancedInputComponent
+  MyHUD 
+  CheatManager 
+
+---
+
+외부 세팅 참조
+
+UPlayer*
+세팅 주체는 GameInstance/NetDriver
+ULocalPlayer 냐 UNetConnection 이냐가 "이 컨트롤러가 이 머신의 사람에게 물려 있는가 원격 소켓에 물려 있는가" 를 결정.
+
+서버는 접속자 전원에 대해 PlayerController 를 갖지만 그중 딱 하나 (호스트) 만 Player 가 ULocalPlayer, 나머지는 UNetConnection
+
+---
+---
+---
+
+View 는 World 의 것이 아니라 관찰자의 것
+UWorld 는 무엇이 있는가 의 컨테이너
+
+월드는 자기를 보는 사람이 몇 명인지, 그들이 화면 어디에 배치돼 있는지와 별개의 개념으로 봐야 합니다
+
+FSceneView 를 만든다는 행위는 월드를 2D 사각형 픽셀 영역으로 투영하는 행위입니다
+그리고 이 투영에 필요한 파라미터들이 관찰자 쪽에 존재합니다
+
+
+POV (PlayerCameraManager 로부터)
+  
+ViewRect (ViewportClient 의 splitscreen 슬롯 배치)
+  이 관찰자가 보는 것은 window 의 어느 사각형에 그려질 것인지
+
+
+Aspect/Constraint (플랫폼·해상도·HUD safe zone)
+Screen percentage, DPI scale, DLSS/TSR 파라미터
+Stereo offset (VR 의 경우 각 눈마다 다른 행렬)
+후처리 개인화 (이 플레이어만 부상 blur, 이 플레이어만 야간투시 LUT)
+
+---
+
+같은 월드가 동시에 여러 관점에서 렌더되는 경우
+
+
+Splitscreen 4인 플레이: 한 UWorld → 4개 FSceneView (각 LocalPlayer 가 하나씩 produce)
+Planar reflection: 같은 UWorld → 거울 평면 기준으로 또 다른 FSceneView
+SceneCaptureComponent2D: 월드 안의 한 카메라 컴포넌트가 또 FSceneView 를 produce (RenderTarget 으로)
+
+
+즉 FSceneView 는 1:1 이 아니라 프레임당 N개 생기고, N 은 관찰자 수로 결정됩니다
+
+---
+
+LocalPlayer 
+
+이 머신의 한 viewport 슬롯 = 한 시각적 관찰자
+관찰자가 월드를 View로 투영한다
+
+CalcSceneView 의 주체
+
+---
+
+"무엇이 있는가"의 층위
+
+UWorld
+
+FScene 
+렌더 스레드의 UWorld 쌍둥이
+
+---
+
+"어디를 보는가"의 층위
+
+
+
+"어떻게 보일 것인가"의 층위
+투영 
+FSceneView - 렌더 스레드가 소비하는 투영 기술서
+
+FSceneViewFamily - Splitscreen = 1 family + N views
+
+---
+---
+---
+
+UPlayer 
+
+입력 파이프라인의 분기점
+
+(GameEngine Tick 초반부)
+OS 키 이벤트
+엔진 slate 레이어
+UGameViewportClient::InputKey: 어느 LocalPlayer 에게 보낼지 결정 (splitscreen 이면 포커스 룰 / 게임패드 user index 로 분기)
+해당 LocalPlayer 의 PlayerController->InputKey → UPlayerInput 의 키 상태 갱신
+
+(이후 World Tick)
+UEnhancedInputLocalPlayerSubsystem 이 active InputMappingContext 스택 평가 → InputAction 트리거 → 델리게이트 fire.
+
+---
+
+UPlayer 
+
+렌더링 파이프라인의 발생점
+
+UGameEngine::RedrawViewports → UGameViewportClient::Draw
+ViewportClient 가 자신의 GameInstance 에서 LocalPlayers 를 순회
+각 LocalPlayer 가 CalcSceneView 호출해서 FSceneView 생성
+FSceneViewFamily 에 모아서 → FRendererModule::BeginRenderingViewFamily 로 render thread 제출
+
+---
+
+UEngineSubsystem (프로세스 전역)
+UGameInstanceSubsystem (이 프로세스의 게임)
+UWorldSubsystem (이 월드)
+ULocalPlayerSubsystem (이 LocalPlayer)
+
+
+ULocalPlayerSubsystem 
+  UEnhancedInputLocalPlayerSubsystem 
+  UOnlineSessionLocalPlayerSubsystem
+  UCommonUILocalPlayerSubsystem 
+
+---
+
+UPlayer
+
+UI 의 소유자
+
+UMG UserWidget 은 "Owning Player" 로 LocalPlayer 를 가짐 (APlayerController가 아니라)
+
+이 위젯을 어느 ViewRect (splitscreen 슬롯) 에 그릴지
+GetOwningPlayer() / GetOwningPlayerPawn() 로 위젯이 자기 데이터 소스에 닿는 경로
+포커스 이동 시 키보드 이벤트를 어느 PlayerController 로 라우팅할지
+
+---
+
+UPlayer
+
+오디오의 발화점
+
+Splitscreen 4P 에서는 LocalPlayer 마다 별도 listener 가 생성됨
+각자의 카메라 위치에서 각자의 3D 사운드를 듣게 됨
+
+---
+---
+---
+
+Scene 
+
+월드의 렌더 표현
+
+"대상"
+
+투영 파라미터가 없으면 "있는 것" 일 뿐 그려질 수 없음
+
+---
+
+View 
+파라미터 묶음
+어디서 · 어느 방향으로 · 어떤 FOV 로 · 어떤 사각형에 
+
+
+대상의 정보와 View의 정보가 만나서 "보이는 것"이 만들어진다
+거대한 파라미터 리스트를 두 개의 그룹으로 분할한다
+
+Scene 도 파라미터 묶음이다
+
+---
+
+모든 정보는 파라미터이다
+모든 객체는 파라미터의 묶음이다
+
+---
+
+SceneView 
+
+"이 Scene 을 이 View 파라미터로 한 프레임 투영하겠다"
+
+---
+
+ViewTarget — View 의 공급원
+PlayerCameraManager 가 "지금 어떤 AActor의 눈을 빌리는가" 를 가리키는 포인터 슬롯를 가지고 있다
+"인칭" vs "비인칭"
+파이프라인 상류
+
+
+Viewport / ViewRect
+SceneView 의 착지면. 
+픽셀이 실제로 써지는 렌더 타깃 표면 (FViewport) 과 그 안에서 이 SceneView 가 차지하는 사각형 (ViewRect)
+파이프라인 하류
+
+
+ViewTarget (actor in Scene) → CalcCamera → View params → (Scene x View) = SceneView → Viewport rect
+
+ViewTarget → View → SceneView → Viewport
+
+---
+---
+---
+
+ScenePort 
+
+Scene 은 출력 표면을 가지지 않습니다
+투영되는 것은 Scene 자체가 아니라 Scene 의 한 View 입니다
+Scene → Viewport 로 직접 가는 화살표가 파이프라인에 없음 (반드시 View 를 경유)
+
+---
+
+각 step 에서
+GameInstance 카운터는 1 → 1 → 1 → … → 0
+Session 카운터와 UWorld 카운터는 0 → 1 → 0 → 1 → 0 → 1 → … 로 여러 번 토글.
+
+---
+---
+---
+
+
+UEngine 밑의 이 계층은 "엔진이 어떤 모드로 도는가" 에 대한 분기입니다
+  UGameEngine — 패키징된 게임 실행
+  UEditorEngine — 에디터
+
+에디터에서 돌 때와 독립 게임으로 돌 때 tick 구조, input 라우팅, viewport 관리가 다르다
+
+---
+
+에디터
+
+이 GEngine 은 PIE 가 시작되기 전에 이미 여러 WorldContext 를 가지고 있음
+  EWorldType::Editor
+  EWorldType::EditorPreview
+
+이 세계들은 GameInstance 를 가지지 않음
+WorldContext.OwningGameInstance == nullptr
+
+GameInstance 는 "게임 런타임 의미" 가 필요한 월드에만 붙습니다
+
+---
+
+UEditorEngine::RequestPlaySession(const FRequestPlaySessionParams&)
+  PlayNetMode (Standalone / ListenServer / Client)
+  NumPlayers
+  bRunUnderOneProcess (PIE 인스턴스들을 한 프로세스에 같이 둘지, 별도 프로세스로 띄울지)
+  Window size, spawn at current camera location 등
+
+
+이 호출은 즉시 실행되지 않음. PlaySessionRequest 라는 큐잉된 상태로 들어가서, 에디터의 다음 안전한 틱 경계에서 처리. 
+이유는 Play 버튼이 눌린 순간이 에디터 틱 중간일 수 있어서 — 월드 복제나 GameInstance 생성을 그 중간에 하면 자료구조 무결성이 깨짐.
+  Consistency / Integrity, Vulnerable Transient Phase, A System consists of many subsystems
+
+---
+
+UEditorEngine::CreateInnerProcessPIEGameInstance
+  CreateNewWorldContext(EWorldType::PIE)
+  NewObject<UGameInstance>(this, GameInstanceClass)
+  PieContext.OwningGameInstance = GI
+  GI->InitializeForPlayInEditor
