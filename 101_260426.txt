@@ -1,0 +1,500 @@
+Text Formats
+
+ASCII 
+Characters between 32 and 126 inclusive, and 0, 9, 10, and 13
+P4 type text
+P4 trigger on check-in
+
+
+ANSI 
+ASCII + current codepage
+stored as binary on the P4 server
+
+
+UTF-8
+A string made up of single bytes
+non-ANSI characters
+superset of ASCII
+P4 type Unicode
+
+
+UTF-16
+A string made up of 2 bytes
+with a BOM
+P4 type UTF-16
+validated with a P4 trigger on check-in
+
+---
+
+Binary Cons
+
+Non mergable
+to be exclusive checkout
+
+
+P4 stores the entirety of each version
+can unnecessarily bloat the depot size
+
+---
+
+UTF-8
+
+a Unicode enabled server
+files would be merge-able
+exclusive checkout would not be required
+
+String operations more complicated
+have to parse the string to do a length calculation
+
+---
+
+UTF-16
+
+String operations can split/combine 
+without having to parse the strings
+
+C# uses UTF-16 internally
+
+Difficult to detect this format 
+if it does not have a BOM
+
+
+---
+---
+---
+
+Perforce(보통 P4라고 부름)
+
+코드뿐 아니라 텍스처, 사운드, 모델 같은 바이너리 파일까지 관리하는 데 강점
+
+사용자는 파일을 checkout → 수정 → check-in 하는 흐름으로 작업
+
+---
+
+P4 trigger on check-in
+
+Trigger = 특정 이벤트가 발생할 때 자동 실행되는 스크립트
+
+trigger on check-in = 파일을 check-in 할 때 자동으로 실행되는 검사/로직
+
+UTF-16 파일인데 BOM이 있는지 검사
+파일 인코딩이 규칙에 맞는지 검증
+금지된 파일이 올라오는지 체크
+
+
+check-in 시도
+   ↓
+trigger 실행
+   ↓
+통과 → 저장됨
+실패 → 거부됨
+
+---
+
+exclusive checkout (수정을 위해 잠금)
+
+한 번에 한 사람만 수정 가능
+
+A가 checkout → 파일 lock
+B는 수정 못함
+A가 check-in → lock 해제
+
+---
+
+check-in(파일을 서버에 제출하는 행위)
+
+---
+---
+---
+
+UE Internal String Representation
+
+
+stored in memory in UTF-16 format
+as FStrings or TCHAR arrays
+
+
+Most code assumes 2 bytes is one codepoint
+so only the Basic Multilingual Plane (BMP) is supported
+UCS-2
+
+
+stored in the endian-ness appropriate for the current platform
+
+
+strings with all TCHAR characters
+less than 0xff are stored as 8-bit
+otherwise as 2-byte UTF-16 strings
+
+---
+
+appLoadFileToString() - entry
+appBufferToString() - main work
+
+
+This function recognizes the Unicode byte-order-mark (BOM) in a UTF-16 file 
+and if present, will load the file as UTF-16 in either endian-ness.
+
+
+What happens when the BOM is not present depends on the platform.
+
+
+On Windows, it will attempt to convert the text to UTF-16 
+using the default Windows MBCS encoding and uses MultiByteToWideChar
+
+
+If this conversion fails on platforms other than Windows
+just read each byte and pad it to 16-bits to make an array of TCHAR.
+
+
+Note
+there is no code to detect or decode UTF-8 encoded text files loaded with appLoadFileToString()
+
+---
+
+appSaveStringToFile()
+
+Strings with all TCHAR characters representable by a single byte will be stored as a series of 8-bit bytes
+otherwise as UTF-16 unless the bAlwaysSaveAsAnsi flag is passed in
+
+---
+---
+---
+
+TCHAR
+2바이트 (16-bit) 정수 타입
+
+FString
+사실상 TCHAR 배열을 감싼 래퍼
+
+
+"Most code assumes 2 bytes is one codepoint"
+
+1 TCHAR = 1 문자
+UE 코드의 대부분이 surrogate pair를 처리하지 않고 2바이트 = 문자 1개라고 가정
+
+UTF-16을 쓰지만 UCS-2처럼 사용
+
+---
+
+UCS-2
+
+모든 문자를 2바이트로 표현
+고정폭 2바이트 인코딩
+
+
+문자 1개 = 16비트
+최대 65,536개 문자만 표현 가능
+범위 = U+0000 ~ U+FFFF
+
+유니코드 BMP (Basic Multilingual Plane)까지만 지원
+
+
+UTF-16
+전체 Unicode
+surrogate pair
+
+---
+
+UTF-16
+
+16비트 = 2바이트 = 멀티바이트
+
+0x1234 → 저장 방식 2가지
+
+Big Endian: 12 34
+Little Endian: 34 12
+
+BOM 필요
+
+
+UTF-8 = 1바이트 = 싱글바이트
+
+1바이트 단위
+바이트 순서 개념 없음
+endian 문제가 없음
+
+---
+---
+---
+
+Actor
+
+support the concept damage out of the box
+
+Actor->TakeDamage()
+UGameplayStatics::ApplyDamage()
+
+PointDamage, hitscan weapons
+RadialDamage, explosions
+
+---
+
+UGameplayStatics::GetAllActorsOfClass() 
+
+often feared and avoided as it’s not a very efficient way of interacting with your environment
+but sometimes it’s the only tool you got
+
+---
+
+Actors don’t actually own a translation, rotation, or scale
+This is all set and retrieved via the RootComponent
+the top-level component in the hierarchy of SceneComponents
+
+functions like MyActor->GetActorLocation() actually go into the root component
+
+---
+
+high frequency logic
+  Tick 
+  checking stuff in a per-frame basis
+
+Lower Frequency
+  Timer
+  Event-based logic
+
+---
+
+GetComponentByClass 
+
+know an actor must contain a certain component type
+
+---
+
+NotifyActorBeginOverlap 
+
+for checking overlaps caused by any of its components
+
+
+GetOverlappingActors 
+GetOverlappingComponents
+
+Easily find out what other Actors are currently overlapping ours
+
+---
+---
+---
+
+ActorComponent
+
+Components live inside of Actors
+
+---
+
+SceneComponent
+
+class for anything with a Transform
+supports attachment
+
+---
+
+CreateDefaultSubobject
+
+ONLY within the context of the constructor
+a function of Actor
+
+---
+
+SomeComponent is an ActorComponent but NOT a SceneComponent
+doesn't have SetupAttachment function
+
+---
+
+NewObject<UActorComponent>(this, UStaticMeshComponent::StaticClass(), TEXT("DynamicSpawnedMeshCompoent"))
+SpawnedComponent->RegisterComponent()
+
+---
+
+SetIsReplicated(true)
+
+not all components on a replicated Actor need to be replicated
+
+---
+---
+---
+
+PlayerController
+
+‘Possess’ a Pawn instance which defines the visual and physical representation of that player in the world.
+
+there may also be moments where the PlayerController does not possess any pawn at all
+  things like the opening menus
+
+---
+
+PlayerController only exists on the owning client and the server
+
+a game of 4 players, the server has 4 player controllers, and each client only has 1
+
+This is important in where to put certain variables 
+as when all players require a player’s variable to be replicated 
+it should never exist in the PlayerController but in the Pawn or PlayerState
+
+---
+
+Accessing PlayerControllers
+
+GetWorld()->GetPlayerControllerIterator() 
+PlayerState->GetOwner()
+Pawn->GetController() // Only set when the pawn is currently ‘possessed’
+
+---
+
+PlayerController contains a PlayerCameraManager
+
+PlayerCameraManager handles view targets and camera calculations
+
+PlayerController contains HUD
+
+---
+
+Whenever a new player joins the GameMode, 
+a new PlayerController is created for this player 
+via Login() in the GameModeBase class
+
+---
+
+AIControllerPermalink
+
+Behavior Trees run via this controller
+
+set “AI Controller Class” variable in the Pawn
+
+---
+---
+---
+
+Pawn
+
+possess & controller
+
+
+Character: Pawn
+  SkeletalMesh 
+  CharacterMovementComponent 
+
+---
+
+GameModeBase spawns the Pawn via SpawnDefaultPawnAtTransform
+
+the GameModeBase class also specifies which Pawn class to spawn.
+
+---
+
+GameModeBase
+
+specifies which classes should be spawned/used by the other systems
+PlayerController, Pawn, HUD, GameState, PlayerState, and more
+
+
+commonly used to specify game rules
+
+---
+
+the GameMode instance only exists on the server
+no client ever has an instance
+
+
+GameStateBase does exist on all clients
+
+---
+
+GetWorld()->GetAuthGameMode()
+GetGameState()
+InitGame()
+
+---
+---
+---
+
+HUD
+
+Only exists on the client
+Not suitable for replication
+
+owned by the PlayerController
+PlayerController->GetHUD() // Available in your local PlayerController
+
+Spawned through PlayerController
+
+---
+---
+---
+
+WorldPermalink
+
+representing a map
+in which Actors and Components will exist
+
+Contains objects like GameState, GameMode, and arrays containing things like Pawns and Controllers currently on the map
+
+---
+
+Line tracing and all its variations are done via the World with functions like LineTraceSingleByChannel
+
+---
+
+GameInstance 
+
+persists throughout the session of the game from launch till shutdown
+Traveling between maps and menus will maintain the same instance of this class
+
+provide event hooks of handling network errors, loading of user data like game settings 
+and generally features that are not relevant to only a specific level of your game.
+
+GetWorld()->GetGameInstance<T>()
+Actor->GetGameInstance()
+
+---
+
+PlayerState
+
+Container for variables to replicate between client/server for a specific player
+
+Data container that doesn’t run much logic of its own
+
+
+PlayerController is not available on all clients 
+and Pawns are often destroyed as players die, 
+the PlayerState is a good place to store data that must be replicated or persist between deaths
+
+Pawn->PlayerState // The PlayerState in Pawn is only assigned for as long as a Controller has possessed that Pawn
+Controller->PlayerState
+GameState->PlayerArray
+
+---
+
+Class to spawn is assigned in GameModeBase (PlayerStateClass) 
+and spawned by AController::InitPlayerState()
+
+---
+
+GameStateBase
+
+GameMode instance exists only on server
+
+GameStateBase is a useful container to replicate information like match time elapsed or team scores
+
+World->GetGameState<T>()
+MyGameMode->GetGameState()
+
+---
+---
+---
+
+UObjectPermalink
+
+UObjects are not spawned like Actors, but created using NewObject<T>()
+
+TSubclassOf<UObject> Class;
+UObject* NewObject = NewObject<UObject>(this, Class);
+
+---
+---
+---
+
+GameplayStaticsPermalink
+
+common game-related functionality
+
+---
