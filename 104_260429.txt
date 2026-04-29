@@ -1,0 +1,629 @@
+메서드 포인터
+access control semantics 가 살아 있다
+컴파일 타임 개념
+
+생성된 기계어 관점에서 public과 private 메서드는 구분이 없다
+access control semantics 링커 수준에도, 런타임 ABI에도 흔적을 남기지 않는다.
+
+---
+
+DECLARE_DYNAMIC_MULTICAST_DELEGATE 계열
+
+MyDynamicDelegate.AddDynamic(this, &AMyActor::MyPrivateMethod);
+
+---
+
+UFunction* Func = Obj->FindFunction(TEXT("MyPrivateMethod"));
+
+Obj->ProcessEvent(Func, &Params);
+
+---
+---
+---
+
+클래스 내부에서 선언된 public thunk가 private 멤버를 호출하는 간접층을 UHT가 생성한다
+
+DECLARE_FUNCTION(MyPrivateMethod);
+
+void AMyActor::execMyPrivateMethod(UObject* Context, FFrame& Stack, void* Result)
+{
+    AMyActor* P_this = (AMyActor*)Context;
+    P_this->MyPrivateMethod(); 
+}
+
+---
+---
+---
+---
+---
+---
+
+Pawn
+
+
+GetController(), GetPlayerController()
+Controller 참조
+Actor는 Controller 개념이 없다
+Possesse된 결과 상태 정보
+PossessedBy, UnPossessed, OnRep_Controller
+
+
+GetPlayerState()
+PlayerState 참조 경로
+Pawn이 Controller를 구조적으로 알고 있기 때문에 성립하는 API
+Actor에서는 이 경로가 존재하지 않는다
+
+
+조종자와 연결되기 때문에 이런 질문이 생깁니다
+Controller가 바라보는 방향과
+Pawn 몸체의 방향은 같은가?
+
+컨트롤러 회전을 자신의 회전에 반영할지 여부
+uint8 bUseControllerRotationPitch : 1; 
+uint8 bUseControllerRotationYaw : 1;
+uint8 bUseControllerRotationRoll : 1;
+
+캐릭터는 yaw만 몸에 반영하고,
+pitch는 카메라/aim에만 쓰는 식으로 분리할 수 있어요
+
+
+SetupPlayerInputComponent()
+입력 바인딩 인터페이스
+Actor도 EnableInput()으로 입력을 받을 수는 있다
+
+---
+
+float BaseEyeHeight
+GetPawnViewLocation()
+"이 Pawn을 조종하는 시점이 어디인가"
+Pawn 자체가 소유하는 시점 정보
+
+---
+
+IsValid
+null 또는 garbage인지 확인
+
+
+UObject
+엔진의 전역 UObject 관리 시스템에 등록된 객체
+
+
+UObject 시스템에서 “이 객체는 죽는 중 / garbage 대상”으로 표시
+
+---
+
+RF_MirroredGarbage
+
+GUObjectArray 내부에서 이 객체가 Garbage라고 표시된 상태를
+UObject 자신의 ObjectFlags 쪽에도 거울처럼 반영해둔 플래그
+
+
+진짜 내부 상태는 GUObjectArray의 EInternalObjectFlags::Garbage 쪽에 있고
+RF_MirroredGarbage는 그 상태를 UObject 플래그에도 복사해둔 것
+
+---
+
+checkSlow(
+    GUObjectArray.IndexToObject(Object->InternalIndex)->HasAnyFlags(EInternalObjectFlags::Garbage)
+    ==
+    Object->HasAnyFlags(RF_MirroredGarbage)
+);
+
+---
+
+struct
+{
+    UObject* Object;
+    int32 InternalFlags;
+};
+
+GUObjectArray
+  ├─ [0] UObject* + InternalFlags
+  ├─ [1] UObject* + InternalFlags
+  ├─ [2] UObject* + InternalFlags
+  └─ ...
+
+UObject 인스턴스의 평면 리스트
+"모든 객체의 명단"일 뿐, "객체 간 참조 그래프"가 아니다
+
+
+GC가 그래프를 순회하려면 각 객체의 메모리 레이아웃을 읽어서 어떤 오프셋에 UObject 참조가 있는지 알아내야 한다
+
+각 UClass에 대해 다음과 같은 참조 레이아웃 정보
+
+AMyActor의 ReferenceTokenStream
+  [Object Reference at offset 0x40]            ← TargetActor
+  [Array of Object References at offset 0x48]  ← Inventory
+
+---
+
+UE의 UObject 생성은 두 단계
+
+먼저 UObjectBase 부분만 초기화되어 GC 추적 시스템에 등록
+그 다음에 실제 클래스 생성자가 호출
+
+이 사이의 짧은 구간에서 객체는 메모리에 존재하지만 사용하면 안 되는 상태
+
+---
+
+Unreachable → Garbage → BeginDestroy → Freed
+
+---
+
+Software Transactional Memory(STM)
+
+
+데이터베이스의 트랜잭션 개념을 메모리 연산에 적용
+코드 블록을 트랜잭션으로 감싸면 그 안의 모든 메모리 변경이 원자적으로 커밋되거나 통째로 롤백된다.
+
+
+Transact([&]() {
+    Object->X = 10;
+    Object->Y = 20;
+    if (SomeCondition)
+    {
+        AutoRTFM::AbortTransaction()
+    }
+});
+
+
+내부 동작은 트랜잭션 시작 시점의 메모리 상태를 기록(write log)하고, abort되면 그 로그로 되돌리는 방식
+UE는 컴파일러 instrumentation으로 구현
+
+Verse 언어가 transaction-based 의미론
+
+---
+
+UObject GC
+
+Ref-count 기반이 아니라
+mark-and-sweep 방식
+
+매 GC 사이클마다
+
+RootSet에서 시작해 reachability를 추적
+UPROPERTY()로 선언된 모든 참조를 따라 그래프 순회
+도달하지 못한 객체에 Unreachable 표시
+표시된 객체들을 일괄 해제
+
+---
+
+UObject 생성 
+
+기본적으로는 게임 스레드에서만 만든다. 하지만 예외가 있다
+
+
+비동기 로딩(Async Loading)
+
+에셋을 백그라운드에서 로드할 때 워커 스레드가 UObject를 생성한다
+AsyncLoadingPhase1/2 플래그가 존재하는 이유
+"이 객체는 지금 다른 스레드에서 만들어지는 중"임을 GC에게 알리는 것
+
+
+명시적 비동기 작업
+
+Async 플래그가 붙은 객체는 게임 스레드 외의 스레드에서 생성·소유될 수 있다
+
+---
+
+stop-the-world
+GC 자체는 게임 스레드에서 다른 스레드들을 일시 정지시키고 실행된다
+
+---
+
+Unreachable은 GC의 출력
+GC가 그래프를 순회한 결과
+GC 분석만으로 결정
+
+Garbage는 GC의 입력
+누군가가 명시적으로 "이 객체는 Garbage"라고 설정함
+MarkAsGarbage(), AActor::Destroy()
+
+
+---
+
+Garbage 마킹부터 다음 GC까지의 구간에서 일어나는 일
+
+EInternalObjectFlags::Garbage 세팅
+EObjectFlags::RF_MirroredGarbage 세팅
+
+IsValid(Obj)가 false 반환
+TObjectPtr 역참조 시 (late-resolve 모드에서) 내부적으로 Garbage 검사 후 nullptr처럼 다룬다
+TWeakObjectPtr::IsValid()도 false 반환
+
+
+다음 GC 사이클
+
+Mark 단계
+
+Garbage 객체는 Unreachable 판정을 받는다
+
+
+Sweep 단계
+
+Unreachable로 판정된 객체들이 실제로 소멸한다
+
+---
+
+stop-the-world GC
+
+Frame N: [게임 로직] [GC: 100ms] ← 프레임 스파이크
+
+
+Incremental GC
+
+Frame N:   [게임 로직] [GC 일부: 2ms]
+Frame N+1: [게임 로직] [GC 일부: 2ms]
+Frame N+2: [게임 로직] [GC 일부: 2ms]
+...
+Frame N+50: [게임 로직] [GC 마무리: 2ms]
+
+---
+
+GC가 그래프를 순회할 때 "이번 프레임에는 X 마이크로초만 일하고 중단" 식으로 
+할당된 budget이 끝나면 현재 상태(어디까지 순회했는지)를 저장하고 다음 프레임으로 넘긴다
+
+---
+
+A->NewChild = D;
+// ↓ 자동 삽입되는 코드
+GC::OnReferenceWritten(A, D);
+// → D를 gray로 다시 표시 (GC가 재방문 큐에 넣음)
+
+---
+
+Unreachable한 객체들을 가리키던 모든 UPROPERTY 슬롯에 nullptr 써넣기
+참조 클리어가 객체 해제보다 반드시 먼저 일어나야 한다
+순서가 거꾸로면 잠깐이라도 dangling pointer가 존재하게 된다
+
+---
+---
+---
+---
+---
+---
+
+Logical Destruction
+게임 세계로부터 분리되는 동기적 단계. 
+같은 프레임 안에 끝난다.
+
+
+Physical Destruction
+다음 GC 주기에서 일어난다.
+메모리에서 실제로 해제되는 비동기적 단계
+
+---
+
+AActor::Destroy
+
+World->DestroyActor(this, bNetForce, bShouldModifyLevel)로 오케스트레이션 권한을 World 에 위임한다
+실제 작업의 주체는 UWorld
+액터의 죽음은 레벨/월드/네트 드라이버에 영향을 미치는 사건이기 때문에
+그것들을 한꺼번에 보고 있는 World 가 지휘해야 한다
+
+
+IsPendingKillPending이면 즉시 false 반환
+재진입 방지. 
+이 체크가 없으면 EndPlay 도중에 Destroy 가 다시 호출
+
+
+GetWorld()가 없으면 빠른 종료
+이미 월드에서 벗어난 액터, 예컨대 트랜지언트 패키지에 있는 객체
+
+---
+
+UWorld::DestroyActor()
+
+(a) Pawn 분리
+Pawn->DetachFromControllerPendingDestroy() 
+AController::PawnPendingDestroy(Pawn)
+
+
+(b) bActorIsBeingDestroyed = true
+재진입 방지 플래그
+이 시점부터 같은 액터에 대한 Destroy() 호출은 모두 무시된다.
+
+
+(c) 네트워크 알림
+
+(서버 측) 복제되는 액터라면 NetDriver->NotifyActorDestroyed(Actor, bNetForce)
+클라이언트는 자신의 측에서 같은 경로(UWorld::DestroyActor)로 액터를 파괴
+
+
+(d) 타이머/래턴트 액션 정리
+
+World->GetTimerManager().ClearAllTimersForObject(Actor)
+World->GetLatentActionManager().RemoveActionsForObject(Actor)
+
+
+(e) RouteEndPlay() 호출
+
+
+(f) Destroyed() 호출
+OnDestroyed 멀티캐스트 델리게이트가 브로드캐스트
+
+
+(g) Owner / Children 정리
+
+자신의 Owner 측 Children 배열에서 자신을 제거
+자신의 Children 배열을 순회하며 각 자식의 Owner 를 null 로
+
+
+(h) Attachment 해체
+RootComponent->DetachFromComponent(...)
+
+
+(i) UnregisterAllComponents() 
+
+
+(j) Level->Actors.RemoveSingle(Actor)
+
+
+(k) MarkAsGarbage()
+액터 자신, 그리고 소유 컴포넌트들에 GC 마크를 찍는다
+
+---
+---
+---
+
+(e) RouteEndPlay() 호출
+ActorHasBegunPlay == HasBegunPlay 인 경우에만 동작
+
+
+(a) 모든 컴포넌트의 EndPlay()
+
+OwnedComponents 를 순회하며, BeginPlay 가 호출됐던 컴포넌트들에 대해 Component->EndPlay(Reason)
+
+(b) 액터 자신의 EndPlay(Reason)
+OnEndPlay 멀티캐스트 델리게이트 브로드캐스트
+블루프린트 ReceiveEndPlay (K2_EndPlay) 실행
+
+---
+---
+---
+
+(i) UnregisterAllComponents() 
+
+DestroyPhysicsState()
+시뮬레이션 바디/컨스트레인트 제거
+
+DestroyRenderState()
+렌더 스레드에 메시지를 보내서 프리미티브를 씬에서 제거. 이게 비동기.
+게임 스레드의 컴포넌트 객체가 파괴되더라도 렌더 스레드의 FPrimitiveSceneProxy 는 한 프레임 정도 더 살아 있을 수 있다
+
+bRegistered = false
+
+---
+---
+---
+
+UWorld::DestroyActor() 가 리턴된 시점의 액터 상태
+
+IsValid(Actor) == false (HasAnyFlags(RF_MirroredGarbage) 
+모든 동기적 정리 완료
+메모리 상에는 여전히 존재
+
+---
+---
+---
+
+GC 사이클
+
+여기서부터는 UWorld 가 아니라
+UE 의 가비지 컬렉터 (IncrementalPurgeGarbage, CollectGarbageInternal) 가 주체
+
+
+(a) Reachability Analysis (Mark)
+
+루트 셋(GCObjectReferencer, World, GameInstance 등)에서 출발해서 
+모든 UPROPERTY 참조를 따라가며 도달 가능한 객체들에 마킹한다
+
+액터는 World 의 Actors 리스트에서도 빠졌고 다른 누군가가 참조하지 않으면 unreachable 이 된다
+
+
+다른 액터가 UPROPERTY 로 죽은 액터를 잡고 있다면 어떻게 되는가?
+그 참조는 GC 에 의해 자동으로 nullptr 로 치환된다
+
+---
+
+(b) BeginDestroy()
+
+unreachable 로 판정된 객체들에 대해 호출된다
+
+
+(c) IsReadyForFinishDestroy()
+
+GC 가 매 틱(또는 incremental purge 의 매 슬라이스)마다 이 함수를 폴링한다. 
+BeginDestroy 에서 시작한 비동기 정리가 끝났는지 묻는다. 
+예: 렌더 스레드의 SceneProxy 가 파괴되었는가? 끝나지 않았으면 다음 폴링 사이클로 미뤄짐
+
+
+(d) FinishDestroy()
+(e) ~UObject() 
+
+---
+---
+---
+
+GC 사이의 시간차
+
+GC 는 즉시 오지 않는다. 기본 ~60초
+
+그 사이 Controller 는 살아있고, 그 안의 Pawn UPROPERTY 는 garbage 표시된 Pawn 을 가리키는 상태다
+
+만약 Destroy Actor 절차에서 이 필드를 null로 세팅해주지 않는다면
+GC 가 와서 정리하기 전까지의 이 윈도우가 위험해진다
+예를 들면 매 틱 Tick 에서 Pawn->AddMovementInput(...) 같은 호출이 IsValid() 체크 없이 일어나면 조용히 잘못된 동작을 한다
+
+---
+---
+---
+
+UnregisterAllComponents 는 AActor 의 함수
+
+BeginDestroy 는 UObject 의 가상 함수
+UTexture2D 든, UMaterial 이든, UDataAsset 이든, GC 될 때 호출되는 보편적 hook
+"GC 가 너를 회수하려고 한다. 너만의 비동기 정리를 시작해라" 라는 신호
+
+---
+
+foreach (unreachable_object o)
+    o->BeginDestroy();        
+
+foreach (o in pending)
+    if (o->IsReadyForFinishDestroy())  
+        o->FinishDestroy();             
+        ~o();
+
+
+class UMyAsyncResource : public UObject 
+{
+    FRenderResourceHandle GpuHandle;
+    char* RawBuffer;
+
+    virtual void BeginDestroy() override {
+        Super::BeginDestroy();
+        ENQUEUE_RENDER_COMMAND(...)([this](FRHICommandList& RHICmdList) {
+            ReleaseGpu(GpuHandle);
+        });
+        GpuReleaseFence.BeginFence();
+    }
+
+    virtual bool IsReadyForFinishDestroy() override {
+        return Super::IsReadyForFinishDestroy() && GpuReleaseFence.IsComplete();
+    }
+
+    virtual void FinishDestroy() override {
+        delete[] RawBuffer;
+        Super::FinishDestroy();
+    }
+};
+
+---
+
+전이가 즉각적이지 않으면 그 사이의 관찰자에게 일관된 답을 줘야 한다
+
+HasNotBegunPlay → HasBegunPlay
+BeginPlay() 함수가 실행되는 도중 에 액터의 상태는 무엇이어야 하는가?
+
+
+HasNotBegunPlay 
+그러면 BeginPlay 안에서 자기 자신을 'begun' 으로 보는 코드가 깨진다.
+
+
+HasBegunPlay 
+BeginPlay 도중에 예외/이른 종료/destroy 가 일어나면 실제로는 초기화가 끝나지 않은 액터가 HasBegunPlay 상태로 남는다
+
+
+BeginningPlay 
+
+"BeginPlay 를 또 부르지 마라" — 재귀 진입 가드
+
+"EndPlay 를 부르려면 조심해라 — 이 액터는 부분적으로만 초기화됐다"
+BeginPlay 도중에 destroy 된 액터의 EndPlay 처리 분기
+
+"HasActorBegunPlay()" 같은 질문에 대한 의미 있는 중간 답
+
+---
+---
+---
+
+재진입성 (reentrancy) 
+
+이벤트를 브로드캐스트해서 다른 액터들의 핸들러가 우리 액터의 상태를 묻는다
+BeginPlay 도중 자기 자신을 Destroy
+다른 액터를 SpawnActor (그 액터의 BeginPlay 가 동기적으로 실행되며, 그게 다시 우리 액터를 참조)
+
+---
+---
+---
+
+Actor는 이런 곳에 얽혀 있어요
+
+UWorld
+ ├─ Level
+ │   └─ Actors 배열
+ ├─ Tick 시스템
+ ├─ Physics Scene
+ ├─ Timer / Latent Action
+ ├─ Network Driver
+ ├─ Collision / Overlap
+ └─ Gameplay Framework
+
+
+---
+
+EndPlay가 호출되는 여러 상황
+
+Destroy 호출
+Level Transition
+Streaming Level Unload
+PIE 종료
+Application 종료
+Actor가 World에서 제거됨
+
+---
+
+Component Tick 중지
+Collision / Overlap 등록 해제
+Physics Body 제거
+Scene에서 detach / unregister
+Render proxy 제거 요청
+
+---
+
+UPrimitiveComponent
+
+렌더링, 충돌, 물리
+
+---
+
+Tick Manager
+  └─ “이 Actor / Component는 다음 프레임부터 Tick하지 마”
+
+---
+
+A와 B가 Overlap 중
+  ↓
+A Destroy
+  ↓
+A의 CollisionComponent Unregister
+  ↓
+B 입장에서는 더 이상 A와 Overlap하지 않음
+
+
+“저 Actor가 사라졌으니,
+너희가 들고 있던 overlap/contact 관계를 정리해라.”
+
+---
+---
+---
+
+Actor는 다른 Actor 또는 Component에 attach되어 있을 수 있어요.
+
+WeaponActor attached to CharacterMesh socket
+ChildActor attached to ParentActor
+
+---
+
+controlled pawn을 Destroy할 때 unpossess/respawn 흐름 문제
+
+---
+
+Timer가 이 Actor의 함수를 호출 예정
+다른 Actor가 이 Actor 포인터 보유
+Delegate에 이 Actor 함수가 바인딩됨
+AI가 TargetActor로 기억 중
+UI가 Actor를 표시 중
+Inventory가 Actor 참조 중
+
+---
+
+AActor::Destroy()
+AActor::Destroyed()
+AActor::EndPlay()
+UObject::BeginDestroy()
+UObject::FinishDestroy()
+C++ destructor
+
+---

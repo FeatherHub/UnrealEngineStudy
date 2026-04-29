@@ -1,0 +1,300 @@
+Force
+
+지속적으로 가해지는 것
+
+F = ma
+
+매 프레임마다 누적되어 가속도를 만든다
+
+물리 시뮬레이션에서 "이번 틱에 이만큼 밀어라"가 아니라 "계속 이 방향으로 밀고 있다"에 해당
+
+
+AddForce()
+사용방법: 힘이 작용하는 동안 매 프레임 (매 Tick) 호출
+이것은 “한 번 때리는 것”이 아니라 “추진기처럼 계속 민다”는 의미 (thrust)
+
+// 계속 미는 힘
+MeshComp->AddForce(Direction * ForceAmount);
+
+
+사용자가 넣는 값은
+힘 N      O
+힘 × Δt   X
+
+
+AddForce는 이미 FPS 독립적으로 처리되며, 
+DeltaTime을 곱하면 프레임레이트에 역비례 & 다른 시간축을 끌고 들어오는 오류
+
+---
+
+Impulse(충격량)
+운동량의 순간적인 변화
+프레임 단위로 지속될 필요 없이 즉각적인 변화
+
+J = F·Δt 혹은 J = mΔv
+
+즉 Impulse는 Force × 시간의 적분 결과물
+
+MeshComp->AddImpulse
+폭발 / 총알 충격 / 순간 타격
+한 번 호출
+“한 번 호출하는 물리 사건”
+
+---
+
+Force의 단위는 kg·cm/s²
+
+70kg 캐릭터를 1m/s² 로 가속하려면 F = 70 × 100 = 7000
+
+
+Impulse의 단위는 kg·cm/s
+
+AddImpulse()의 벡터가 의미하는 것은 "운동량 변화량"이고, 
+내부적으로 Δv = J/m 으로 처리
+
+
+bVelChange 플래그
+
+함수에 넘기는 벡터가 운동량이 아니라 속도 변화량(Δv) 으로 직접 해석된다
+즉 질량을 무시하고 "속도를 이만큼 바꿔"가 된다
+heavy/light 오브젝트 구분이 사라진다.
+
+
+---
+---
+---
+
+Impulse  = Force를 시간에 대해 누적한 것
+Work     = Force를 이동거리에 대해 누적한 것
+
+---
+
+변위, 거리
+displacement, distance
+
+---
+
+Force는 “변화율”
+
+힘은 운동량 자체가 아니라, 운동량을 바꾸는 속도
+
+F = dp/dt
+힘 = 운동량 변화율
+
+---
+---
+---
+---
+---
+---
+
+Engine
+/Engine/Source/Runtime/Engine
+에디터 빌드에도 들어가고 게임 빌드에도 들어간다
+기반(substrate)
+
+
+Editor
+Engine/Source/Editor/
+게임 빌드에 포함되지 않는다.
+
+---
+
+.Target.cs
+
+TargetType.Game
+TargetType.Editor
+TargetType.Server, TargetType.Client
+
+---
+
+Editor 빌드에만 존재하는 것들
+
+WITH_EDITOR 매크로로 감싸진 코드 블록
+UFactory, FAssetTypeActions 등 애셋 임포트/편집 관련 클래스
+
+---
+
+Game 빌드에만 존재하는 것 
+
+Game 빌드는 Editor 빌드의 부분집합에 가깝다
+
+---
+
+모듈 Type 선언
+
+{
+  "Name": "MyGameEditor",
+  "Type": "Editor",      // 에디터 빌드에만 포함
+  "LoadingPhase": "Default"
+}
+
+---
+
+Engine이라는 말
+
+UGameEngine, UEditorEngine의 기반이 되는 UEngine 클래스
+Engine이라는 런타임 모듈 (/Engine/Source/Runtime/Engine)
+
+---
+---
+---
+---
+---
+---
+
+PrimaryActorTick
+FActorTickFunction
+
+Actor 안에 들어 있는 Tick 등록 카드
+
+bCanEverTick
+bStartWithTickEnabled
+TickGroup
+TickInterval
+
+---
+
+Actor 자체가 매 프레임 자동으로 호출되는 게 아니라
+Actor가 가진 PrimaryActorTick이 엔진의 Tick 시스템에 등록되고
+그 등록된 TickFunction이 AActor::Tick(float DeltaSeconds)를 호출합니다.
+
+World Tick
+  ↓
+Tick Task Manager
+  ↓
+Tick Functions Registered
+  ↓
+FActorTickFunction::ExecuteTick
+  ↓
+AActor::Tick(DeltaSeconds)
+
+---
+
+bCanEverTick
+
+Actor 등록 시
+TickFunction 등록 대상인가?
+
+---
+
+AActor
+ ├─ PrimaryActorTick
+ │    └─ AActor::Tick()
+ │
+ ├─ UActorComponent
+ │    └─ PrimaryComponentTick
+ │         └─ UActorComponent::TickComponent()
+ │
+ └─ UActorComponent
+      └─ PrimaryComponentTick
+           └─ UActorComponent::TickComponent()
+
+
+Actor Tick과 Component Tick은 부모-자식 호출 관계라기보다, 
+각각 Tick 시스템에 등록되는 독립 TickFunction
+(World Tick Manager)
+
+---
+
+TG_PrePhysics
+물리시작 이전 호출
+
+TG_DuringPhysics
+물리와 병렬로 호출 (결과에 의존하면 안 됨)
+물리 결과가 필요 없는 작업
+
+TG_PostPhysics
+물리 결과 확정 후 호출
+
+TG_PostUpdateWork   
+모든 업데이트 이후 호출
+"다른 모든 Tick이 끝난 후 마지막으로 읽기만 하는" 작업을 위해 존재
+
+TG_NewlySpawned
+현재 프레임 Tick 도중 스폰된 Actor들이 같은 프레임 내에서 Tick될 수 있도록 별도 처리되는 그룹
+
+---
+
+Tick Interval
+매 프레임이 아니라 일정 간격으로
+
+거리 체크
+상태 갱신
+상호작용 후보 탐색
+
+---
+
+PrimaryActorTick.AddPrerequisite(OtherActor, OtherActor->PrimaryActorTick);
+
+Tick Task Graph 안에서 의존성을 거는 방식
+
+---
+
+UE의 Tick 시스템
+
+"TickFunction 객체들이 등록되어 있고, 엔진이 그것들을 실행한다"는 구조
+
+Actor는 그 TickFunction 객체를 소유할 뿐
+
+---
+
+FActorTickFunction -> FTickFunction 
+PrimaryActorTick: FActorTickFunction
+
+PrimaryActorTick은 Actor의 Tick 행동 전체를 제어하는 설정 객체
+
+---
+
+FTickFunction/bCanEverTick
+생성자에서만 의미 있고, 런타임에 바꿔도 이미 등록/미등록이 결정된 후라 효과가 없다
+
+---
+
+TickFunction 등록 시점
+
+
+AActor::RegisterAllActorTickFunctions()가 Actor가 월드에 스폰될 때 호출되고, 
+이때 bCanEverTick을 보고 등록 여부를 결정한다
+
+---
+
+ActorComponent의 Tick 구조
+
+
+PrimaryComponentTick이 FActorComponentTickFunction 타입으로 존재
+
+---
+---
+---
+---
+---
+---
+
+부팅규칙 
+
+어떤 맵으로 시작하는가?
+어떤 GameMode/GameInstance으로 시작하는가?
+
+---
+
+Engine
+특정 게임 규칙보다 낮은 층
+
+
+Actor가 충돌하려면 Collision 기본값이 필요함
+AI가 움직이려면 Navigation 기본값이 필요함
+
+Audio — 최대 동시 사운드 수, 공간화 방식. 
+Physics — 물리 서브스텝, 중력 기본값. 
+Rendering — 어떤 렌더링 피처를 켤 것인가. 게임이 뭘 그리는지는 모른다
+Input — 축 매핑, 기본 바인딩. 그 입력으로 무엇을 할지는 모른다
+GC — 오브젝트 수집 주기. 
+
+---
+
+Platforms 섹션
+
+최하층 레이어
+
+---
