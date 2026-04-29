@@ -1,0 +1,116 @@
+Actor 
+
+an Object that can be placed or spawned in a level
+
+Actor initialization has multiple steps
+
+UObject::PostLoad
+UActorComponent::OnComponentCreated
+AActor::PreRegisterAllComponents
+UActorComponent::RegisterComponent
+AActor::PostRegisterAllComponents
+AActor::PostActorCreated
+AActor::UserConstructionScript
+AActor::OnConstruction
+AActor::PreInitializeComponents
+UActorComponent::Activate
+UActorComponent::InitializeComponent
+AActor::PostInitializeComponents
+AActor::BeginPlay
+
+---
+
+UObject::PostLoad
+
+not called for newly spawned actors.
+For actors statically placed in a level
+
+---
+
+UActorComponent::OnComponentCreated
+
+spawned in the editor or during gameplay
+called for any native components
+
+For blueprint-created components, this gets called during construction for that component. 
+
+This is not called for components loaded from a level.
+
+---
+
+AActor::PreRegisterAllComponents
+
+For statically placed actors and spawned actors 
+that have native root components
+
+For blueprint actors without a native root component,
+these registration functions get called later during construction.
+
+---
+
+UActorComponent::RegisterComponent
+
+creates their physical/visual representation
+
+These calls may be distributed over multiple frames
+are always after PreRegisterAllComponents
+
+
+This may also get called later on after an UnregisterComponent call removes it from the world
+
+---
+
+AActor::PostRegisterAllComponents
+
+this is the last function that is called in all cases
+
+---
+
+AActor::PostActorCreated
+
+When an actor is created in the editor or during gameplay, 
+this gets called right before construction
+
+not called for components loaded from a level.
+
+---
+
+AActor::UserConstructionScript
+
+Called for blueprints that implement a construction script.
+
+---
+
+AActor::OnConstruction
+
+Called at the end of ExecuteConstruction, which calls the blueprint construction script
+
+
+---
+
+AActor::PreInitializeComponents
+
+only called during gameplay and in certain editor preview windows.
+
+---
+
+UActorComponent::Activate
+
+if the component has bAutoActivate set
+
+---
+
+UActorComponent::InitializeComponent
+
+---
+
+AActor::PostInitializeComponents
+
+---
+
+AActor::BeginPlay
+
+Called when the level starts ticking
+can be delayed for networked or child actors.
+
+---
