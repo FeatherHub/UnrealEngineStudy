@@ -1,0 +1,431 @@
+namespace RogueCollisionProfile
+{
+    static const FName Projectile         = FName(TEXT("Projectile"));
+}
+
+internal linkage 부여
+
+이 헤더를 include하는 각 번역 단위(translation unit, .cpp 파일)가 각자 자신의 복사본을 갖는다
+ODR(One Definition Rule) 위반이 아닌 이유는, 정의가 "여러 개"가 아니라 TU마다 "독립적으로 하나씩" 존재하기 때문이다
+복사본이 TU 수만큼 생긴다
+
+---
+
+inline, C++17
+
+외부 링키지를 유지하면서 단일 정의를 가진다
+모든 TU가 같은 하나의 객체를 공유
+
+---
+
+external linkage
+
+모든 TU가 동일한 하나의 객체를 참조한다는 약속
+그러면 그 객체의 실제 저장소가 정확히 한 곳에 정의되어야
+
+
+예외
+
+C++17: inline static — 헤더 안에서 정의 가능
+constexpr는 암묵적으로 inline (C++17부터)
+
+
+inline이 "이 정의가 여러 TU에 나타날 수 있지만 링커가 하나로 합친다"는 의미를 가지기 때문에 
+헤더 내 정의가 허용된다.
+
+---
+---
+---
+---
+---
+
+함수 호출 = 코드 주소 + 인자 목록
+
+method binding with arguments
+그중 일부를 미리 고정해서
+나중에 더 적은 정보만으로 호출 가능하게 만드는 것
+
+---
+
+partial application
+
+f(a, b, c)
+g(a) = f(a, 10, 20)
+
+이제 g는 인자 하나만 받는 새 함수처럼 행동
+
+호출: g(5)
+실제로 일어나는 일: f(5, 10, 20)
+
+---
+
+Actor->Explode(50.0f, 300.0f);
+AActor::Explode(Actor, 50.0f, 300.0f)
+
+method call = function pointer + object pointer(this) + explicit arguments
+
+---
+
+Callable 
+
+callable object
+“호출 가능한 객체”
+
+operator()
+
+내부에 함수 포인터, 객체 포인터, 캡처된 인자들을 저장
+
+---
+
+Delegate = 어떤 함수를 나중에 호출할 수 있는 정보를 담은 객체
+
+
+Multicast delegate면, [Callable 1, Callable 2, Callable 3, ...]
+
+---
+
+int32 Damage = 50;
+
+auto Fn = [this, Damage]()
+{
+	ApplyDamage(Damage);
+};
+
+=>
+
+struct
+{
+	UMyObject* This;
+	int32 Damage;
+
+	void operator()()
+	{
+		This->ApplyDamage(Damage);
+	}
+};
+
+---
+
+메서드를 호출할 수 있는 작은 호출 객체를 만들고,
+그 호출 객체 안에 인자 일부를 저장하는 것
+
+---
+
+Partial Application
+n항 함수에 일부 인자를 미리 고정해서 (n-k)항 함수를 만드는 연산
+
+f : (A, B, C) → R이 있을 때, a₀ ∈ A를 고정해서 f' : (B, C) → R을 얻는 것
+
+---
+
+Type Erasure
+델리게이트는 다양한 형태의 호출 대상을 균일한 타입으로 저장해야 한다.
+
+
+일반 함수 포인터: void(*)(int32)
+멤버 함수 + 객체: (UMyClass*, void(UMyClass::*)(int32))
+람다: 익명 타입의 함수 객체
+
+
+이것들의 타입은 전부 다르다. 하지만 델리게이트 변수 FOnDamaged는 단 하나의 타입이다
+
+---
+
+람다 방식은 컴파일러가 클로저를 만든다. 
+캡처할 변수를 명시하면 컴파일러가 자동으로 멤버를 가진 익명 클래스를 생성한다
+
+각 람다마다 고유한 타입이 생기고, 그것을 균일한 저장소(std::function 또는 IDelegateInstance*)에 넣으려면 타입 소거가 필요하다
+
+---
+---
+---
+
+바인딩 방식마다 구체 클래스
+
+struct TUObjectMethodDelegateInstance : IDelegateInstance
+struct TLambdaDelegateInstance : IDelegateInstance
+
+---
+
+[ThisPtr, SlotIndex, Name, LargeArray]()
+{
+}
+
+=>
+
+struct Closure
+{
+	UObject* ThisPtr;
+	int32 SlotIndex;
+	FName Name;
+	TArray<int32> LargeArray;
+};
+
+---
+---
+---
+---
+---
+---
+
+IsSimulatingPhysics
+
+내 "움직임"의 주도권이 물리 엔진에 있는가?
+
+이 컴포넌트의 transform을
+게임 코드가 직접 결정하는가,
+아니면 물리 시뮬레이션이 결정하는가?
+
+---
+
+Simulating Physics = false
+
+Game Thread / MovementComponent / SetActorLocation
+→ 위치를 직접 갱신
+
+
+Simulating Physics = true
+
+Physics Solver
+→ 힘, 충돌, 제약, 질량, 속도, 충격량으로 위치 갱신
+
+---
+---
+---
+---
+
+
+GenerateOverlapEvents
+
+상태를 사건으로 바꾸는 장치
+
+두 컴포넌트가 공간적으로 겹쳤을 때,
+그 겹침을 BeginOverlap / EndOverlap 이벤트로 승격시킬 것인가?
+
+
+Overlap은 상태 전이 이벤트
+
+이전 프레임: 안 겹침
+현재 프레임: 겹침
+→ BeginOverlap
+
+이전 프레임: 겹침
+현재 프레임: 안 겹침
+→ EndOverlap
+
+
+그러려면 엔진은 “지난번에 누구와 겹치고 있었는지”를 기억해야
+비용
+
+---
+
+1. ApplyRadialDamage
+2. AddRadialImpulse
+3. Niagara / Sound
+4. Camera shake
+
+---
+
+IsSimulatingPhysics = false여도 Overlap Event는 납니다
+
+
+Overlap Event의 핵심 조건
+
+양쪽 컴포넌트가 collision 가능한 상태
+양쪽 response 관계가 Overlap
+양쪽 GenerateOverlapEvents가 true
+
+
+예를 들어 Trigger Box는 physics simulation을 하지 않습니다
+
+---
+
+Hit Event 의 원인들
+
+Kinematic / Sweep 경로
+Character movement, sweep을 켠 SetLocation, physics simulation
+
+Physics Simulation 경로
+physics simulation 중 충돌 (Simulation Generates Hit Events = true)
+
+---
+---
+---
+
+물리적으로 다른 물체와 어떻게 만나는가 (CollisionEnabled + response matrix)
+게임 코드에 무슨 일이 일어났는지 알려주는가 (GenerateOverlapEvents)
+이 물체의 위치는 누가 결정하는가 (IsSimulatingPhysics)
+
+조합 가능한 설정 공간
+
+---
+---
+---
+
+트랜스폼에 두 명의 잠재적 작성자가 있을 때 어떻게 할 것인가
+
+게임 코드는 SetActorLocation()으로 위치를 쓴다. 
+Chaos 물리 엔진도 힘 적분 결과로 위치를 쓴다.
+
+IsSimulatingPhysics=true는 "이 컴포넌트의 트랜스폼 작성 권위를 물리 엔진에 양도한다"는 계약이다. 
+
+이 플래그가 true인 동안 SetActorLocation()을 호출하면 작동은 하지만 
+다음 물리 틱에서 물리 엔진이 덮어쓴다
+
+---
+---
+---
+
+SetActorLocation(NewLocation, ETeleportType::TeleportPhysics);
+
+“이 이동을 물리 속도 변화로 해석하지 말고,
+물리 body 위치를 순간적으로 새 위치에 맞춰라.”
+
+---
+
+MeshComp->SetCollisionEnabled(NoCollision);
+
+physics engine representation을 만들지 않으며, spatial query와 simulation 모두에 쓰일 수 없다
+
+---
+
+Actor 안에 여러 primitive component가 있을 때
+
+Actor
+├─ APrimComp        SimulatePhysics=false
+├─ BPrimComp        QueryOnly
+└─ CPrimComp        SimulatePhysics=true
+
+“어느 PrimitiveComponent가 physics body인가?”
+
+---
+
+Kinematic VS Dynamic
+
+---
+---
+---
+---
+---
+---
+---
+
+Poll:
+  내가 상태를 확인하러 간다.
+
+Notify:
+  상태가 바뀐 쪽이 나에게 알려준다.
+
+
+State Owner
+   |
+   | notify
+   v
+Interested Object
+
+
+OnHealthChanged.Broadcast(NewHealth);
+
+상태를 소유한 쪽이 변화를 감지한다.
+그리고 관심 있는 쪽에게 변화 사실을 밀어준다.
+
+---
+
+상태전이 (= 사건)의 Semantics
+
+void Tick(float DeltaTime)
+{
+    if (Door->IsOpen())
+    {
+        EnterRoom();
+    }
+}
+
+
+Door->OnOpened.AddUObject(this, &UMyActor::EnterRoom);
+
+---
+
+Event Source
+   |
+   | Broadcast
+   v
+[Listener A]
+[Listener B]
+[Listener C]
+
+---
+---
+---
+
+subscriber는 pub/sub 시스템 출신
+
+Publisher
+   |
+   | publish(topic, message)
+   v
+Event Bus / Message Broker
+   |
+   v
+Subscribers
+
+
+발행자와 구독자가 서로 몰라도 된다
+중간에 topic/bus/broker가 있을 수 있다
+뛰어난 느슨한 결합
+
+---
+
+Poll
+
+IsValid()
+IsSimulatingPhysics()
+GetOverlappingActors()
+LineTrace
+GetVelocity()
+
+의미: 현재 상태를 직접 물어본다.
+
+---
+
+Notify
+
+AnimNotify
+OnRep
+BeginOverlap
+EndOverlap
+OnHit
+OnDestroyed
+
+의미: 사건이 발생해서 알려준다.
+
+---
+
+시간-의존성 관리
+
+문이 열리는 순간
+체력이 0이 되는 순간
+버튼이 눌리는 순간
+물체가 겹치기 시작하는 순간
+애니메이션이 특정 프레임에 도달하는 순간
+비동기 로딩이 끝나는 순간
+
+---
+
+Tick/Poll
+= 계속 보다가 순간을 발견한다.
+
+Notify/Broadcast
+= 순간이 발생한 쪽이 알려준다.
+
+Delegate
+= 그 순간에 실행할 코드를 보관한다.
+
+Listener/Observer/Subscriber
+= 그 순간에 관심 있다고 등록한 존재다.
+
+---
+
+Delegate가 대리해서 호출한다
+
+---
