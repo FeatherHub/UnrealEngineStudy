@@ -1,0 +1,355 @@
+Initialize, PreConstruct, Construct
+
+각 메서드는 자신을 호출하는 주체가 다르고
+속하는 시간 축이 다르고
+의미하는 "준비됨(ready)" 의 종류가 다르다
+
+
+각 메서드가 어떤 시스템의 readiness 를 의미하는가
+  UObject 시스템, SWidget 시스템
+
+---
+
+Initialize: UObject 의 생명주기에 속한다
+
+객체가 메모리에 자리잡고, 리플렉션 기반 초기화가 끝나, 다른 UObject 를 안전하게 참조할 수 있게 된 
+시점을 표시한다
+
+한 번만 호출되도록 bInitialized 플래그가 보호
+이 메서드는 한 번만 실행된다
+
+
+---
+
+생성자 직후에 그러나 게임플레이 코드 진입 전에 실행될 Hook 
+
+---
+
+bool 을 반환하면서 super 체인의 성공 여부를 전파하는 패턴
+
+=>
+
+transaction semantics
+auto clean up
+
+---
+
+UMG 
+Slate의 어댑터 레이어
+
+---
+
+Construct
+
+AActor::BeginPlay 와 같은 종류의 사건
+World 에 진입됨
+
+==
+
+SWidget 이 SWidgetTree에 연결됨
+
+
+"객체가 존재함" 과 "객체가 활성 시스템에 참여함"
+
+---
+
+Slate 트리 진입/이탈은 반복 가능하지만 
+UObject 의 메모리 readiness 는 한 번뿐
+
+---
+
+PreConstruct
+
+런타임 과 에디터 양쪽에서 모두 호출
+
+---
+
+Construct
+PostInitProperties
+
+PreInitializeComponents
+각 Component 의 InitializeComponent
+PostInitializeComponents
+
+BeginPlay
+(게임플레이)
+EndPlay
+
+BeginDestroy
+FinishDestroy 
+
+---
+---
+---
+
+(1) 메모리 확보
+일반 힙 할당이 아니라 GUObjectAllocator가 해당 클래스 크기만큼 메모리를 가져옵니다. 
+이 메모리는 아직 의미 있는 비트 패턴이 없습니다.
+
+(2) C++ 생성자
+메모리 위에서 돌면서 vtable 포인터를 심고, 
+부모 클래스 서브오브젝트들을 (베이스 생성자 호출을 통해) 구성하고, 
+멤버들의 생성자를 호출합니다. 
+이 시점이 끝나야 그 메모리 영역은 "C++ 객체로서 유효" 합니다.
+
+(3) archetype 으로부터의 프로퍼티 복사
+UClass 의 메타데이터를 보고 archetype (대개 CDO, 또는 더 구체적인 archetype) 의 UPROPERTY 값들을 복사 대입(copy-assignment)으로
+인스턴스에 부어 넣습니다. 
+즉 생성자에서 잡힌 "C++ 디폴트" 위에 archetype 값들이 덧씌워집니다.
+
+(4) (있다면) 직렬화 복원
+디스크에서 로드된 객체라면 Serialize 와 PostLoad 가 추가로 돌아 저장된 값들이 다시 위에 덧씌워집니다
+
+(5) PostInitProperties hook
+위 단계들이 다 끝나고 호출되는 사용자 entry point. 
+이제 "이 객체는 자기 프로퍼티에 들어 있는 모든 UObject 참조가 의미 있는 값을 가졌다" 가 보장됩니다
+
+
+"UObject 인스턴스가 만들어진다" 는 사건이 사실 여러 종류이고, 
+종류마다 위의 (1)~(5) 가 어떻게 조합되는지가 다르다
+
+---
+
+경로 A: CDO 생성
+
+
+게임이 부팅될 때 (모듈이 로드될 때) UE 는 그 모듈에 정의된 모든 UClass 를 등록하면서 
+각 UClass마다 하나의 Class Default Object 를 만듭니다
+
+(1) GUObjectAllocator 가 메모리를 할당합니다. 
+
+(2) C++ 컨스트럭터가 호출됩니다. 
+FObjectInitializer 가 컨스트럭터의 인자로 전달되는데, 
+CDO 인 경우 이 ObjectInitializer 는 "지금 만들고 있는 객체는 archetype 이 없다" 라는 사실을 알고 있습니다. 
+
+따라서 (3) archetype 으로부터의 프로퍼티 복사가 — 적어도 이 클래스의 자기 프로퍼티에 대해서는 — 일어나지 않습니다. 
+대신 부모 클래스의 CDO 를 복사한 위에 자기 컨스트럭터의 코드가 디폴트를 생성 합니다. 
+즉 CDO 자체가 archetype 의 시작점이고, 그 시작점은 컨스트럭터 코드가 직접 만들어낸다. 
+
+
+CDO 는 한 번 만들어지면 게임이 끝날 때까지 살아 있습니다. 
+GC 의 루트로 등록되어 회수되지 않습니다. 
+UClass 가 이 CDO 의 포인터를 들고 있어 GetDefaultObject<T>() 로 언제든 꺼낼 수 있습니다.
+
+---
+
+경로 B: NewObject, SpawnActor (런타임 생성)
+
+(1) 메모리 할당.
+(2) C++ 컨스트럭터 실행 - CDO 만들 때 돌았던 그 코드가 다시 돕니다. 
+(3) FObjectInitializer 가 archetype 의 모든 UPROPERTY 값을 인스턴스에 복사 대입합니다. 
+(4) 이 객체는 새로 만들어진 것이므로 직렬화 복원은 없습니다. 
+(5) PostInitProperties 가 호출됩니다
+
+---
+
+경로 C: LoadObject (직렬화 복원)
+uasset 파일에서 객체를 로드하는 경우
+
+
+(4) Serialize 가 추가로 호출
+디스크에서 읽은 값들이 덧씌워지고, 그 다음 PostLoad 가 불립니다. 
+PostLoad 는 직렬화 의존성이 모두 해소된 시점의 후처리 hook 으로, NewObject 경로에는 없는 단계입니다
+
+
+파일에는 차이만 적혀 있고, 베이스라인은 archetype 이 제공한다. 
+이것은 .uasset 파일이 작은 이유이고, 
+클래스 디폴트가 바뀌면 인스턴스의 (변경되지 않은) 값들이 자동으로 따라가는 이유이기도 합니다.
+
+"archetype 이라는 데이터 베이스라인 위에 인스턴스별 차이를 얹는 합성 시스템" 
+
+---
+
+경로 D: DuplicateObject
+
+PostInitProperties 가 불리고, 
+PostDuplicate 라는 추가 hook 이 호출
+
+---
+
+경로 E: 재인스턴싱 (Hot Reload / Blueprint 컴파일)
+
+UPROPERTY 가 아니면 재인스턴싱 때 자동으로 옮겨지지 않아 에디터에서 BP 컴파일 한 번에 상태가 사라집니다
+
+
+(1) 새 UClass 를 만들고 새 CDO 를 생성
+(2) 기존 인스턴스 각각에 대해 새 클래스 인스턴스를 만들고
+(3) 옛 인스턴스의 프로퍼티 값들을 이름-매칭으로 새 인스턴스에 옮겨 적습니다 (CopyTaggedProperties)
+(4) 옛 인스턴스에 대한 모든 UObject 참조를 새 인스턴스 포인터로 patch 합니다 (FArchiveReplaceObjectRef).
+
+---
+---
+---
+
+컴포넌트가 가진 두 종류의 "준비됨"
+
+첫째: 등록(Registration) 완료
+둘째: 사용자 초기화(InitializeComponent) 완료
+
+---
+
+액터의 RegisterAllComponents 가 호출
+각 호출 안에서 그 컴포넌트의 OnRegister 와, 
+SceneComponent 라면 CreateRenderState_Concurrent, OnCreatePhysicsState 등이 차례로 돕니다
+
+
+그 다음에 AActor::PreInitializeComponents 가 호출
+이 단계에서 사용자가 가질 수 있는 보장
+이 액터의 모든 컴포넌트는 등록되어 있다. 즉 모든 컴포넌트가 첫째 readiness 에 도달
+
+
+bWantsInitializeComponent 가 true 인 것들에 대해 InitializeComponent 를 호출
+
+
+PostInitializeComponents 
+둘째 readiness 가 모든 컴포넌트에 대해 보장된 시점입니다.
+
+
+BeginPlay 
+이 액터뿐 아니라 월드에 있는 다른 액터들도 자기 초기화를 마친 상태
+
+---
+---
+---
+
+lifecycle hook 은 각각 서로 다른 invariant 를 보장하는 시점들의 목록
+
+어떤 작업의 올바른 자리를 찾는 일은 
+"이 작업이 의지하는 invariant 는 무엇인가" → "그 invariant 가 처음 보장되는 hook 은 무엇인가" 의 매칭
+
+---
+
+ASLR
+"Address Space Layout Randomization"
+
+실행 파일이 메모리에 로드될 때 프로세스의 주요 데이터 영역(스택, 힙, 라이브러리 등)의 주소를 무작위로 배치
+
+
+컨스트럭터를 통하지 않고 이전 실행에서 덤프해둔 비트 패턴을 그대로 복사해 넣으면, 
+그 안에 포함된 vtable 포인터는 과거의 "절대적 주소"를 가리키게 됩니다. 
+
+현재 메모리 레이아웃과는 맞지 않는 잘못된 주소를 참조하게 됩니다.
+
+---
+---
+---
+---
+---
+
+실수 직선 위에 float 가 표현할 수 있는 점들이 흩어져 있다고 생각하세요. 
+그 점들은 균등하게 분포하지 않습니다
+0 근처에는 촘촘하고, 큰 수로 갈수록 듬성해집니다
+
+
+
+32비트 float 가 표현하는 서로 다른 수의 개수는 약 2³² ≈ 42억 개입니다
+실수는 무한하므로, 격자 위에 없는 수는 가장 가까운 표현 가능한 수로 반올림 됩니다.
+
+
+IEEE 754 의 세 필드 구조
+
+부호(sign)    지수(exponent)    가수(mantissa/significand)
+   1 bit          8 bits              23 bits
+
+(-1)^부호 × 2^(지수-127) × 1.가수비트들
+
+앞의 1은 암묵적 으로 존재 (정규수의 경우)
+
+---
+
+10진수 0.1 을 이진수로 쓰면
+0.0001100110011001100110011...
+
+23비트에서 잘리므로 0.1 은 float 에 정확히 저장되지 않습니다. 이것이 0.1 + 0.2 ≠ 0.3 의 원인입니다
+
+---
+
+컴파일러(또는 런타임 파서)는 0.123456789 라는 텍스트를 받아서
+
+그 10진수 값에 가장 가까운 IEEE 754 표현 가능 수를 찾습니다.
+그 수의 비트 패턴을 메모리에 씁니다.
+
+
+"가장 가까운 수를 찾는 알고리즘" (round-to-nearest-even)
+David Gay 의 dtoa (double-to-ascii / ascii-to-double) 
+
+---
+
+0.1f 의 실제 저장값: 0.100000001490116119384765625
+0.2f 의 실제 저장값: 0.200000002980232238769531250
+(0.1f + 0.2f) 의 결과: 0.300000011920928955078125
+0.3f 의 저장값:        0.299999988079071044921875
+
+따라서 0.1f + 0.2f == 0.3f 는 false 입니다
+== 는 두 비트 패턴을 정확히 비교합니다
+
+---
+
+Accumulated Rounding Error
+
+사칙연산마다 결과를 가장 가까운 표현 가능수로 반올림합니다
+여러 연산을 거치면 이 반올림이 누적됩니다.
+
+특히 뺄셈 소거(catastrophic cancellation) — 비슷한 크기의 수끼리 빼면 유효 비트가 대거 소멸되는 현상 — 가 위험합니다.
+
+---
+
+if(SquareSum == 1.f)
+
+최적화가 덜 발동할 수는 있지만 correctness 는 항상 보장 됩니다
+
+|SquareSum - 1.f| < ε 로 쓰면 단위벡터를 더 잘 잡겠지만, 
+ε 을 얼마로 잡느냐에 따라 단위벡터가 아닌 것도 넘어갈 수 있다
+
+---
+
+Normal Number
+
+지수 비트가 전부 0 이면 → 비정규수 (Subnormal / Denormal)
+지수 비트가 전부 1 이면 → ±∞ 또는 NaN
+그 외 나머지 → 정규수 (Normal)
+
+
+정규수의 값은 1.가수비트들 × 2^(지수-127)
+
+비정규수는 0.가수비트들 × 2^(-126)
+0에 극도로 가까운 수들을 표현하기 위해 암묵적 1을 버린 형태
+
+정밀도를 희생해서 표현 범위를 0 쪽으로 더 확장한 것이고, 처리 속도가 느립니다
+
+---
+
+가수 24비트짜리 두 수를 곱하면 이론적으로 48비트 정밀도의 결과가 나옵니다. 이것을 다시 24비트로 줄여야 합니다
+FPU 안에는 이를 위한 내부 확장 정밀도 레지스터 와 반올림 로직 이 하드웨어로 구현되어 있습니다.
+
+
+IEEE 754 는 네 가지 반올림 모드를 정의
+
+Round to nearest, ties to even (기본값): 가장 가까운 표현 가능수로, 딱 중간이면 마지막 비트가 0인 쪽으로.
+— Round toward +∞
+— Round toward -∞
+— Round toward zero (truncation)
+
+기본 모드가 "ties to even" 인 이유는 반올림 편향(bias)을 줄이기 위해서입니다.
+항상 올리거나 내리면 누적 오차가 한 방향으로 쏠리기 때문입니다.
+
+---
+
+왜 비정규수의 지수가 -127 이 아니고 -126 인가
+
+William Kahan (IEEE 754 표준의 주요 설계자, 튜링상 수상자)
+
+gradual underflow
+
+IEEE 754 의 핵심 디자인 결정
+
+---
+
+float는 이진수 기반이에요. 그래서 다음 값들은 정확히 표현돼요
+1.0
+0.5
+0.25
+0.125
+2.0
+4.0
+8.0
