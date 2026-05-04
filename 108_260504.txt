@@ -1,0 +1,1940 @@
+무엇을 복제할지 → Property replication
+
+누구에게 복제할지 → Connection / Channel / Relevancy
+
+언제 복제할지 → NetDriver tick, priority queue, bandwidth budget
+
+---
+
+`UNetDriver`
+ └─ TArray<UNetConnection*>  ClientConnections
+     └─ TArray<UChannel*>    OpenChannels
+          ├─ UControlChannel    (연결 제어)
+          ├─ UVoiceChannel      
+          └─ UActorChannel     
+
+특정 Connection에게 특정 Actor가 relevant해진 동안
+그 Connection 안에서 그 Actor용 UActorChannel이 하나 열릴 수 있다
+
+
+Server Actor A
+    ├─ ClientConnection 0 → UActorChannel(A)
+    ├─ ClientConnection 1 → UActorChannel(A)
+    └─ ClientConnection 2 → UActorChannel(A)
+
+---
+
+전체 replication loop의 진입점
+매 tick 호출
+
+UNetDriver::ServerReplicateActors()
+  │
+  ├─ 1. 모든 Connection에 대해 Actor Relevancy 갱신
+  │      IsNetRelevantFor() 호출 → 거리/팀 기준
+  │
+  ├─ 2. Actor Selection (Replication Graph 로 교체 가능)
+  │
+  ├─ 3. Priority 정렬
+  │      각 Actor에 대해 AccumulatedPriority 계산
+  │      Priority = BasePriority × TimeSinceLastReplicated
+  │
+  ├─ 4. Bandwidth budget 내에서 상위 N개 Actor 선택
+  │
+  └─ 5. 선택된 Actor마다 UActorChannel::ReplicateActor() 호출
+
+
+Priority는 굶주림 방지(starvation prevention) 스케쥴링 장치다. 
+오래 복제되지 못한 Actor일수록 가중치가 누적되어 bandwidth를 확보하게 된다.
+
+---
+
+FRepLayout
+
+UPROPERTY(Replicated)로 마킹 + GetLifetimeReplicatedProps로 등록된 프로퍼티를 flat한 배열 인덱스로 색인화한 구조체
+
+---
+
+UActorChannel은 Actor connection channel이고
+실제 property replication 작업의 핵심은 FObjectReplicator
+
+UActorChannel
+    ├─ Actor용 FObjectReplicator
+    └─ SubObject용 FObjectReplicator들
+            ├─ FRepLayout 사용
+            ├─ FRepState / shadow buffer 관련 상태 사용
+            ├─ changelist / history 관리
+            └─ RepNotify / unresolved reference 처리
+
+---
+
+1 클라이언트에서 Server RPC 호출
+2 UHT가 만든 generated thunk / ProcessEvent 경로
+3 AActor::CallRemoteFunction / UNetDriver::ProcessRemoteFunction
+4 legacy path에서는 ActorChannel / Bunch에 RPC payload 기록
+5 서버 수신 후 function lookup / parameter deserialize
+6 서버에서 _Implementation 실행
+
+---
+---
+---
+
+송신:
+    UChannel / FOutBunch
+        ↓
+    UNetConnection packet assembly / SendBuffer
+        ↓
+    PacketHandler outgoing processing
+        ↓
+    NetDriver / Connection LowLevelSend
+        ↓
+    FSocket::SendTo (transport-specific send)
+
+
+수신:
+    FSocket::RecvFrom (transport-specific receive)
+        ↓
+    NetDriver connection lookup (or connectionless handler)
+        ↓
+    PacketHandler incoming processing
+        ↓
+    UNetConnection::ReceivedRawPacket / ReceivedPacket
+        ↓
+    channel / bunch dispatch
+
+---
+
+FEngineLoop::Tick / UWorld::TIck /
+
+TickDispatch
+    → socket receive
+    → connection packet dispatch
+    → low-level packet processing 계열
+
+TickFlush
+    → outgoing data flush
+    → packet send 계열
+
+---
+
+UFUNCTION(Server)로 선언된 ServerFoo(int32 Value)에 대해 
+UHT는 다음을 생성
+
+
+클라이언트가 실제로 호출하는 thunk
+AMyActor::ServerFoo
+
+실제 로직 (서버에서 실행)
+AMyActor::ServerFoo_Implementation
+
+서버 측 검증
+AMyActor::ServerFoo_Validate (WithValidation을 붙인 RPC에 대해)
+
+---
+
+AMyActor::ServerFoo()
+    ↓
+generated wrapper / ProcessEvent
+    ↓
+FunctionFlags + Server or Client 판단
+    ↓
+AActor::CallRemoteFunction()
+    ↓
+UNetDriver::ProcessRemoteFunction()
+    ↓
+Actor->GetNetConnection() → UNetConnection* 획득 (owning UNetConnection)
+    ↓
+FindOrCreateActorChannel()
+    ↓
+RPC payload를 bunch에 직렬화 (FOutBunch 생성)
+
+---
+---
+---
+
+Actor가 메모리 위에 존재하고, 네트워크 시스템이 그 메모리를 "읽어서" 변경분을 찾아 전송한다
+
+Shadow copy는 "지난번에 보낸 것"의 복사본
+
+네트워크 시스템은 그 메모리를 바라보는 관찰자다.
+
+
+UObject 메모리 (truth)
+       ↓ 
+Shadow와 diff
+       ↓ 
+변경된 property 목록
+       ↓
+     Wire
+
+---
+
+IRIS
+
+Object는 Protocol을 가진 데이터 소스다
+시스템이 각 Object에 대해 정해진 Protocol에 따라 데이터를 수집
+
+
+서버 UObject / Actor memory (외부 소스)
+       ↓ 
+Internal quantized state
+       ↓ 
+dirty 멤버 bitfield
+       ↓ 
+     Wire
+
+
+Iris의 핵심은 gameplay code와 replication system 사이의 상호작용을 줄이는 것이고
+Replication Fragment가 gameplay code와 replication system 사이에서 replication state를 운반한다
+
+
+ReplicationBridge가 Object를 Iris NetObject로 등록하고
+Fragment가 Object memory와 Iris state를 연결하며
+Protocol/Descriptor가 그 state의 형식을 정의한다
+
+---
+---
+---
+
+미래 1
+
+복제의 단위가 더 작아질 것이다
+property 수준의 precision
+
+"Object를 복제한다"는 비교적 큰 단위
+
+멤버별 1비트 dirty 표시
+
+---
+
+미래 2
+
+신뢰성 모델이 더 정교해질 것이다
+
+"최신 상태만 중요, 오래된 것은 버려라", "순서 보장", "최대 N번 재시도"
+property별로 신뢰성 프로필을 선언
+
+---
+
+완벽한 복제 시스템의 이상은 "모든 클라이언트가 모든 순간에 서버와 동일한 상태를 갖는다"이다.
+(동기화)
+
+
+전체 상태를 매 tick 전송하면 bandwidth가 감당되지 않는다. 그래서 "변한 것만" 보낸다.
+
+광속의 한계가 있고, bandwidth는 유한하고, 패킷은 손실된다
+
+---
+---
+---
+
+UNetDriver
+
+TObjectPtr<UNetConnection> ServerConnection;          // 클라이언트 측: 서버로의 단일 연결
+TArray<TObjectPtr<UNetConnection>> ClientConnections; // 서버 측: 모든 클라이언트 연결
+
+TSharedPtr<FNetGUIDCache> GuidCache;  // NetGUID ↔ UObject 매핑 (Pre-IRIS)
+
+TMap<TWeakObjectPtr<UObject>, TSharedPtr<FRepLayout>> RepLayoutMap; // per-class 복제 레이아웃 (Pre-IRIS)
+
+
+FRepLayout은 특정 UClass / UStruct의 replication schema에 대응한다
+
+---
+
+class UNetConnection : public UPlayer
+"플레이어"라는 추상이 로컬/원격 구별에 관계없이 동일한 타입으로 표현된다.
+
+FBitWriter SendBuffer;        // 현재 패킷으로 누적되는 비트들
+
+TArray<TObjectPtr<UChannel>> Channels;   // ChIndex → Channel 배열
+
+TUniquePtr<PacketHandler> Handler
+
+---
+
+class UChannel
+
+Connection 위에 여러 채널을 다중화
+
+
+UControlChannel 
+채널 0에 고정
+Network Message Type NMT_Hello, NMT_Challenge, NMT_Login, NMT_Welcome 등 핸드셰이크 메시지를 처리
+
+
+UVoiceChannel 
+Reliable이 아닌 경우가 많으므로 분리 채널로 관리
+
+
+UActorChannel (legacy Actor replication path)
+FObjectReplicator들을 보유
+RPC 전달을 담당
+
+
+UDataStreamChannel
+받은 Bunch를 IRIS의 DataStream 시스템으로 전달한다
+Iris replication data path와 밀접하게 연결
+
+---
+
+class UPackageMap
+오브젝트 참조의 번역기
+
+Pre-Iris:
+서버의 Actor*   ──→   UPackageMap::SerializeObject() ──→ NetGUID ──→ wire
+클라이언트      ←──   UPackageMap::SerializeObject() ←── NetGUID ←──
+
+
+Iris:
+Object reference handling이 Iris object reference / NetRefHandle 계열로 재구성
+
+---
+---
+---
+
+FArchive
+  └─ FBitWriter          // 기본 비트 스트림
+       └─ FNetBitWriter  // PackageMap 추가
+            └─ FOutBunch // 채널 메타데이터 추가
+
+바이트가 아닌 비트 단위로 직렬화
+
+FArchive
+  └─ FBitReader
+       └─ FNetBitReader
+            └─ FInBunch
+
+---
+
+Bunch 
+채널 데이터 단위
+
+---
+
+UObject 계층
+
+config=Engine으로 ini에서 설정 가능
+
+
+FStruct 계층, value/mechanism 계층
+
+패킷당, Bunch당 생성/파괴
+GC의 스캔 대상이 아니다
+
+---
+
+UNetDriver 
+  WorldContext / named net driver 단위로 여러 개 가능
+
+UNetConnection
+  remote peer / logical connection 단위
+
+UChannel은 Actor의 복제 생명주기 동안 하나
+  connection 내부 logical stream
+
+---
+
+기본 UIpNetDriver의 gameplay traffic은 보통 UDP 기반이다.
+UDP server는 보통 하나의 socket/port에서 여러 remote endpoint를 상대한다.
+
+서버는 소켓 1개, 클라이언트는 수백 개가 그 하나의 소켓으로 통신
+서버의 UDP 소켓은 포트 7777 하나에 바인딩되고, 모든 클라이언트가 그 주소로 패킷을 보낸다
+각 UDP 패킷에는 source IP:port가 포함돼 있고, 서버는 이것으로 클라이언트를 구별한다.
+
+---
+
+UWorld::Listen()
+  → GEngine->CreateNamedNetDriver()
+  → FWorldContext::ActiveNetDrivers에 추가
+
+---
+
+UNetDriver      
+    ↓ 사용
+FSocket         → 소켓 API 추상 (HAL)
+    ↓ 구현
+FSocketBSD      → POSIX socket (sendto/recvfrom)
+FSocketWindows  → Winsock2
+FSocketApple    → BSD variant
+
+
+ISocketSubsystem         
+    ↓ 구현
+FSocketSubsystemBSD      → POSIX
+FSocketSubsystemWindows  → Winsock
+FSocketSubsystemSteam    → Steam Networking
+
+
+FSocket을 만들고 주소/DNS/platform socket 기능을 제공하는 subsystem/factory layer
+
+
+---
+
+USubsystem 계층
+    UEngineSubsystem
+    UGameInstanceSubsystem
+    UWorldSubsystem
+    ULocalPlayerSubsystem   
+    ...
+
+Module 계층 
+    IModuleInterface
+        ISocketSubsystemModule
+        IRenderingModule
+
+---
+
+Module은 바이너리 조직 단위다
+FModuleManager가 load/unload하는 code/binary unit
+컴파일과 링킹 수준의 개념
+
+IModuleInterface
+  StartupModule // DLL 로드 시
+  ShutdownModule // DLL 언로드 시
+
+FModuleManager::Get().LoadModuleChecked<IMyModule>("MyModule")
+
+---
+
+USubsystem 계층
+특정 UObject("Outer")의 생명주기에 묶인다
+
+World->GetSubsystem<UMyWorldSubsystem>()
+
+---
+
+FDirtyNetObjectTracker 
+
+Dirty는 PushModel의 언어
+
+
+Pre-IRIS의 Changelist가 "변화를 발견했다"는 사후 기록
+
+---
+---
+---
+
+Pre-IRIS: 관찰자 모델
+
+시스템이 Object 바깥에 서서 Object를 관찰한다
+
+
+Object가 변한다 (시스템 모름)
+    ↓
+시스템이 나중에 확인한다
+    ↓
+Shadow와 비교해서 발견한다
+    ↓
+Changelist에 기록한다
+
+
+전수 검사
+무엇이 변했는지 모르므로 전부 확인해야 한다
+아무것도 변하지 않아도 비용이 발생한다
+
+---
+
+IRIS: 참여자 모델
+
+Object가 안으로 들어온다
+
+FReplicationFragment
+Object가 자신의 조각을 시스템에 제공한다
+
+Object가 시스템에 제출한 Quantized State
+
+
+Object가 변한다
+    ↓
+게임 코드가 선언한다 (MARK_PROPERTY_DIRTY)
+    ↓
+DirtyTracker가 수집한다
+    ↓
+시스템이 처리한다
+
+
+Object의 Source 메모리를 Internal representation으로 변환한다
+DirtyTracker가 "무엇이 변했는지"를 이미 알고 있으므로 변한 것만 처리한다
+(Iris fragment에는 NeedsPoll trait도 지원)
+
+---
+---
+---
+
+UActorChannel
+Actor 하나가 Connection 하나에 복제되는 상황을 관리하는 단위가 필요하다
+
+
+FObjectReplicator
+Actor 하나의 복제 상태를 추적하는 단위가 필요하다
+
+
+shadow diff
+Actor의 변화를 감지하는 방법이 필요하다
+"변화"는 Actor 바깥에 있다. 
+Actor는 그냥 자신의 상태를 갖고 있을 뿐이고, 복제 시스템이 그것을 관찰해서 변화를 발견한다.
+
+
+FObjectReplicator
+클라이언트마다 다른 시점에 다른 값을 알고 있다. 
+클라이언트 A에게 보낸 마지막 값과 클라이언트 B에게 보낸 마지막 값이 다르므로, 
+shadow copy가 connection마다 따로 있어야 한다
+
+
+깊이 우선 루프
+Actor 하나를 완전히 처리하고 다음 Actor로 간다
+
+---
+
+복제의 본질
+
+특정 타입의 특정 인스턴스가 특정 시점에 가진 특정 상태를 특정 Connection에 전달
+
+이 문장에서 가장 안정적인 것은 타입이다. 
+인스턴스는 생성/파괴되고, 시점은 매 프레임 바뀌고, Connection도 끊어진다. 
+그러나 "이 클래스가 어떻게 복제되는가"는 안정적이다.
+
+
+FReplicationProtocol
+타입의 복제 방법을 기술
+
+
+FReplicationStateDescriptor
+타입의 각 상태가 어떻게 직렬화되는지 기술
+
+
+FReplicationFragment
+인스턴스는 그 타입의 Protocol을 따르는 데이터 소스
+
+---
+
+타입 원자 모델에서 "직렬화 방법"은 타입에 귀속된다. 
+그러나 "현재 값"은 인스턴스에 귀속된다
+
+Quantize(인스턴스 → internal representation)
+Serialize(internal representation → wire)
+
+---
+---
+---
+
+자동 생성 경로
+
+UPROPERTY(Replicated)
+float Health;
+
+void AMyActor::GetLifetimeReplicatedProps(...) const
+{
+    DOREPLIFETIME(AMyActor, Health);
+}
+
+IRIS가 이것을 읽어서 내부적으로
+
+FReplicationStateDescriptor 빌드
+FReplicationProtocol 빌드
+PropertyReplicationFragment 인스턴스화
+
+---
+
+FObjectReplicator     
+
+shadow copy 유지
+→  FRepStateStaticBuffer (→ quantized internal state)
+
+
+Changelist 생성
+→  ChangeMask bitfield
+
+
+직렬화                      
+→  FNetSerializer + FReplicationWriter
+
+
+RepNotify 수집/호출
+→  FReplicationFragment::CallRepNotifies()
+
+---
+---
+---
+
+Declaration
+
+주체가 의도를 표명하면 시스템이 그것을 해석해서 실현한다
+how 가 불투명하다
+
+
+Specification
+
+두 당사자(구현자와 사용자)가 있고, 그 사이의 계약이 명세다
+선언은 "나는 X를 원한다"고 말한다. 명세는 "X는 이러이러해야 한다"고 말한다
+
+
+Description
+있는 것을 있는 그대로 기록한다
+대상이 먼저 존재하고, 기술은 그것의 표상
+기술이 대상을 만드는 것이 아니라 대상이 기술보다 앞선다
+
+
+서술 (Narration / Account)
+시간이나 인과의 축
+동적 전개의 기록
+
+
+---
+---
+---
+---
+
+가상 함수 기반 계약 (동적 다형성)
+프로퍼티마다 vtable 조회가 발생
+struct FFloatNetSerializer : INetSerializer
+
+
+템플릿 기반 계약 (정적 다형성)
+
+// 사용하는 쪽
+template<typename TSerializer>
+void SerializeProperty(...) {
+    TSerializer::Serialize(Context, Args); // 컴파일 타임에 결정
+}
+
+---
+
+UNetDriver
+    │
+    ├─ TObjectPtr<UReplicationDriver> ReplicationDriver  ← 플러그 포인트
+    │
+    └─ ServerReplicateActors() {
+           if (ReplicationDriver) {
+               ReplicationDriver->ServerReplicateActors(DeltaSeconds);
+               return; 
+           }
+           // ... 기존 O(A×C) 루프 ...
+       }
+
+
+UReplicationGraph가 UReplicationDriver 인터페이스를 구현한다
+
+---
+
+건축에서 "이 건물에는 창문과 문이 있다"와 
+"이 건물의 창문은 너비 90cm, 열림 방향 좌측, 방화 등급 B급, 기밀 계수 0.3"의 차이다. 
+
+전자는 있다/없다의 목록이고, 후자는 그것이 어떻게 존재하는지의 완전한 명세다.
+
+
+GetLifetimeReplicatedProps → "무엇을" 복제할지의 목록 (불완전)
+                              → FRepLayout이 나머지를 채워야 함
+
+FReplicationStateDescriptor → "무엇을, 어떻게, 어디서, 얼마나" 의 완전한 명세
+                              → 추가 조회 없이 독립적으로 작동
+
+---
+
+
+struct FFloatNetSerializer
+{
+    static void Serialize(FNetSerializationContext&, const FNetSerializeArgs&);
+    static void Deserialize(FNetSerializationContext&, const FNetDeserializeArgs&);
+    static void Quantize(FNetSerializationContext&, const FNetQuantizeArgs&);
+    static bool IsEqual(FNetSerializationContext&, const FNetIsEqualArgs&);
+};
+
+그냥 이름공간처럼 생긴 구조체
+순수하게 함수들의 묶음
+컴파일 타임에 각 함수의 주소가 확정된다
+
+
+UE_NET_IMPLEMENT_SERIALIZER(FFloatNetSerializer);
+
+const FNetSerializer GFloatNetSerializer = {
+    .Serialize   = &FFloatNetSerializer::Serialize,   // 함수 주소 저장
+    .Deserialize = &FFloatNetSerializer::Deserialize,
+    .Quantize    = &FFloatNetSerializer::Quantize,
+    .IsEqual     = &FFloatNetSerializer::IsEqual,
+};
+
+컴파일 타임에 확정된 함수 주소들을 런타임 구조체에 저장
+
+
+Descriptor가 그 레코드를 가리킨다
+struct FReplicationStateMemberSerializerDescriptor
+{
+    const FNetSerializer* Serializer;       // GFloatNetSerializer를 가리키는 포인터
+    const FNetSerializerConfig* SerializerConfig;
+};
+
+---
+---
+---
+
+ReplicationGraph
+
+“어떤 Actor를 어떤 Connection에 보낼지”를 고르는 Actor selection / relevancy 전략
+
+
+Iris
+
+복제 상태 표현, 직렬화, dirty tracking, filtering, prioritization, reference 처리
+
+---
+
+PacketHandler
+
+packet 전처리/후처리 체인
+
+
+UNetConnection
+
+reliable/unreliable
+
+---
+
+UEngine이 생성/파괴를 관리
+
+active net driver 목록은 FWorldContext::ActiveNetDrivers에
+
+FWorldContext의 변수로 ActiveNetDrivers: TArray<FNamedNetDriver>
+
+---
+
+ISocketSubsystem
+
+UNetworkSubsystem : UWorldSubsystem
+
+---
+
+UActorChannel
+    ├─ Actor용 FObjectReplicator
+    └─ SubObject용 FObjectReplicator들
+            └─ FRepState / shadow buffer / changelist 관련 상태
+
+
+---
+
+RepNotify
+
+REPNOTIFY_OnChanged가 기본이고, REPNOTIFY_Always는 별도 설정
+
+---
+
+UNetObjectFilter    ←→  AActor::IsNetRelevantFor()
+UNetObjectPrioritizer ←→  AActor::GetNetPriority()
+
+---
+
+IRIS
+
+Filter는 per-connection으로 각 NetObject의 scope(범위) 포함 여부를 결정한다
+
+Filter 단계 (NetUpdate 파이프라인의 한 스테이지)
+    ↓
+Connection A의 scope bitarray: [1, 0, 1, 1, 0, ...]
+Connection B의 scope bitarray: [1, 1, 0, 1, 0, ...]
+
+
+Filter의 종류
+
+AlwaysRelevantNetObjectFilter  → 항상 scope 포함 (GameState 등)
+NetObjectGridFilter (Spatial)  → 거리 기반 공간 포함
+FilterOutNetObjectFilter       → 항상 제외
+NetObjectConnectionFilter      → 소유 connection에게만
+NopNetObjectFilter             → 통과 (필터링 안 함)
+
+
+각 Object에 어떤 Filter를 쓸지는 ini 설정으로 선언한다:
+
+[/Script/IrisCore.ObjectReplicationBridgeConfig]
++FilterConfigs=(ClassName=/Script/Engine.Pawn, DynamicFilterName=Spatial)
++FilterConfigs=(ClassName=/Script/Engine.GameState, DynamicFilterName=None)
++FilterConfigs=(ClassName=/Script/TheGame.TreeActor, DynamicFilterName=Spatial)
+
+---
+
+Prioritizer는 scope 안에 들어온 Object들에 순위 점수를 부여한다
+
+scope bitarray (Filter 결과)
+    ↓
+Prioritizer 단계
+    ↓
+우선순위 점수 배열: [0.8, 0.0, 1.2, 0.3, 0.0, ...]
+    ↓
+ReplicationWriter: 높은 점수 순으로 직렬화
+    → bandwidth 소진 시 하위 순위 Object는 다음 프레임으로
+
+
+SphereNetObjectPrioritizer               → 거리 기반
+LocationBasedNetObjectPrioritizer        → 위치 기반
+SphereWithOwnerBoostNetObjectPrioritizer → 소유자에게 가중치
+FieldOfViewNetObjectPrioritizer          → 시야 방향 가중치
+NetObjectCountLimiter                    → 수량 제한
+
+---
+---
+---
+
+socket
+
+Socket은 I/O 원시 도구
+바이트를 받을 수 있다
+
+Socket은 다음 것들을 모른다
+  이 패킷이 전달됐는가?
+  이 상대방이 처음 접속한 것인가 재접속인가?
+  이 상대방은 타임아웃 직전인가?
+
+
+Connection은 이것들 전부를 아는 세션 추상
+지속적인 대화 관계
+
+---
+
+[UE 의미 계층]
+
+Actor property / RPC
+    ↓
+UActorChannel or Iris DataStream path
+    ↓
+UNetConnection
+
+
+
+[transport 계층]
+
+NetDriver / Connection LowLevelSend
+    ↓
+FSocket::SendTo(Data, RemoteAddr)
+    ↓
+OS network stack
+    ↓
+NIC
+    ↓
+network
+
+---
+---
+---
+
+NetObject는 IRIS의 복제 시스템에 등록된 것
+
+두 개의 ID를 갖는다
+
+FNetRefHandle 
+FInternalNetRefIndex
+
+---
+
+ReplicationGraph
+AActor* 중심
+
+UReplicationGraphNode_GridSpatialization2D
+월드 공간 (X/Y 2D 평면, Z 무시)
+
+그리드의 각 Cell은 FActorRepList를 보유
+Actor가 이동하면 NotifyActorMoved() 콜백이 발생하고, Actor가 어느 Cell에 속하는지 재계산
+다층 건물처럼 Z가 중요한 경우는 커스텀 노드로 처리해야 한다
+
+---
+
+FEngineLoop::Tick()
+    → UNetDriver::TickDispatch()   
+         → 패킷 수신 처리
+         → UReplicationSystem::PreReceiveUpdate()
+         → 각 Connection ReceivedPacket 처리
+         → UReplicationSystem::PostReceiveUpdate()
+         → UReplicationSystem::TickPostReceive()  ← 즉각 RPC 처리
+
+
+
+FEngineLoop::Tick()
+    → UNetDriver::TickFlush()       
+         → UReplicationSystem::NetUpdate(DeltaSeconds)
+              ├─ DirtyTracker 갱신
+              ├─ Polling
+              ├─ Filtering
+              ├─ Prioritization
+              └─ Quantize
+         → UNetDriver::UpdateIrisReplicationViews()
+         → UReplicationSystem::SendUpdate(SendFunction)
+              └─ Connection들에게 ReplicationWriter 실행
+         → UReplicationSystem::PostSendUpdate()
+
+---
+
+누가 복제되는가
+  Identity, NetObject 
+
+
+이 타입의 무엇을 복제할 것인가
+  FReplicationProtocol 
+  "이 타입의 오브젝트는 어떻게 복제되는가"
+
+
+"이 특정 인스턴스의 실제 메모리와 IRIS State 버퍼를 어떻게 연결하는가"
+  per-instance FReplicationFragment 
+
+
+"지금 이 순간 이 NetObject의 복제되는 값들이 실제로 무엇인가"
+  ReplicationState (= State Buffer)
+
+---
+
+struct FReplicationProtocol {
+    const FReplicationStateDescriptor** ReplicationStateDescriptors;
+    uint32 ReplicationStateCount;    // 여러 State를 가질 수 있다
+    uint32 ChangeMaskBitCount;       // 전체 changemask 크기
+    EReplicationProtocolTraits ProtocolTraits;
+};
+
+
+struct FReplicationStateDescriptor {
+    const FReplicationStateMemberSerializerDescriptor* 
+    // Serializer* 직접 포함 — 추가 조회 불필요
+
+    const FReplicationStateMemberChangeMaskDescriptor*
+    // 각 멤버의 dirty bit 위치
+
+    const FReplicationStateMemberDescriptor* 
+    // External offset + Internal offset (두 좌표계)
+
+    FReplicationStateIdentifier DescriptorIdentifier;
+    // CityHash(이름 + default state) — 서버-클라이언트 호환성 검증
+
+    const uint8* DefaultStateBuffer;
+};
+
+
+Descriptor 안의 각 멤버가 하나의 FNetSerializer*를 가리킨다
+
+float  → FFloatNetSerializer
+FVector → FVectorNetSerializer
+uint8   → FUintNetSerializer<8>
+FGameplayTag → FGameplayTagNetSerializer
+
+---
+
+class FReplicationFragment {
+    // 구현체가 이것을 가진다:
+    UMyActor* Owner;  // 특정 인스턴스를 가리킴
+
+    virtual void ApplyReplicatedState(Context&) const;
+    // 수신된 State를 Owner 메모리에 적용
+
+    virtual bool PollReplicatedState(PollFlags);
+    // Owner 메모리를 읽어서 State 버퍼에 복사
+};
+
+---
+
+ReplicationState (= State Buffer) 
+
+External State   → UObject 메모리 (게임 코드가 직접 쓰는 공간)
+Quantized State  → IRIS 내부 버퍼 (Quantize 결과, 직렬화 최적화된 형태)
+Received State   → 클라이언트가 수신한 버퍼 (역직렬화 결과)
+Baseline State   → delta compression의 기준점
+
+---
+
+Gameplay UObject / Actor
+    ↓ 등록
+Iris NetObject
+    ↓ 구성 요소
+Replication Protocol
+    ├─ Replication State Descriptor A
+    ├─ Replication State Descriptor B
+    └─ Replication State Descriptor C
+    ↓ instance binding
+Replication Fragment
+    ↓
+Iris internal replication state
+    ↓
+NetSerializer / ChangeMask / Writer
+    ↓
+Wire
+
+---
+
+Iris는 이렇게 하고 싶어요.
+
+복제 시스템 내부:
+    NetObject handle
+    protocol
+    state
+    changemask
+    serializer
+    connection state
+
+UObject 지식:
+    bridge / fragment 쪽에 격리
+
+---
+
+Actor 전체에는 엄청 많은 정보가 있어요
+이 중 네트워크로 보낼 것은 일부예요
+
+Replication state
+    = 네트워크 복제를 위해 추출한 상태 표현
+
+
+UObject memory
+    ↓ Quantize / Fragment
+Iris internal state
+    ↓ Serialize / Delta / ChangeMask
+Wire
+
+
+예를 들어 float 위치값을 그대로 들고 있지 않고, 네트워크에 적합한 quantized value로 바꿀 수 있어요.
+
+---
+
+ReplicationState 형식의 데이터 주세요.
+ApplyReplicatedState로 다시 넣을 수 있게 해주세요.
+Dirty 여부도 알려주세요.
+
+---
+
+FReplicationProtocol for AMyCharacter
+    ├─ Descriptor: HealthState
+    ├─ Descriptor: MovementState
+    ├─ Descriptor: InventoryState
+    └─ Descriptor: InitOnlyState
+
+Protocol은 타입의 속성이지 인스턴스의 속성이 아니다
+
+
+<=>
+
+Pre-IRIS의 FRepLayout은 클래스당 하나의 flat한 프로퍼티 목록
+
+---
+
+NetSerializer 
+
+"이 타입의 값을 어떻게 wire format으로 변환하는가"
+타입별로 하나의 전역 인스턴스가 존재
+
+<=>
+
+FRepLayout은 ERepLayoutCmdType enum으로 타입을 분기
+직렬화 코드 자체가 RepLayout 내부에
+
+---
+
+ReplicationState
+실제 데이터
+
+Health = 75
+MaxHealth = 100
+Location = (100, 200, 50)
+Velocity = (0, 300, 0)
+
+
+ReplicationState에는 여러 종류가 있어요
+
+External State = UObject 메모리 안의 원래 값
+Quantized State = Iris 내부에서 직렬화하기 좋게 바꾼 값
+Received State = 클라이언트가 수신한 값
+Baseline State = delta compression 기준이 되는 이전 값
+
+---
+
+Protocol for UObject X
+    ├─ Descriptor A  → ReplicationState A의 형식
+    └─ Descriptor B  → ReplicationState B의 형식
+
+Descriptor는 “값을 담는 State 버퍼를 어떻게 읽고 쓸지”에 대한 설명
+
+
+State Buffer for instance 42 (InternalIndex 기준)
+    ├─ State Buffer A   (Descriptor A에 해당하는 내부 메모리)
+    │     [Member1의 quantized 값]
+    │     [Member2의 quantized 값]
+    └─ State Buffer B   (Descriptor B에 해당하는 내부 메모리)
+          [Member3의 quantized 값]
+
+인스턴스 1234의 현재 Replication 복제 값
+
+---
+
+Class X의 어떤 멤버들이 replication 대상이지?
+그 멤버들을 어떤 state group으로 나눌 수 있지?
+각 멤버는 어떤 serializer를 써야 하지?
+
+---
+
+Descriptor A
+  State A buffer를 해석하는 법
+
+  Member1:
+    external offset = UObject memory에서 Member1 위치
+    internal offset = Iris state buffer에서 Member1 위치
+    serializer = Member1용 serializer
+    changemask bit = Member1의 dirty bit 위치
+
+  Member2:
+    external offset = UObject memory에서 Member2 위치
+    internal offset = Iris state buffer에서 Member2 위치
+    serializer = Member2용 serializer
+    changemask bit = Member2의 dirty bit 위치
+
+---
+
+U ReplicationSystem Internal
+  F NetRefHandle Manager
+  FDirty NetObject Tracker
+  FReplication Protoco lManager
+  FReplication State Storage
+  FReplication Connections
+  FReplication Filtering
+  FReplication Prioritization
+
+---
+
+NetObject::FNetRefHandle
+
+외부 세계가 들고 다니는 안정적 참조 토큰
+opaque handle
+
+
+NetObject::FInternalNetRefIndex
+
+Iris 내부 자료구조 배열들의 인덱스
+Iris 내부에서 모든 자료구조는 이 인덱스로 접근
+
+DirtyNetObjects bitarray  [InternalIndex]
+FReplicationInfo 배열     [InternalIndex]
+State Buffer              [InternalIndex]
+scope bitarray            [InternalIndex]
+priority score 배열       [InternalIndex]
+
+
+60비트 FNetRefHandle을 배열 인덱스로 쓸 수 없다. 연속 메모리를 인덱싱하려면 compact integer가 필요하다
+FNetRefHandleManager가 FNetRefHandle 과 FInternalNetRefIndex 사이를 매핑한다
+
+
+외부에서 핸들로 접근 → FNetRefHandleManager → InternalIndex → 배열 접근
+
+---
+
+UNetDriver (IRIS 활성 시)
+    → CreateReplicationSystem() 안에서
+      UObjectReplicationBridge 인스턴스 생성
+    → UReplicationSystem에 전달
+
+
+UReplicationSystem::Initialize()
+    → Bridge를 받아서 내부에 저장
+    → UReplicationSystem이 UObjectReplicationBridge*를 멤버로 보유
+
+---
+
+[Bridge가 Iris를 호출하는 경우]
+액터 복제 시작:
+    UObjectReplicationBridge::BeginReplication(AActor*)
+        → UReplicationSystem::StartReplicatingRootObject()
+        → Protocol 생성, NetObject 등록, Fragment 생성
+
+액터 복제 종료:
+    UObjectReplicationBridge::EndReplication(AActor*)
+        → UReplicationSystem::StopReplicatingNetObject()
+
+---
+---
+
+ECS:
+    Entity 42
+        Position   배열[42]
+        Velocity  배열[42]
+        Health    배열[42]
+
+IRIS:
+    NetObject 42 (FInternalNetRefIndex = 42)
+        DirtyObjects        [42]
+        StateBuffers        [42]
+        ScopePerConnection  [connIdx][42]
+        PriorityScores      [42]
+        ReplicationInfos    [42]
+
+---
+
+FEngineLoop::Tick
+  1 BeginFrame
+  2 Message Pump
+  3 GEngine::Tick
+    for each WorldContext
+       UWorld::Tick(LEVELTICK_TimeOnly)
+       TickWorldTravel 
+       UWorld::Tick(LEVELTICK_All)
+         1 NetDriver::TickDispatch
+         2 NetDriver::PostTickDispatch
+         3 UWorld::RunTickGroup(TG_*)           
+         4 NetDriver::TickFlush
+         5 NetDriver::PostTickFlush
+         
+  4 Slate::Tick
+  5 RHI Frame Submit
+  6 EndFrame
+
+---
+
+미완성 지도
+
+잠시 Network Replication에서 좀 벗어나서 
+AI, TimerManager, Rendering, Audio, GC, 플랫폼 Input Mesasge Pump, Niagara, ECS, Asset Loading 등은 어디에 꽂히지?
+이 지도를 더 풍성하게 해줄레?
+
+
+---
+
+GEngine
+UGameEngine or UEditorEngine
+
+---
+
+FEngineLoop::Tick(DeltaSeconds)
+
+[1] BeginFrame
+Stats 시작, FFrameCounter 증가
+FCoreDelegates::OnBeginFrame
+RHI BeginFrame (렌더 스레드에 프레임 시작 신호)
+
+
+[2] Platform Message Pump
+FPlatformApplicationMisc::PumpMessages()
+입력 이벤트가 FSlateApplication::ProcessXXXEvent로 들어감
+게임 Input은 PlayerInput에 큐잉
+
+---
+
+[3] GEngine::Tick
+
+FTSTicker::GetCoreTicker().Tick()
+  코어 레벨 글로벌 ticker (HTTP, Online, 일반 task)
+  UObject와 무관한 시스템들이 여기 등록
+
+
+for each FWorldContext World::Tick
+
+
+FStreamingManagerCollection::Tick
+  Texture Streaming (해상도별 mip 로드/언로드)
+  Mesh Streaming (LOD 단계 관리)
+  Audio Streaming
+
+
+FAssetRegistry / Async Loading 진행
+  로드 완료 시 OnPackageLoaded 콜백
+  게임 스레드에서 PostLoad() 호출
+  IRIS의 ObjectReferenceCache가 여기서 pending 해제
+
+
+Garbage Collection (조건부)
+  IncrementalPurgePending 또는 강제 GC 트리거
+  CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS)
+
+---
+
+[4] Slate UI Tick
+FSlateApplication::Tick(DeltaTime)
+SWidget 트리 layout invalidation 처리
+최종 Slate Window 그리기 명령 생성
+
+
+[5] Rendering Frame Submit
+게임 스레드 → 렌더 스레드 명령 큐잉
+FRenderingThreadTickHeartbeat
+FRDGBuilder가 RDG 패스 그래프를 렌더 스레드에 전달
+
+
+[6] EndFrame
+FCoreDelegates::OnEndFrame
+RHI EndFrame
+프레임 동기화 (vsync 또는 frame pacing)
+
+---
+
+FEngineLoop::Tick(DeltaSeconds)
+[1] BeginFrame
+[2] Platform Message Pump
+[3] GEngine::Tick
+[4] Slate UI Tick
+[5] Rendering Frame Submit
+[6] EndFrame
+
+---
+
+FEngineLoop::Tick(DeltaSeconds)
+[3] GEngine::Tick
+for each FWorldContext World::Tick
+  UWorld::Tick(LEVELTICK_TimeOnly)
+  TickWorldTravel
+  UWorld::Tick(LEVELTICK_All)
+
+---
+
+UWorld::Tick(LEVELTICK_All)
+
+[A] NetDriver::TickDispatch
+네트워크 수신
+IRIS: PreReceive → Apply → PostReceive → TickPostReceive
+
+
+[B] NetDriver::PostTickDispatch
+수신 후처리
+
+---
+
+[C] StreamingPause / LevelStreaming 관리
+새로 로드된 액터들을 World에 통합
+
+---
+
+[D] FTickTaskManager::StartFrame
+이번 프레임 등록된 Tick 작업들을 TickGroup 별로 정렬
+
+
+[E] World 스폰 큐 처리
+이전 프레임에 deferred spawn된 Actor들 처리
+BeginPlay 호출 대기 큐 flush
+
+
+[F] FTimerManager::Tick
+SetTimer로 등록된 콜백들 만료 검사
+
+
+[G] UWorld::RunTickGroup 시퀀스
+
+
+[H] Audio Engine Update
+FAudioDevice::Update()
+Audio thread에 wave instance 제출
+
+
+[I] NetDriver::TickFlush
+Pre-IRIS: ServerReplicateActors
+IRIS: NetUpdate → SendUpdate → PostSendUpdate
+
+
+[J] NetDriver::PostTickFlush
+
+
+[K] FTickTaskManager::EndFrame
+
+---
+
+UWorld::Tick(LEVELTICK_All)
+
+[A] NetDriver::TickDispatch
+[B] NetDriver::PostTickDispatch
+
+[C] StreamingPause / LevelStreaming 관리
+[D] FTickTaskManager::StartFrame
+[E] World 스폰 큐 처리
+[F] FTimerManager::Tick
+
+[G] UWorld::RunTickGroup 시퀀스
+
+[H] Audio Engine Update
+
+[I] NetDriver::TickFlush
+[J] NetDriver::PostTickFlush
+
+[K] FTickTaskManager::EndFrame
+
+---
+---
+---
+---
+---
+
+
+FEngineLoop::Tick
+[1] BeginFrame
+FFrameCounter 증가
+RHI BeginFrame (렌더 스레드에 프레임 시작 신호)
+FCoreDelegates::OnBeginFrame
+
+---
+
+FEngineLoop::Tick
+[2] Platform Message Pump
+
+OS로부터 input 이벤트를 받아오는 것이 게임 로직 시작 전이어야 한다
+그래야 이번 프레임의 input이 이번 프레임의 게임 로직에 반영된다
+
+
+WM_KEYDOWN 도착
+Slate가 받아 SWidget에 전달 (Fire & Effect)
+혹은 PlayerInput::InputKey()로 큐잉 (Request & Queue)
+실제 InputComponent 처리는 TG_PrePhysics에서
+
+---
+
+FEngineLoop::Tick
+[3] GEngine::Tick
+
+
+EngineLoop[3]: EngineTick[1]
+FTSTicker::GetCoreTicker().Tick()
+UObject와 World에 무관한 글로벌 ticker
+HTTP 응답 처리, Online Subsystem 진행, 일반 task
+
+
+EngineLoop[3]: EngineTick[2]
+UWorld::Tick(LEVELTICK_TimeOnly)
+Seamless Travel을 위한 special case
+
+
+EngineLoop[3]: EngineTick[3]
+TickWorldTravel
+
+---
+
+EngineLoop[3]: EngineTick[4] 
+UWorld::Tick(LEVELTICK_All)
+
+
+EngineLoop[3]: EngineTick[4]: UWorld::Tick[1]
+
+[1] NetDriver::TickDispatch
+수신이 게임 로직보다 먼저여야 한다
+OnRep, RPC 처리 결과가 게임 로직에 반영되려면 TickDispatch가 게임 로직보다 먼저여야 한다.
+
+
+미해결 GUID 참조 (unmapped object reference)
+ObjectReferenceCache::QueuedBatchObjectReferences에 큐잉
+다음 프레임 또는 async load 완료 시 resolve
+그때 OnRep이 deferred 호출됨
+
+---
+
+EngineLoop[3]: EngineTick[4]: UWorld::Tick[2]
+
+[2] PostTickDispatch
+디버그 정보 갱신, 통계 수집
+
+---
+
+EngineLoop[3]: EngineTick[4]: UWorld::Tick[3]
+
+[3] StreamingPause / LevelStreaming
+새로 로드된 액터들을 World에 통합
+새로 로드된 SubLevel의 액터들이 이번 프레임의 게임 로직에 보이려면 게임 로직 전이어야 한다
+
+---
+
+EngineLoop[3]: EngineTick[4]: UWorld::Tick[4]
+
+[4] FTickTaskManager::StartFrame
+
+이 단계가 없으면 RunTickGroup이 올바르게 동작할 수 없다
+Tick 의존성 그래프가 빌드되고, 어떤 Tick이 어떤 TickGroup에서 실행될지 정렬된다.
+
+새로 스폰된 Actor의 Tick 등록도 여기서 통합된다
+
+---
+
+EngineLoop[3]: EngineTick[4]: UWorld::Tick[5]
+
+[5] World 스폰 큐 처리 / BeginPlay flush
+
+BeginPlay 안에서 다른 액터를 참조하거나 컴포넌트를 등록할 수 있는데, 이것이 일관된 World 상태에서 일어나야 한다.
+BeginPlay 안에서 SpawnActor를 호출하면 그것은 새 큐에 들어가서 다음 프레임 또는 같은 프레임의 같은 단계 다음 패스에서 처리된다
+
+---
+
+EngineLoop[3]: EngineTick[4]: UWorld::Tick[6]
+
+[6] FTimerManager::Tick
+
+---
+
+EngineLoop[3]: EngineTick[4]: UWorld::Tick[7]
+
+[7] RunTickGroup 시퀀스
+
+
+TG_PrePhysics
+Actor::Tick의 default 위치
+AI 결정이 PrePhysics에 있어야 하는 이유: AI가 결정한 이동 의도가 물리 시뮬레이션의 입력이 되어야 한다.
+InputComponent 처리도 여기다
+"물리 시뮬레이션이 시작되기 전에 모든 입력을 결정한다"
+
+
+TG_StartPhysics
+물리 워커 스레드에 substep 시작을 명령하는 시점
+
+
+TG_DuringPhysics
+병렬화를 위한 슬롯
+물리가 워커 스레드에서 도는 동안 게임 스레드가 놀지 않도록 만든 슬롯
+AnimGraph의 parallel eval이 여기 들어간다 (물리 결과를 기다리지 않는 애니메이션 작업)
+
+"이번 프레임의 물리 결과를 읽지 않을 것"
+
+
+TG_EndPhysics
+물리 워커 동기화 지점
+물리 결과(rigid body transform)가 Component에 반영되는 시점
+
+
+TG_PostPhysics
+물리 결과를 사용하는 작업의 위치
+CharacterMovement의 서버 권위 보정이 여기
+
+
+TG_PostUpdateWork
+모든 게임 상태가 확정된 후의 작업 슬롯
+카메라가 여기서 최종 위치를 계산한다
+Player Pawn의 위치가 PostPhysics에서 확정된 후에야 카메라가 따라갈 수 있다.
+
+---
+
+EngineLoop[3]: EngineTick[4]: UWorld::Tick[8]
+
+[8] Audio Engine Update
+FAudioDevice::Update()
+Audio listener는 카메라 위치를 따라간다
+
+---
+
+EngineLoop[3]: EngineTick[4]: UWorld::Tick[9]
+
+[9] NetDriver::TickFlush
+
+게임 로직이 끝난 후의 상태가 송신되어야 한다
+송신 후에 GC나 다른 정리 작업이 와야 송신 큐를 GC가 건드리지 않는다
+
+
+EngineLoop[3]: EngineTick[4]: UWorld::Tick[10]
+
+[10] NetDriver::PostTickFlush
+
+
+EngineLoop[3]: EngineTick[4]: UWorld::Tick[11]
+
+[11] FTickTaskManager::EndFrame
+
+---
+
+EngineLoop[3]: EngineTick[5]
+FStreamingManagerCollection::Tick
+
+Texture/Mesh Streaming
+"이번 프레임 결과를 보고 다음 프레임에 어떤 mip을 로드할지" 결정하는 게 자연스러우니 여기 있다.
+
+---
+
+EngineLoop[3]: EngineTick[6]
+FAssetRegistry / Async Loading 진행
+
+
+EngineLoop[3]: EngineTick[7]
+모든 게임 로직이 끝나고 송신도 끝난 후, 다음 프레임 시작 전이 안전하다
+
+---
+
+
+EngineLoop[4]
+Slate Tick
+
+게임 로직 후, 렌더링 전
+UI는 게임 상태를 반영해야 하므로 게임 로직 후. 
+그리고 렌더링 명령을 만들어야 하므로 렌더 submit 전.
+
+---
+
+EngineLoop[5]
+Rendering Frame Submit
+
+게임 스레드가 만든 모든 상태를 렌더 스레드에 한 번에 전달해야 한다
+
+---
+
+EngineLoop[6]
+EndFrame
+
+---
+---
+---
+---
+---
+
+SeamlessTravel은 "두 World가 동시에 존재하는 상태"를 거친다
+
+TravelStart
+    CurrentWorld (옛)         -> TransitionWorld (전환)
+                              + PendingWorld (새, 로딩 중)
+
+TravelMid
+    TransitionWorld (전환 활성)
+    + PendingWorld (계속 로딩)
+    NetDriver는 TransitionWorld에 attach됨
+
+TravelEnd
+    PendingWorld → CurrentWorld로 승격
+    NetDriver가 새 CurrentWorld에 attach
+
+
+NetDriver 자체는 World가 교체돼도 살아있다
+UEngine::WorldDestroyed()에서 NetDriver가 새 World에 인계된다
+
+---
+
+AActor* Pending = World->SpawnActorDeferred<AMyActor>(...)
+    → Actor 생성, 초기화, 그러나 BeginPlay 호출 안 함
+    → World의 deferred BeginPlay 큐에 등록
+
+Pending->FinishSpawning()  // 이걸 명시적으로 호출하기 전까지 대기
+
+---
+
+GameMode/World 시작 시점의 stream-in 큐
+
+---
+
+TickTaskManager
+  "이번 프레임에" 처리할 Tick들의 정적인 목록 (Loop_Tick[3]:Engine_Tick[3]:World_Tick[4]:TickTaskManager_StartFrame)
+  그와 별개로 Tick들의 목록 자체는 동적으로 추가 가능
+
+
+FTickTaskManager::StartFrame()
+    → 이번 프레임에 처리할 Tick 함수 그래프 빌드
+    → 의존성 정렬
+
+
+RunTickGroup(TG_X) 도중:
+    → 새 Actor가 SpawnActor로 생성되어 RegisterAllActorTickFunctions 호출
+    → TickTaskManager에 동적 추가 가능
+
+
+이 프레임에서 새로 생긴 Actor의 Tick은 이번 프레임에 안 돈다
+"이번 프레임에 스폰된 Actor가 같은 프레임에 Tick하길 원한다"면 명시적 옵션을 켠다
+
+---
+
+GPU의 프레임 버퍼 swap을 VBI 시점에만 허용한다
+
+EndFrame이 하는 것:
+    1. RHI에 "이 프레임의 모든 명령이 끝났다" 신호
+    2. RHI가 Present() 호출 (frame buffer swap 요청)
+    3. Present()가 동기 모드라면 VBI까지 block
+    4. block 풀리면 다음 프레임 시작 가능
+
+---
+---
+---
+---
+---
+
+빛은 1초에 30만 킬로미터를 간다
+서울에서 뉴욕까지 빛이 한 번 왕복하면 약 230밀리초가 걸린다. 60Hz로 도는 게임에서 14프레임이다
+광속이 정한 14프레임의 협곡 너머에는 항상 모르는 것이 있다. 
+
+---
+
+클라이언트는 동굴 안에 묶여 있다. 벽에 비친 그림자(NetGUID 42, Health: 75)를 보고 실재(서버 메모리)를 짐작한다
+
+서버 메모리에 있는 Health = 75는 사실이고, 클라이언트 메모리에 있는 Health = 75는 사실이었던 것의 흔적이다. 
+빛이 왕복하는 동안 서버에서 Health는 이미 다른 무엇이 되었을 수도 있다
+
+---
+
+Pre-IRIS 도시
+
+이 도시의 시민은 Actor였다. 도시는 시민들을 일렬로 세우고 매 프레임 묻는다
+"당신, 변했습니까?"
+
+시민은 답한다.
+"모르겠습니다."
+
+
+도시는 시민의 어제 사진을 꺼낸다. Shadow Copy라는 이름의 사진이다. 
+지금의 시민과 Shadow Copy의 시민을 바이트 단위로 대조한다. 
+다른 곳을 발견하면 Changelist라는 명부에 기록한다.
+
+
+시민은 자신이 변했는지 모르고, 시스템도 미리 알지 못한다. 
+진실은 비교를 통해서만 태어난다
+
+
+한 시민에 한 명의 FObjectReplicator. 
+FObjectReplicator가 시민을 관찰하고, 거울을 들고, 명부를 적고, 편지를 부쳤다. 
+
+한 시민이 100명의 친구에게 편지를 보내려면 100명의 FObjectReplicator가 필요했다.
+10,000명의 시민이 100명의 친구를 가지면 100만 명의 FObjectReplicator가. 도시는 FObjectReplicator의 무게로 가라앉았다
+
+---
+
+IRIS 도시
+
+도시는 시민들에게 말했다
+"당신이 변했을 때, 우리에게 알려주세요."
+
+시민이 답한다.
+"MARK_PROPERTY_DIRTY"
+
+
+시민이 선언하면 시스템이 처리한다. 비교는 사라진다. 발견도 사라진다
+
+
+옛 도시에서 Actor는 자신이 무엇인지(Identity)와 자신이 어떤 상태인지(State)와 자신이 어떻게 직렬화되는지(Schema)를 
+한 몸에 가지고 있었다
+새 도시는 이것을 여섯 조각으로 쪼갰다
+
+NetObject        — 정체성
+ReplicationState — 현재의 값
+Fragment         — 메모리와 상태 사이의 다리
+Descriptor       — 상태의 해부도
+Protocol         — 타입의 복제 계약
+NetSerializer    — 단일 필드의 변환 매뉴얼
+
+
+Fragment는 인스턴스당 하나. 시민이 태어나면 생기고 죽으면 사라진다. 개체의 시간에 산다
+State Buffer는 매 프레임 갱신된다. 순간의 시간에 산다.
+
+---
+
+AoS 
+
+Replicator A의 방: 모든 것 (거울, 명부, 편지)
+Replicator B의 방: 모든 것
+Replicator C의 방: 모든 것
+
+한 시민에 대해 알아야 할 때 그 시민의 방으로 가면 모든 게 있다. 친밀하다. 
+그러나 만 명의 시민에게 같은 질문을 하려면 만 개의 방을 돌아다녀야 한다.
+
+
+SoA 
+
+Dirty 게시판:    [1, 0, 1, 0, 1, 1, 0, ...]
+Scope 게시판:    [1, 1, 0, 1, 0, 0, 1, ...]
+Priority 게시판: [0.8, 0.0, 1.2, 0.3, ...]
+
+
+CPU는 게시판을 한 번에 읽는다. 32명의 dirty 정보를 uint32 한 번 읽기로 처리한다. 캐시는 행복하다.
+이것이 ECS의 정신이다. 개체가 데이터를 소유하지 않는다. 데이터가 자신의 배열에 산다.
+개체는 그 배열들을 관통하는 인덱스에 불과하다.
+
+---
+
+Fire & Effect. 
+
+불꽃이 튀고 즉시 효과가 일어난다
+콜스택이 깊어지고, 같은 스레드에서 같은 순간에 일이 끝난다
+
+
+Request & Queue
+
+요청이 큐에 쌓인다. 누군가가, 언젠가, 안전한 시점에 처리한다
+
+
+OnRep은 보통 Fire다. 그러나 미해결 객체 참조가 있으면 Queue로 변신한다. 
+어떤 객체를 가리키는데 그 객체가 클라이언트에 아직 도착하지 않았을 때, OnRep은 그 객체가 도착할 때까지 기다린다.
+
+콜백의 성격은 콜백 자체가 아니라 호출 컨텍스트가 결정한다.
+
+---
+
+수신 → 게임 로직 → 송신
+
+이 순서가 깨지면 인과가 깨진다. 
+입력이 게임에 반영되지 못하고, 게임 결과가 다른 클라이언트에 도달하지 못한다.
+
+---
+
+TG_PrePhysics    — 입력을 모은다 ("물리에게 무엇을 줄 것인가")
+TG_StartPhysics  — 물리에게 일을 맡긴다
+TG_DuringPhysics — 물리가 일하는 동안 다른 일을 한다
+TG_EndPhysics    — 물리의 결과를 받는다
+TG_PostPhysics   — 결과를 사용한다
+TG_PostUpdateWork — 모든 게 확정된 후의 후처리 (카메라, 오디오)
+
+---
+
+어떤 세계는 살아 있었다.
+어떤 세계는 여행 중이었다.
+어떤 세계는 아직 로딩 중이었다.
+어떤 세계는 에디터의 유리상자 안에 있었다.
+어떤 세계는 시간이 흐르지만 아무도 움직이지 않았다.
+
+---
+
+NetDriver::TickDispatch가 앞에 선다.
+
+그는 항구의 관리인이다.
+
+소켓은 바다와 맞닿은 부두다.
+패킷은 그 부두에 떠밀려온 밀봉된 상자다.
+Connection은 그 상자가 어느 왕국에서 왔는지를 기억하는 외교 문서다.
+
+---
+
+FRepLayout은 Actor의 복제 가능한 신체를 납작하게 펼친 지도였다.
+상속과 구조체와 프로퍼티들이 flat한 명령 배열로 변환되었다.
+
+---
+
+Actor를 복제한다는 말은 너무 크지 않은가?
+정말 복제되는 것은 Actor인가?
+아니면 상태인가?
+
+Iris는 말했다.
+
+Object는 왕이 아니다.
+상태가 왕이다.
+
+특정 타입의
+특정 인스턴스가
+특정 시점에 가진
+특정 상태를
+특정 Connection에게 전달한다.
+
+---
+
+그래서 Iris는 Actor를 직접 바라보지 않았다.
+
+먼저 Protocol을 세웠다.
+이 타입은 어떤 State들로 구성되는가
+이 타입은 어떻게 Serialize하는가
+
+
+Protocol 아래에는 Descriptor들이 있었다.
+Descriptor는 설명서가 아니라, 수술대 위의 좌표계다
+  Member는 어디에 있는가
+  External offset은 어디인가
+  Internal offset은 어디인가
+  ChangeMask bit는 몇 번인가
+  DefaultState는 무엇인가
+
+---
+
+UObject memory
+    ↓ Fragment가 읽음
+Iris State Buffer
+
+
+Received State Buffer
+    ↓ Fragment가 적용
+UObject memory
+
+
+Descriptor가 “어디를 어떻게 읽는가”를 말하면,
+Fragment는 “이 인스턴스에서 실제로 읽는다.”
+Fragment는 현장 집행관이다
+
+---
+
+External State - UObject 메모리의 원래 값
+
+Quantized State - Iris 내부의 전송 친화적 표현
+
+Received State - 수신 후 복원된 표현
+
+Baseline State - delta compression의 기준점
+
+
+State Buffer는 Descriptor 없이는 무의미한 바이트다.
+Descriptor가 있어야 그것이 Member1인지, Member2인지, Vector인지, Object reference인지 알 수 있다.
+
+
+State Buffer는 Fragment 없이는 길을 잃는다.
+Fragment가 있어야 그 값이 어떤 UObject의 어느 주소로 돌아가야 하는지 알 수 있다
+
+---
+
+Object가 변한다
+    ↓
+MARK_PROPERTY_DIRTY
+    ↓
+DirtyTracker가 수집
+
+
+FDirtyNetObjectTracker
+
+Iris의 질문: 바뀐 것들이 신고되었으니 그것들부터 처리하자.
+
+---
+
+Scope란 존재 허가다.
+
+AlwaysRelevant는 왕족이다.
+Spatial은 지도 위의 주민이다.
+OwnerOnly는 사적인 편지다.
+FilterOut은 추방이다.
+
+
+Prioritizer는 “먼저 먹을 자가 누구인가”를 묻는다.
+
+거리, 시야, 소유자, 중요도, 수량 제한.
+높은 점수를 받은 자가 먼저 wire로 간다.
+낮은 자는 기다린다.
+
+
+Bandwidth가 끝나면, 왕국의 문은 닫힌다.
+
+---
+
+물리는 질문한다
+
+이번 프레임에 나에게 주어진 힘은 무엇인가?
+속도는 무엇인가?
+kinematic target은 어디인가?
+
+---
+
+TG_PostPhysics.
+
+충돌이 보고된다.
+Overlap이 말한다.
+Ragdoll이 몸을 내놓는다.
+Hit callback이 불을 붙인다.
+
+---
+
+카메라는 배우가 아니다.
+카메라는 목격자다.
+
+Pawn이 움직이고,
+물리가 몸을 확정하고,
+SpringArm이 충돌을 피하고,
+CameraComponent가 최종 위치를 얻는다.
+
+TG_PostUpdateWork
+
+최종 transform.
+최종 bounds.
+최종 view target.
+
+---
+
+Asset Loading, 먼 창고의 물건
+
+Load request는 지금 한다.
+Disk는 나중에 답한다.
+Package는 비동기로 풀린다.
+UObject는 안전한 곳에서 완성된다.
+PostLoad는 game thread의 언어로 돌아온다.
+
+---
+
+SceneProxy.
+Render command.
+ViewFamily.
+
+Game thread는 말한다.
+
+이것이 이번 프레임의 세계다.
+
+Render thread는 그것을 자신만의 언어로 바꾼다.
+
+---
+
+패킷은 말한다.
+
+나는 도착할 수도 있고, 사라질 수도 있다.
+
+
+Connection은 말한다.
+
+각자는 다른 과거를 가지고 있다.
