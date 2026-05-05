@@ -1938,3 +1938,83 @@ Render thread는 그것을 자신만의 언어로 바꾼다.
 Connection은 말한다.
 
 각자는 다른 과거를 가지고 있다.
+
+---
+
+UObject::RegisterReplicationFragments() 
+
+void AMyActor::RegisterReplicationFragments
+    UE::Net::FFragmentRegistrationContext& Context
+    UE::Net::EFragmentRegistrationFlags Flags
+{
+    Super(Context, Flags);
+
+    이 Actor 의 UPROPERTY(Replicated) 들에 대한 Fragment 를 자동 생성
+    UE::Net::FReplicationFragmentUtil::CreateAndRegisterFragmentForObject(this, Context, Flags);
+}
+
+
+호출 시점: Actor 가 Iris 의 UReplicationSystem 에 NetObject 로 등록될 때
+즉 서버 측에서 Actor 가 (스폰되고) BeginPlay 가 처리되는 흐름 안에서
+Iris 가 그 Actor 에 대한 FNetRefHandle 을 발급하면서 이 메서드를 호출한다.
+
+
+FReplicationFragmentUtil::CreateAndRegisterFragmentForObject 는 내부적으로 
+해당 클래스에 대해 미리 생성된(코드젠 또는 매크로로) FReplicationStateDescriptor 를 조회하고, 
+그것을 기반으로 FPropertyReplicationFragment 를 힙에 할당해 Context 에 등록한다.
+
+---
+
+Fragment 의 소유권은 UReplicationSystem 내부의 FReplicationSystemInternal
+
+
+Fragment 가 파괴되는 시점
+
+Actor 가 Destroy 되어 Iris 에서 NetObject 등록이 해제될 때
+오브젝트의 Net Role 이 변경되어 서버 측 복제 대상에서 제외될 때
+
+---
+
+EReplicationFragmentTraits
+능력 비트마스크
+
+HasPushBasedDirtiness  — 변경 감지를 폴링이 아닌 push 방식으로 한다
+HasObjectReference     — UObject 포인터를 포함해서 GC 연동이 필요하다
+NeedsLegacyCallbacks   — RepNotify 같은 레거시 콜백을 지원해야 한다
+IsDeltaCompressed      — 이전 상태와의 차분만 전송 가능하다
+
+---
+
+UE::Mass::FMassFragment
+
+Entity 에 붙는 데이터 조각
+
+"오브젝트를 데이터 조각들의 조합으로 분해한다"
+
+---
+
+네트워킹 레이어에서 "fragment"
+
+IP fragmentation (큰 패킷을 MTU 에 맞게 조각내는 것)
+
+---
+
+FReplicationProtocol
+  └── FReplicationStateDescriptor*  [0]   ← Fragment A 의 스키마
+  └── FReplicationStateDescriptor*  [1]   ← Fragment B 의 스키마
+  └── FReplicationStateDescriptor*  [2]   ← Fragment C 의 스키마
+
+---
+
+“UObject/Actor의 어떤 부분을 Iris의 Replication State로 읽고, 
+받은 State를 다시 UObject/Actor에 써 넣을지 아는 어댑터”
+
+“게임플레이 코드와 Replication System 사이에서 Replication State를 왕복시키는 컴포넌트”
+
+
+Iris 내부는 UObject를 직접 알고 싶지 않음
+하지만 복제하려면 UObject 데이터를 읽고 써야 함
+
+따라서:
+
+UObject를 직접 만지는 얇은 경계 객체 = Fragment
