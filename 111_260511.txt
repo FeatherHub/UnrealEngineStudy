@@ -1,0 +1,893 @@
+C++ 메모리는 그대로 두고, 그 메모리를 해석할 수 있는 “런타임 타입 설명서”를 따로 만든다
+모든 인스턴스가 공유하는 타입 설명서
+어떤 인스턴스에도 들어 있지 않고 모든 인스턴스의 바깥에 있다
+인스턴스가 하나도 없어도 해당 설명서는 메모리에 존재한다
+
+
+<->
+
+대안 설계
+인스턴스 자체에 리플렉션 정보가 담겨져 있다
+(인스턴스 헤더, 인스턴스 바디)
+
+동적 객체 모델
+동적 타입
+
+---
+
+성능
+  딕셔너리 -> 해당 이름으로 점프 (2)
+  미리 계산된 주소 (1)
+
+메모리
+  인스턴스 당 딕셔너리
+  타입 당 딕셔너리
+
+---
+
+UField
+  UStruct
+    UClass
+    UScriptStruct
+    UFunction
+  UEnum
+  UProperty
+
+---
+
+UClass / UScriptStruct  = table schema
+FProperty              = column schema
+UObject instance       = row
+ContainerPtrToValuePtr = row + column offset
+
+---
+
+TFieldIterator<FProperty>{UClass} 는 “타입의 필드 목록”을 걸으면서 Cover한다
+
+---
+
+컨테이너 안에 직접 박혀 있음
+
+Container Memory
++0x40  float X
++0x44  float Y
++0x48  float Z
+
+vs
+다른 객체를 참조함
+
+Container Memory              Outside the Contianer
++0x40  UObject* Target  ──────▶ Some UObject
+
+---
+
+Property->ContainerPtrToValuePtr(Instance)
+
+컨테이너 주소 + 프로퍼티 offset => 값 주소
+(= Instance, Context, Object)
+
+---
+
+메모리 블록의 시작 주소와 크기가 알려졌다고 하자
+이 메모리 블록을 어떻게 복사할 것인가?
+
+POD 의 경우 memcpy 로 충분하다
+그러나 pointer 가 involve 된 경우 memcpy 로 충분하지 않다
+자원소유 문제 등 각 타입별 semantics에 따라 copy 전략이 다르다 
+
+---
+---
+---
+
+타입에 대한 지식은 Prop 안에 있고, 
+그 지식이 CopyCompleteValue 같은 virtual 연산 을 통해 흘러나온다.
+
+---
+
+UE 4.25 이전까지는 모든 property가 UProperty
+100개의 property를 가진 클래스 100개면 10,000개의 UObject가 오직 메타데이터를 위해 존재한다.
+
+
+UE 4.25에서 Property들이 FField 로 옮겨졌다
+UStruct 가 이제 두 종류의 자식 list를 갖는다
+
+TObjectPtr<UField> Children
+FField*            ChildProperties
+
+---
+
+obj.x
+obj.x = 3
+key in obj
+delete obj.x
+
+Reflect API:
+  Reflect.get(obj, "x")
+  Reflect.set(obj, "x", 3)
+  Reflect.has(obj, "x")
+  Reflect.deleteProperty(obj, "x")
+
+---
+
+
+FFieldClass* TClass::StaticClass()                                                   
+{                                                                                    
+    static FFieldClass StaticFieldClass(...);                                                         
+    return &StaticFieldClass;                                                        
+}
+
+Magic static, function-local static
+C++11 이후 thread-safe하게 한 번만 초기화된다는 것이 spec에 보장 (Construction on First Use). 
+누군가 FStructProperty::StaticClass() 를 처음 부르는 순간 그 안의 static 인스턴스가 construct
+
+첫 호출까지 대기
+
+---
+
+Z_Construct_UClass_<ClassName>() 
+
+properties, functions, interfaces 를 모두 만들어서 UClass 에 매단다
+UClass를 반환
+
+
+Z_Construct_UScriptStruct_<StructName>()
+Z_Construct_UFunction_<ClassName>_<FuncName>()
+
+---
+
+클래스 A가 클래스 B를 property type으로 가지고, B도 A를 가지는 경우
+
+---
+
+왜 지연 등록 이 필요한가?
+
+C++ 정적 초기화는 다음 두 가지 어려움이 있다
+
+(1) 순서가 부분적으로만 정의됨. translation unit 내에서는 선언 순서대로지만, TU 간에는 보장 없음 
+(Static Initialization Order Fiasco).
+
+(2) 요구 시스템이 아직 없을 수 있음
+UObject 시스템 (GUObjectArray, FName 시스템, GC 시스템 등) 이 아직 init되지 않았을 수 있음.
+
+
+해법: 정적 초기화는 "큐에 넣는 일"만 하고, 실제 객체 구성은 미룬다
+
+---
+
+시점 0:  로더가 .dll/.so를 메모리에 매핑 (.text/.rodata/.bss 매핑)
+
+시점 1:  C 런타임 정적 초기화 (main 진입 전, 모듈마다 한 번씩)
+  ─ Global static CTOR: 실행됨 (= "Eager static init")
+
+시점 2:  main 진입 → UObjectBaseInit 호출 (GUObjectArray, FName 시스템 등 부팅)
+
+시점 3:  Module load 완료 시점에 ProcessNewlyLoadedUObjects 호출
+
+---
+---
+---
+
+"BSS" (Block Started by Symbol)
+
+프로그램이 실행될 때 "0"으로 초기화되는 전역 변수나 정적(static) 변수들이 저장되는 메모리 영역
+
+"BSS" 영역에 할당된 변수들은 실행 파일(Binary) 내에 실제 데이터를 저장하지 않습니다. 
+대신 실행 파일에는 "이만큼의 BSS 크기가 필요하다"라는 정보만 기록
+
+프로그램이 메모리에 로드되어 실행을 시작하기 직전, 커널이나 런타임 환경에 의해 해당 영역이 모두 "0"으로 채워집니다
+
+---
+
+Text (Code): 읽기 전용 실행 코드가 저장되는 곳
+
+Data (GVAR): 초기값이 있는 전역/정적 변수가 저장되는 곳
+
+BSS: 초기값이 없는 전역/정적 변수가 저장되는 곳
+
+Heap: 동적 할당되는 데이터가 저장되는 곳 (위쪽으로 확장)
+
+Stack: 지역 변수와 함수 호출 정보가 저장되는 곳 (아래쪽으로 확장)
+
+---
+
+디스크 이미지에 박혀 있음
+컴파일러가 .rodata 세그먼트에 직접 박는다
+constexpr-like data
+
+struct Z_Construct_UClass_UMyActor_Statics {
+    static const UECodeGen_Private::FObjectPropertyParams NewProp_Owner;
+    static const UECodeGen_Private::FStructPropertyParams NewProp_AnimNode;
+    static const UECodeGen_Private::FPropertyParamsBase* const PropPointers[];
+    static const UECodeGen_Private::FClassParams ClassParams;
+    // ...
+};
+
+
+Z_Construct_UClass_UMyActor_Statics::NewProp_AnimNode
+{
+    "AnimNode",
+    EPropertyGenFlags::Struct,  
+    STRUCT_OFFSET(UMyActor, AnimNode), 
+    &FAnimNode_Base::StaticStruct
+};
+
+---
+
+AActor 는 메모리 안에 그냥 C++ 객체로 놓여 있고,
+int32 Health, FVector Location, UStaticMeshComponent* MeshComp 같은 멤버들은 컴파일러가 정한 offset 에 따라 박혀 있어요
+
+---
+
+단단하고 고정된 메모리 구조
+
+---
+
+class ARogueChest : public AActor
+{
+    GENERATED_BODY()
+};
+
+StaticClass() 선언
+StaticRegisterNativesARogueChest() 선언
+execOpen 같은 thunk 선언
+DECLARE_CLASS
+DECLARE_SERIALIZER
+friend struct Z_Construct_UClass_ARogueChest_Statics
+
+---
+
+클래스 몸 안에 붙는 “신경 접속부”
+
+---
+
+함수
+
+Z_Construct_UClass_ARogueChest()
+  ARogueChest 라는 UClass Reflection 객체를 만들어라.
+
+Z_Construct_UFunction_ARogueChest_Open()
+  Open 이라는 UFunction Reflection 객체를 만들어라.
+
+---
+
+정적 구조체
+
+Z_Construct_UClass_ARogueChest_Statics
+
+---
+
+Z_Construct_* 는 누군가 “ARogueChest 의 UClass 가 필요합니다”라고 부르면, 먼저 창고를 봐요.
+이미 만들어둔 UClass 가 있으면 그대로 꺼내줍니다.
+없으면 설계도를 펼칩니다.
+“부모는 AActor 네. 그럼 AActor 의 UClass 부터 필요하군.”
+“이 클래스는 /Script/ActionRoguelike 패키지에 들어가야 하네.”
+이렇게 필요한 것들을 순서대로 마련한 다음, 최종적으로 UClass 하나를 완성해요
+
+순환 의존성이 있는 타입 그래프를 천천히, 안전하게, 필요할 때 실체화
+
+---
+
+UFUNCTION()
+bool TryOpen(AActor* Instigator, int32 KeyCount);
+
+
+UFunction TryOpen : UScriptStruct
+  ├─ FObjectProperty Instigator
+  ├─ FIntProperty KeyCount
+  └─ FBoolProperty ReturnValue
+
+
+함수를 호출할 때는 대략 이런 작은 메모리 버퍼가 생긴다
+
+---
+
+ActionRoguelike 모듈이 로드됨
+  ↓
+이 모듈에는 이런 native reflected type 들이 있습니다
+  - ARogueChest
+  - FRogueItemData
+  - ERogueTeam
+  ↓
+나중에 필요하면 이 함수들로 construct 하세요
+
+
+모듈이 로드되면 모든 타입을 그 자리에서 완전히 다 만드는 게 아니라, “만들 수 있는 방법”을 등록
+
+FRegisterCompiledInInfo
+ProcessNewlyLoadedUObjects
+
+---
+
+
+UCLASS()
+class UMyActor : public AActor
+{
+    GENERATED_BODY()
+
+public:
+    UPROPERTY()
+    int32 Health;
+
+    UFUNCTION()
+    void TakeDamage(int32 Amount);
+};
+
+
+빌드 디렉토리 어딘가에 MyActor.gen.cpp 와 MyActor.generated.h 라는 두 파일이 생성된다
+
+.gen.cpp 안에 이런 정보가 적혀있다: 
+"UMyActor 라는 이름의 클래스가 있고, AActor 의 자손이며, 
+멤버로 Health 라는 int32 가 있고 그 멤버는 클래스 시작점에서 64바이트 떨어진 곳에 있으며, 
+TakeDamage 라는 함수가 있고 그 함수는 int32 파라미터 하나를 받는다." 
+
+이 설명서가 단순한 텍스트가 아니라 C++ 구조체로 된 데이터로 인코딩된다.
+
+
+const auto Z_Construct_UClass_UMyActor_Statics::NewProp_Health = FStructPropertyParams {
+    "Health",
+    STRUCT_OFFSET(UMyActor, Health),
+    &TIntProperty::StaticStruct
+};
+
+
+평범한 구조체 리터럴이다. 컴파일러는 이걸 .rodata 세그먼트에 박는다
+즉 빌드가 끝난 .dll 파일 안에는 이미 이 description 이 디스크 이미지로 박혀있다
+
+---
+
+gen.cpp
+
+Z_Construct_UClass_UMyActor() 라는 독립 함수
+
+위에 묘사한 description 구조체를 읽어서 UClass 객체를 힙에 만든다.
+
+1 UMyActor 의 superclass 인 AActor 의 UClass 를 가져온다 (Z_Construct_UClass_AActor() 를 호출)
+2 빈 UClass 인스턴스를 힙에 할당한다
+3 description 안의 property 정보들을 walk 하면서, 각 property 마다 FProperty 자손 인스턴스를 만들어서 UClass 에 매단다.
+
+
+이 변환은 한 번만 일어나면 되고, 결과는 캐시된다.
+누가 부르든 결과는 같은 포인터
+
+---
+
+정적 초기화 시점에는 진짜 일을 하지 않는다. 단지 "나 여기 있어요" 라고 줄 서기만 한다.
+
+gen.cpp
+
+static FRegisterCompiledInInfo AutoInitialize_UMyActor(
+    &Z_Construct_UClass_UMyActor,    // 나중에 부를 함수
+    UMyActor::StaticClass,
+    "/Script/MyGame",
+    TEXT("UMyActor"),
+    Z_Registration_Info_UClass_UMyActor,
+);
+
+이 생성자가 하는 일은 함수 포인터 몇 개를 글로벌 큐에 push 하는 것 뿐
+"나중에 이 클래스를 build 해야 함, 이 함수들로 build 하면 됨" 이라는 메모
+
+
+진짜 build 는 언제 일어나는가? main 진입 후 적당한 시점에 UE가 ProcessNewlyLoadedUObjects() 라는 함수를 호출
+이 함수가 그 글로벌 큐를 walk 하면서 큐에 들어있는 모든 함수 포인터를 호출 한다
+
+---
+
+FFieldClass* FStructProperty::StaticClass() {
+    static FFieldClass StaticFieldClass(...); 
+    return &StaticFieldClass;
+}
+
+이 변수는 함수가 처음 호출되는 순간 정확히 한 번 thread-safe 하게 생성된다.
+
+FFieldClass 시스템은 UClass 시스템의 부트스트랩 layer
+
+UClass 들을 build 하는 과정에서 FProperty 인스턴스들을 만들어야 하고, 
+FProperty 인스턴스를 만들려면 그 메타타입인 FFieldClass 가 있어야 한다
+
+---
+
+UHT 는 평범한 코드 생성기다. 
+.rodata 에 박힌 description 은 평범한 C++ 구조체다. 
+Z_Construct_* 는 평범한 함수다. 
+전역 변수의 생성자가 큐에 push 하는 것도 C++ 정적 초기화의 활용
+
+이 모든 평범한 것들이 하나의 스토리로 엮여서
+컴파일타임에 정보를 채취하고 (UHT), 디스크 이미지에 박아두고 (.rodata), 
+main 이전에 큐에 등록만 하고 (정적 init), main 이후에 일괄 build 하고 (boot phase),
+이후에는 캐시된 포인터로 query — 라는 흐름을 이룬다
+
+---
+
+UObject 계열 Reflection 타입
+
+UObject
+└─ UField
+   ├─ UStruct
+   │  ├─ UClass
+   │  ├─ UScriptStruct --- USTRUCT 
+   │  └─ UFunction     --- UFUNCTION 
+   │     └─ UDelegateFunction
+   │        └─ USparseDelegateFunction
+   │
+   └─ UEnum
+---
+
+FField
+└─ FProperty
+   ├─ FNumericProperty
+   │  ├─ FByteProperty
+   │  ├─ F[U]Int8, 16, 32, 64Property
+   │  ├─ FFloatProperty
+   │  └─ FDoubleProperty
+   │
+   ├─ FBoolProperty
+   │
+   ├─ FObjectPropertyBase
+   │  ├─ FObjectProperty
+   │  ├─ FWeakObjectProperty
+   │  ├─ FLazyObjectProperty
+   │  ├─ FSoftObjectProperty
+   │  ├─ FClassProperty
+   │  └─ FSoftClassProperty
+   │
+   ├─ FInterfaceProperty
+   ├─ FNameProperty
+   ├─ FStrProperty
+   ├─ FTextProperty
+   │
+   ├─ FStructProperty
+   ├─ FEnumProperty
+   │
+   ├─ FArrayProperty
+   ├─ FSetProperty
+   ├─ FMapProperty
+   │
+   ├─ FDelegateProperty
+   ├─ FMulticastDelegateProperty
+   │  ├─ FMulticastInlineDelegateProperty
+   │  └─ FMulticastSparseDelegateProperty
+   │
+   ├─ FFieldPathProperty
+   └─ FOptionalProperty
+
+---
+
+int8   → FInt8Property
+uint8  → FByteProperty
+
+---
+
+FEnumProperty
+  현대적인 enum property wrapper
+  underlying numeric property 를 따로 가짐
+
+---
+
+FBoolProperty
+
+bool 하나를 1 byte 로 저장할 수도 있음
+bitfield 로 여러 bool 을 한 byte 안에 포장할 수도 있음
+
+bit-level storage policy 를 가진 논리값
+
+이 bool 은 native bool 인가?
+bitfield bool 인가?
+어느 byte 안의 어느 bit 인가?
+어떻게 set / get 해야 하는가?
+
+---
+
+FFieldClass
+
+FField 세계의 UClass
+
+FIntProperty::StaticClass() 는 FFieldClass* 를 반환
+
+UObject instance     ↔ FField instance
+UClass               ↔ FFieldClass
+Cast<UClassType>()   ↔ CastField<FFieldType>()
+UObject::IsA()       ↔ FField::IsA()
+
+---
+
+UObject pointer 는 FObjectProperty 로 표현됨
+
+TWeakObjectPtr<T>
+  → FWeakObjectProperty
+
+TSoftObjectPtr<T>
+  → FSoftObjectProperty
+
+TSoftClassPtr<T>
+  → FSoftClassProperty
+
+---
+
+
+FVector                                  FStructProperty
+FGameplayTag                             FStructProperty
+FString                                  FStrProperty
+FName                                    FNameProperty
+FText                                    FTextProperty
+
+UObject* / TObjectPtr<UObject>           FObjectProperty
+AActor* / TObjectPtr<AActor>             FObjectProperty
+TWeakObjectPtr<AActor>                   FWeakObjectProperty
+TSoftObjectPtr<UTexture2D>               FSoftObjectProperty
+
+UClass*                                  FClassProperty
+TSubclassOf<AMonsterBase>                FClassProperty
+TSoftClassPtr<AMonsterBase>              FSoftClassProperty
+
+TArray<FVector>                          FArrayProperty + FStructProperty Inner
+TMap<FName, int32>                       FMapProperty + KeyProp + ValueProp
+TSet<FName>                              FSetProperty + ElementProp
+
+TScriptInterface<IMyInterface>           FInterfaceProperty
+
+---
+---
+---
+---
+---
+
+USTRUCT 값은 UObject 처럼 자기 정체성을 들고 다니는 객체가 아니라, 
+어떤 컨테이너 안에 놓인 해석 가능한 bytes 입니다
+
+
+UObject pointer 와 struct pointer
+
+---
+
+UFUNCTION 반환값
+  = Blueprint 세계로 넘겨야 하는 값
+
+문제
+  위치를 값처럼 넘기려고 한다
+
+Blueprint 경계에서는 위험
+
+---
+
+이 포인터는 TMap 내부 value 의 주소
+그런데 이후에 map 이 수정될 수 있어요
+
+Rehash, Reserve, Compact
+
+
+C++ 내부에서는 이런 위험을 “문맥과 규율”로 관리합니다
+
+이 포인터를 오래 저장하지 마라.
+컨테이너 수정 전까지만 써라.
+nullptr 확인해라.
+
+
+하지만 Blueprint 에는 이런 빌림 규칙이 표현되지 않아요
+Blueprint pin 은 이렇게 말하지 못합니다.
+
+이 포인터는 AttributeMap 이 수정되기 전까지만 유효합니다.
+이 포인터는 owner component 보다 오래 보관하면 안 됩니다.
+이 포인터는 map rehash 후 dangling 될 수 있습니다.
+이 포인터는 C++ stack/local/internal container address 입니다.
+
+
+그래서 “빌린 내부 주소”를 Blueprint 세계로 내보내는 계약을 만들지 않습니다.
+
+---
+
+Blueprint VM: C++ 함수를 호출하고 그 결과를 받아 자기 노드 그래프에서 사용하고 싶다
+
+
+BP VM 의 답: "나는 C++ 함수의 stack frame 이 정리된 후 에 이 포인터를 받는다. 이 포인터가 가리키는 메모리가 아직 살아있는지, 5초 뒤에도 살아있을지 나는 알 수 없다. C++ 함수가 자기 멤버를 가리키는 포인터를 줬는지, 임시 객체를 가리키는 포인터를 줬는지 보이지 않는다.
+
+---
+
+"다른 머신에 포인터 주소를 보내면 의미가 없다. 가리키는 값을 보내면 그 머신의 사본이 만들어지고 원본과의 연결이 끊긴다
+
+---
+
+USTRUCT 는 “값 타입”으로 설계되었습니다
+USTRUCT 는 기본적으로 값 타입입니다.
+
+FVector Location;
+FTransform Transform;
+FGameplayTag Tag;
+
+이들은 객체라기보다 값입니다.
+
+
+GC 비용이 없다.
+object registry 에 등록되지 않는다.
+
+---
+
+TArray memory
+┌──────────┬──────────┬──────────┬──────────┐
+│ FVector  │ FVector  │ FVector  │ FVector  │
+└──────────┴──────────┴──────────┴──────────┘
+
+
+TArray memory
+┌──────────┬──────────┬──────────┬──────────┐
+│ pointer  │ pointer  │ pointer  │ pointer  │
+└────┬─────┴────┬─────┴────┬─────┴────┬─────┘
+     ↓          ↓          ↓          ↓
+  UObject    UObject    UObject    UObject
+
+완전히 다른 비용 모델
+
+---
+
+값은 독립적인 identity 를 갖지 않는다.
+
+---
+
+UObject* 를 .uasset 에 쓴다는 것은 — 그 객체의 path name (예: /Game/MyAsset.MyAsset:MyComponent) 을 쓴다는 의미다
+로드 시 그 path 로 다시 lookup 한다
+
+
+USTRUCT 는 항상 어떤 UObject 의 멤버, 또는 어떤 컨테이너의 원소, 또는 어떤 함수의 지역변수 로 존재한다
+자기 path 를 가지지 않는다
+
+---
+
+UObject 는 자기 집 을 가진다. UObject 인스턴스는 항상 자기만의 메모리 블록에 거주한다 (GUObjectAllocator 가 할당). 
+다른 UObject 의 멤버로 박혀있지 않는다. UObject 는 다른 UObject 를 참조 할 수는 있어도 내부에 흡수 하지 않는다
+(즉, UObject 멤버는 항상 UObject* — 포인터로)
+
+UObject 는 항상 독립된 entity 이고, 그 entity 의 위치 = 그 entity 의 정체성
+
+
+USTRUCT 인스턴스는 항상 어딘가에 박혀 있다
+UObject 의 멤버로, TArray 의 원소로, 다른 USTRUCT 의 멤버로, 함수의 지역변수로
+USTRUCT 는 항상 호스트의 일부 로 존재한다
+그 호스트가 사라지면 USTRUCT 도 사라진다 (호스트의 일부이므로). 호스트가 옮겨지면 USTRUCT 도 같이 옮겨진다
+
+---
+
+FRogueAttribute* 를 들고 있을 때, 그 포인터는 호스트의 변동에 따라 언제든 무효화된다. 
+호스트가 TArray 라면 — 그 TArray 가 reallocate 되는 순간 (push_back 으로 capacity 가 늘어남, remove 로 원소 이동) 
+모든 원소의 포인터가 무효화된다
+
+---
+
+이건 BP VM 이 USTRUCT* 를 함수 반환값으로 받았을 때 마주하는 정확한 문제다. 
+그 포인터가 다음 BP 노드 실행 시점까지 유효하다는 보장이 어디에서도 나오지 않는다
+
+---
+
+UObject 인스턴스 하나를 만들 때마다
+
+GUObjectArray 에 entry 등록, 고유 path name 부여, FName 시스템에 이름 등록, 
+GC reference walking 의 일부, NetGUID 시스템의 후보, package 와 outer chain 의 일부. 
+이 모든 인프라가 하나의 객체를 둘러싼다. 
+
+
+
+USTRUCT 의 raison d'être 는 UObject 의 모든 인프라 비용을 지불하지 않으면서도 reflection 의 혜택은 받는 것 이다
+USTRUCT 인스턴스는 GUObjectArray 에 등록되지 않고, GC 가 직접 추적하지 않고, path 를 가지지 않고, NetGUID 를 가지지 않는다
+
+---
+
+시스템-차원 entity 가 필요하면 UObject, 가벼운 값 타입이 필요하면 USTRUCT
+
+---
+
+struct 인스턴스는 공통 base class 나 필수 storage 가 없기 때문에 같은 방식으로 타입을 얻을 수 없다
+
+
+UObject를 상속한 UCLASS pointer 하나를 받으면 엔진은 여러 가지를 물을 수 있습니다.
+(UObject 자체의 여러 Facility + Unreal Engine 과의 Integration)
+
+
+UObject*
+  pointer 안에 들어 있는 대상이
+  자기 reflection identity 를 갖고 있다.
+
+FSomeStruct*
+  pointer 가 가리키는 bytes 는
+  자기 reflection identity 를 갖고 있지 않다.
+
+---
+
+UObject* 는 FObjectProperty 로 표현됩니다
+
+---
+
+Blueprint 는 UObject* 를 “메모리 주소”로 보지 않고, object reference 로 봅니다
+
+Object Reference pin
+
+---
+
+raw UObject* 가 안전한 것은 아닙니다. raw pointer 에 저장된 object reference 는 
+엔진이 모를 수 있고, 자동 null 처리나 GC 보호가 되지 않는다고 설명합니다
+
+
+UPROPERTY / UFUNCTION 경계 안에서 UObject* 는 FObjectProperty 로 표현됩니다
+
+---
+
+전역 등기소 GUObjectArray 
+
+
+NewObject<> 가 일어나면, 객체는 힙에 할당되고 동시에 GUObjectArray 라는 전역 배열에 entry 가 등록
+
+
+어떤 UObject 가 살아있다 = 그 entry 가 GUObjectArray 에 valid 상태로 존재한다. 
+어떤 UObject 가 destroy 됐다 = 그 entry 가 invalid mark 됐다. 
+
+한 게임 프로세스의 모든 UObject 가 이 등기부 한 곳에 모두 listed 되어 있다
+
+---
+
+(1) 포인터의 검증 가능성: 누가 UMyActor* 를 들고 있을 때, 
+그 포인터가 진짜 살아있는 UObject 를 가리키는지 를 시스템이 검증할 수단 이 있다
+dangling 검출이 이론상 가능한 시스템 이다
+
+
+USTRUCT 는 그런 등기부가 없다. FRogueAttribute* 를 받으면 그것이 살아있는 USTRUCT 를 가리키는지 어디에서도 확인할 방법이 없다
+
+
+(2) Weak reference 가능성
+이게 가능한 이유는 destroy 라는 사건이 등기부에서 detectable 하기 때문이다.
+
+
+USTRUCT 의 destroy 는 호스트의 변동 이다
+TArray reallocation, 호스트 UObject destroy, 함수 return. 각각이 다른 종류의 사건이고, 어디에서도 통일된 detection point 가 없다.
+포인터 invalidation 을 검출할 곳이 없다.
+
+---
+
+GC 라는 생애주기 보증인
+
+어떤 UObject 가 root 에서 도달 가능한 reference chain 에 포함되어 있으면, 그 UObject 는 destroy 되지 않는다
+
+UFUNCTION 이 호출되는 그 순간 을 생각해보자. 
+호출자 (BP) 가 UMyActor* MyTarget 를 들고 있다. 이 포인터가 BP 그래프의 어떤 변수에 들어있다고 하자. 
+그 변수는 어딘가의 UObject 의 멤버 에 살고 있고 (BP 그래프 자체가 UObject 다), 그 UObject 는 root 에서 도달 가능하다.
+
+
+USTRUCT* 에는 이 보증이 없다. C++ 함수가 FRogueAttribute* 를 반환했다고 하자. 그 포인터는 — 어떤 호스트의 일부를 가리킨다. 
+그 호스트가 함수 반환 후에도 살아있다 는 보장이 어디에서 오는가?
+
+---
+
+trace-based GC (reference counter GC)
+
+UMyActor 의 멤버 중 UComponent* MyComp 가 있다고 하자. 
+GC 가 UMyActor 인스턴스를 walk 할 때, 그 인스턴스의 어느 offset 에 MyComp 가 있는지 를 알아야 한다. 
+이 정보는 어디에 있는가? — UMyActor 의 UClass metaobject 안의 RefLink chain 에 등록되어 있다
+
+---
+
+frame buffer 의 lifetime 이 호출 기간 < 호출자 측 reference 의 lifetime 이라는 시간적 종속 이 보장
+
+---
+---
+---
+
+UPROPERTY()
+TArray<int32> Counts
+
+
+UMyActor 인스턴스 (offset 0 에서 시작)
+  +0x00  vtable
+  +0x08  ... UObject base 멤버들
+  +0x40  TArray<int32> Counts:
+           +0x40  T*       Data       (힙 어딘가의 주소 — int32 배열 시작)
+           +0x48  int32    Num
+           +0x4C  int32    Max
+  ...
+
+
+16바이트 header 는 호스트 안에 박혀있고, payload 는 호스트 밖의 별도 힙 에 있다
+동적 크기를 위해 어쩔 수 없다
+
+---
+
+FArrayProperty 
+  Header 의 layout: 어떤 offset 에 Data, Num, Max 가 있는지
+  Inner property: payload 의 원소 하나가 어떤 타입인지 (FIntProperty)
+
+
+1 호스트 인스턴스 주소 + offset → header 위치
+2 Header 에서 Num 을 읽음 (원소 개수)
+3 Header 에서 Data 를 읽음 (payload 시작 주소)
+4 payload 위에서 i = 0..Num-1 에 대해, Inner property 에게 각 원소의 직렬화 를 위임
+
+---
+---
+---
+
+TArray<int32> 같은 것은 명시적 선언 없이 등장한다. 
+
+UMyActor 의 멤버에 UPROPERTY() TArray<int32> Counts; 라고 쓰면, 
+컴파일러는 TArray<int> 를 instantiate 하지만 
+reflection 시스템은 이 멤버 한 자리에 대한 description (FArrayProperty + FIntProperty) 만 만든다. 
+
+type 자체에 metaobject 를 만들지는 않는다. property 는 등록되지만 type 은 등록되지 않는다
+익명 컨테이너
+암묵적 entity 가 협약에 슬며시 들어오는 것 
+
+
+모든 UPROPERTY 가 Reflection Type 을 가지는 것은 아니다
+
+
+type 등록을 자동화하면 system 이 폭발적으로 부푼다. 
+모든 컨테이너 조합에 metaobject 를 만들어야 한다. 
+TArray<UMyActor*> 에 metaobject, TArray<int> 에 metaobject, TArray<FVector> 에 metaobject
+
+루트에 TArrayProperty, TMapProperty, TSetProperty 만 둔다
+
+---
+
+컨테이너 안의 element 자리에는 명시적으로 등록된 type 만 허용 했다
+
+왜 (UE 상) 명시적인 type 으로 등록되어야 element 자리에 올 수 있는가?
+
+
+정책을 재귀적으로 위임하기 위해
+(Copy, Serialize, Deserialize ...)
+
+---
+
+TArray 는 schema boundary 가 아니다.
+USTRUCT 는 schema boundary 다.
+
+
+TArray 는 저장 방식입니다.
+USTRUCT 는 해석 경계입니다.
+
+---
+
+클래스 계보는 vtable 의 익명 엔트리로 환원된다
+
+---
+
+그가 그 숫자를 어셈블리에 박는 동안, 너는 그 숫자를 데이터 리터럴로 박는다
+같은 숫자가 두 곳에 박힌다 — 한 곳은 기계어, 다른 한 곳은 .rodata 의 한 byte sequence 안.
+
+---
+
+GUObjectArray 
+
+그 entity 가 어디 사는지 (메모리 주소), 
+누구의 소유물인지 (Outer pointer), 
+무슨 이름으로 불리는지 (FName index), 
+살아있는지 죽었는지 (serial number 와 flags)
+
+---
+
+UObject 
+
+메모리 주소가 등기부의 페이지 번호로 변환 가능 하다. 
+즉 — 단지 주소가 아니라, 시스템 차원에서 의미를 가지는 식별자 다.
+
+("/Game/MyMap.MyMap:MyActor"), 다른 머신에서 같은 식별자 (NetGUID 1234) 로 알아볼 수 있다.
+
+---
+
+오를 수 없는 entity 들은 — 모든 USTRUCT, 모든 컨테이너, 모든 익명 description
+
+---
+
+UObject* 는 무효화되기 전까지 같은 주소에 영원히 산다
+
+---
+
+C++ 의 메모리는 야생의 숲이다.
+
+거기에는 길이 있다.
+하지만 길 이름은 없다.
+사냥꾼은 나무의 모양과 별의 위치로 길을 찾는다.
+
+Unreal Engine 은 그 숲 위에 왕국을 세웠다.
+
+왕국은 길에 이름을 붙였다.
+집에 주소를 붙였다.
+사람에게 신분증을 주었다.
+창고에 장부를 만들었다.
+문서 양식을 정했다.
+
+---
