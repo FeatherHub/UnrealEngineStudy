@@ -1,0 +1,1323 @@
+LandscapeStreamingProxy마다 LandscapeHeightfieldCollisionComponent가 4개씩 등록
+
+LandscapeStreamingProxy_...:LandscapeHeightfieldCollisionComponent_0/1/2/3
+
+---
+
+BP_ItemChest_C...:BaseMeshComp는 한 번 등록됩니다. 그런데 Treasure Pile Mesh Comp는 다음 패턴이 반복됩니다.
+
+[registered]
+[already registered - updating]
+UnregisterNavRelevantObject
+[registered]
+[already registered - updating]
+[already registered - updating]
+UnregisterNavRelevantObject
+[registered]
+
+네비게이션 시스템에는 계속 “이 컴포넌트 상태가 바뀌었다”고 알려지고 있는 상황
+
+---
+
+LogCharacter: Setting base on Server 의미
+
+이건 캐릭터가 “무엇 위에 서 있는가”를 CharacterMovementComponent가 갱신하는 로그
+
+Setting base on Server for 'BP_PlayerCharacter...' 
+to 'LandscapeHeightfieldCollisionComponent ...'
+
+
+여기서 base는 “부모 attach” 같은 의미라기보다는, CharacterMovement 관점에서의 movement base, 즉 발밑 지지면입니다
+
+
+캐릭터 Capsule
+    ↓ floor check
+LandscapeHeightfieldCollisionComponent 발견
+    ↓
+이 컴포넌트를 현재 MovementBase로 설정
+
+---
+
+캐릭터가 Landscape 위를 조금만 움직여도, Landscape가 여러 LandscapeHeightfieldCollisionComponent로 나뉘어 있으면 
+발밑 component가 바뀔 수 있습니다.
+
+---
+
+UnregisterNavRelevantObject
+  LandscapeStreamingProxy_...:LandscapeHeightfieldCollisionComponent_0
+  LandscapeStreamingProxy_...:LandscapeHeightfieldCollisionComponent_1
+
+
+어떤 Landscape Streaming Proxy가 현재 활성/로드 대상에서 빠짐
+↓
+그 Landscape의 collision component들도 NavRelevantObject 목록에서 제거됨
+↓
+Nav 시스템이 더 이상 그 지형 조각을 길찾기 대상으로 보지 않음
+
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+
+
+Class Specifiers
+
+
+Blueprintable
+as a base class for creating Blueprints
+default is NotBlueprintable, , unless inherited otherwise
+This Specifier is inherited by subclasses.
+
+
+BlueprintType
+as a type that can be used for variables in Blueprints
+
+
+EditInlineNew
+Objects of this class can be created from the Unreal Editor Property window
+as opposed to being referenced from an existing Asset
+The default behavior is that only references to existing Objects may be assigned through the Property window
+
+This Specifier is propagated to all child classes
+child classes can override this with the NotEditInlineNew Specifier
+
+
+Transient
+Objects belonging to this class will never be saved to disk
+
+
+Within=OuterClassName
+Objects of this class cannot exist outside of an instance of an OuterClassName Object
+This means that creating an Object of this class requires that an instance of OuterClassName
+
+handy for making it clear that a class is designed to be owned by another
+
+
+DefaultToInstanced
+ConversionRoot
+
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+
+
+하나의 레벨을 하나의 패키지(.umap)로 취급
+레벨의 콘텐츠 전체가 하나의 경계 안에 공존할 수 있다는 전제
+
+
+오픈 월드가 그 전제를 깬다
+
+모든 것을 동시에 메모리에 올리는 것은 불가능하다
+여러 사람이 동시에 다른 구역을 작업
+런타임에는 플레이어의 위치에 따라 서로 다른 영역이 동적으로 로드·언로드
+빌드 파이프라인은 변경된 영역만 처리
+
+---
+
+World Composition에서는 공간을 "레벨들의 그리드"로 분할
+각 서브레벨은 독립적인 .umap 패키지
+스트리밍 단위 = 레벨 패키지
+
+
+World Partition
+모든 액터는 퍼시스턴트 레벨의 단일 데이터베이스에 저장
+스트리밍 경계는 런타임에 공간 쿼리로 결정
+
+액터는 더 이상 특정 서브레벨에 "속하지" 않는다. 
+대신, 액터는 공간 좌표를 가지고, 런타임 시스템이 그 좌표를 기준으로 스트리밍 여부를 결정한다
+협업을 위한 잠금 단위는 레벨이 아니라 개별 액터 또는 셀
+
+---
+
+스트리밍의 단위는 Cell
+셀은 월드 공간을 일정 크기의 격자로 나눈 것
+각 셀은 자신의 공간 영역 안에 있는 액터들의 집합을 대표
+
+런타임에 플레이어(또는 스트리밍 소스)로부터의 거리에 따라 셀 단위로 로드·언로드
+
+
+하나의 Grid는 지형과 건물 같은 주요 환경 액터를 담당하고 큰 셀 크기(예: 128m)를 쓰는 반면,
+다른 Grid는 소도구나 조명처럼 세밀한 액터를 담당하고 작은 셀 크기를 쓸 수 있다. 이것은 "공간 LOD"의 편집 표현이다
+
+---
+
+액터가 어느 셀에 속하는지는 그 액터의 **spatial bounds**를 기준으로 계산된다. 
+크기가 매우 큰 액터(예: 지형 전체를 덮는 포스트 프로세스 볼륨)는 
+bIsSpatiallyLoaded = false로 설정해서 항상 로드되도록 예외 처리할 수 있다
+
+---
+
+Hierarchical Level of Detail(HLOD) 레이어
+
+런타임 스트리밍이 아니라 오프라인 빌드 타임 프로세스
+
+빌드 시 각 Grid의 셀들이 하나 이상의 HLOD 레이어로 baked
+
+즉, 셀 안의 수천 개 액터들이 하나의 병합된 스태틱 메시와 머티리얼로 합쳐지며, 이것이 HLOD 액터로 저장
+
+런타임에는 어떤 셀이 로드 범위 밖에 있을 때 그 셀의 실제 콘텐츠 대신 HLOD 표현이 보인다
+원본 콘텐츠가 메모리에 없는 동안 그것을 대신하는 존재 (Proxy)
+
+---
+
+전통적인 .umap은 레벨 안의 모든 액터를 하나의 파일에 직렬화한다
+두 사람이 같은 레벨의 다른 액터를 수정하면 동일한 파일에 충돌이 생긴다. (소스 컨트롤 관점)
+
+One File Per Actor (OFPA)
+각 액터가 자신만의 독립적인 .uasset 파일을 갖는다. 
+퍼시스턴트 레벨 패키지는 이 개별 파일들에 대한 참조 인덱스 역할만 한다.
+
+
+OFPA 액터 파일들은 __ExternalActors__ 폴더 아래에 위치하며, 
+액터의 GUID를 기반으로 경로가 결정된다.
+
+---
+
+Data Layer
+
+콘텐츠를 비공간적 기준으로 그룹화하는 메커니즘
+공간이 아닌 의미(semantics)에 의한 분류
+
+
+"낮" 레이어에는 낮에만 보이는 NPC와 오브젝트
+"밤" 레이어에는 밤에만 활성화되는 적과 조명
+"퀘스트 A 완료 후" 레이어에는 스토리 진행에 따라 달라지는 오브젝트
+
+
+어떤 액터가 로드되려면 (1) 공간적으로 범위 안에 있어야 하고 (2) 속한 Data Layer가 활성화되어 있어야 한다
+
+---
+
+UWorldPartition은 UWorld에 부착되는 서브시스템이다
+
+게임 시작 시 World Partition은 에디터에서 빌드된 Runtime Hash Grid — 공간 인덱스 구조 — 를 로드한다
+이 그리드는 어느 셀이 어떤 액터들의 참조를 가지고 있는지를 인코딩한 데이터 구조다.
+
+
+매 틱(또는 설정된 주기)마다 AWorldPartitionReplicationManager 또는 UWorldPartitionStreamingPolicy가 
+스트리밍 소스들(플레이어 캐릭터의 위치, 스트리밍 소스로 등록된 카메라 등)로부터 거리를 계산해 
+어떤 셀이 로드 상태여야 하는지 결정한다
+
+계산의 결과가 셀 상태 변화 요청이고, 이 요청은 ULevelStreamingDynamic을 통해 실제 레벨 스트리밍으로 번역된다
+
+---
+
+Persistent Level
+ ├─ SubLevel_Town
+ ├─ SubLevel_Forest
+ ├─ SubLevel_Dungeon
+ └─ SubLevel_Road
+
+VS
+
+One Persistent World
+ ┌──────┬──────┬──────┬──────┐
+ │ Cell │ Cell │ Cell │ Cell │
+ ├──────┼──────┼──────┼──────┤
+ │ Cell │ You  │ Cell │ Cell │
+ ├──────┼──────┼──────┼──────┤
+ │ Cell │ Cell │ Cell │ Cell │
+ └──────┴──────┴──────┴──────┘
+
+Streaming Source 주변 셀만 로드
+멀리 있는 셀은 언로드 또는 HLOD로 대체
+
+“레벨을 사람이 쪼갠다”에서 “월드 전체를 엔진이 공간 그리드로 인덱싱한다”로
+
+---
+
+지금 이 위치 주변에서 실제 UObject로 살아 있어야 하는 Actor는 누구인가?
+
+
+Actor 전체 목록
+  ↓
+Actor Descriptor / Metadata
+  ↓
+공간 좌표 기준으로 Cell에 배치
+  ↓
+Streaming Source 기준으로 필요한 Cell 결정
+  ↓
+Cell 로드
+  ↓
+Actor 실제 생성 / 등록 / BeginPlay / Tick / Render / Collision 참여
+
+---
+
+World Partition은 월드를 그리드로 나눠요. 이 그리드의 각 조각이 Cell이에요
+
+
+Runtime Grid
+ ├─ Cell A
+ │   ├─ Tree_001
+ │   ├─ Rock_004
+ │   └─ EnemyCamp_01
+ ├─ Cell B
+ │   ├─ House_002
+ │   └─ NPC_Trader
+ └─ Cell C
+     ├─ LandscapeProxy
+     └─ FoliageCluster
+    
+---
+
+World Partition은 “무엇을 기준으로 주변을 로드할 것인가?”가 필요
+그 기준점이 Streaming Source
+
+
+대부분의 경우 플레이어가 기본 Streaming Source처럼 작동
+플레이어가 이동하면 주변 셀이 로드되고, 멀어진 셀은 언로드
+
+
+컷신 카메라, 순간이동 목적지, 미리 로드해야 하는 전투 지역 같은 것도 Streaming Source 개념으로 다룰 수 있어요.
+
+이 관점에서 World Partition은 미래에 필요할 공간 데이터를 예측해서 로드하는 시스템
+
+---
+
+Spatially Loaded Actor와 Always Loaded Actor
+
+
+Spatially Loaded Actor
+  위치 기반으로 셀에 들어감
+  Streaming Source 범위 안에 있을 때 로드됨
+
+
+Non-Spatially Loaded / Always Loaded 성격의 Actor
+  공간 셀 거리와 무관하게 로드되어야 함
+  GameMode 관련 배치 Actor, 전역 매니저, 월드 설정성 Actor 등
+
+
+나무, 바위, 건물, 적 캠프, 필드 아이템은 보통 위치 기반 스트리밍 대상
+
+---
+
+World Partition의 Grid가 “공간 기준 분할”이라면, Data Layer는 “의미 기준 분할”
+
+DataLayer_Day
+  ├─ 낮 NPC
+  ├─ 낮 조명
+  └─ 시장 상점
+
+DataLayer_Night
+  ├─ 밤 NPC
+  ├─ 밤 조명
+  └─ 닫힌 상점
+
+DataLayer_Destroyed
+  ├─ 부서진 건물
+  └─ 화재 이펙트
+
+---
+
+World Partition HLOD
+멀리 보이는 산, 도시, 숲
+
+
+HLOD Actor들은 World Partition Cell에 대해 생성
+WorldPartitionHLODsBuilder commandlet으로 생성
+
+합쳐진 저비용 HLOD Actor 표시
+
+---
+
+에디터는 월드 전체의 Actor 정보를 알고 있지만, 실제 작업을 위해 필요한 영역만 로드할 수 있어요
+
+Editor World
+ ├─ 전체 Actor Descriptor는 알고 있음
+ ├─ 현재 작업 영역 Cell만 실제 로드
+ └─ 로드된 Actor만 Details Panel에서 편집 가능
+
+---
+
+Navigation과의 관계
+
+World Partition을 쓰면 NavMesh도 “월드 전체 하나의 거대한 덩어리”로만 생각하기 어려워져요
+
+World Partitioned Navigation Mesh
+
+현재 로드된 공간의 NavMesh는 있는가?
+언로드된 지역으로 Path를 요청하면 어떻게 되는가?
+Data Layer 상태가 NavMesh에 반영되어 있는가?
+
+---
+
+기존 Level Streaming
+
+디자이너가 나눔
+  Town.umap
+  Forest.umap
+  Cave.umap
+
+프로그래머/디자이너가 로딩 규칙 작성
+  Volume 진입
+  Blueprint 호출
+  Trigger 발동
+
+VS
+
+World Partition
+
+엔진이 공간 인덱스 생성
+  Cell_0_0
+  Cell_0_1
+  Cell_1_0 ...
+
+Streaming Source 기준으로 자동 판단
+  이 셀은 로드
+  저 셀은 언로드
+  먼 셀은 HLOD
+
+
+Level Streaming은 “수동으로 문을 열고 닫는 방식”에 가깝고, 
+World Partition은 “월드를 데이터베이스화하고 현재 질의에 맞는 레코드만 메모리에 올리는 방식”
+
+---
+
+실무 Tip
+
+Always Loaded Actor가 Spatially Loaded Actor를 강하게 참조하면, 스트리밍 경계가 흐려질 수 있어요
+대규모 월드에서는 가능한 한 Soft Reference, ID 기반 조회, Subsystem 중재
+
+큰 Bounds를 가진 Actor, Landscape, Spline, 거대한 Trigger Volume은 예상보다 많은 셀에 영향을 줄 수 있어요.
+
+멀리 있는 도시, 숲, 산맥, 구조물을 계속 보여줘야 한다면 HLOD 설계가 필요
+
+이동속도가 빠른 게임에서는 Loading Range와 예측이 중요
+플레이어가 빠르게 이동하면 Streaming Source 주변 셀이 제때 로드되지 않아 hitch, pop-in, collision 부재, 낙하 문제
+
+---
+---
+---
+
+퍼시스턴트 레벨은 월드가 열리는 순간부터 닫히는 순간까지 항상 로드되어 있다. 
+그것은 UWorld::PersistentLevel 포인터로 참조되며, 월드 자체의 정체성과 동일시된다
+
+서브레벨들은 UWorld::StreamingLevels 배열에 ULevelStreaming로 등록되어 있으며, 각각이 독립적으로 로드 상태를 가진다.
+
+---
+
+Unloaded
+처음엔 레벨 패키지가 존재조차 하지 않는다 
+
+Loading
+스트리밍 요청이 오면 UE의 비동기 패키지 로더(FAsyncLoadingThread 또는 Zen Loader)가 .umap 파일을 디스크에서 읽기 시작한다
+
+LoadedNotVisible
+패키지 로드가 완료되면 레벨 안의 액터들이 초기화되지만 아직 UWorld의 실행 컨텍스트에 완전히 합류하지 않은 상태가 된다
+
+LoadedVisible
+이 상태에서 레벨을 Visible 상태로 전환하면 액터들이 렌더링, 틱, 물리에 등록되며 실제로 "존재"하기 시작한다
+
+
+언로드할 때 즉시 패키지를 메모리에서 제거하는 것이 아니라, 먼저 Invisible로 만들고 그 다음 언로드를 진행한다
+
+---
+
+Level Instancing
+
+ULevelStreaming은 **레벨 변환(Level Transform)**을 런타임에 적용할 수 있다.
+ULevelStreaming::LevelTransform
+
+레벨 안의 액터들은 에디터에서 저장된 로컬 좌표를 가지고 있고, 이 좌표에 변환이 더해져 실제 월드 좌표가 된다.
+
+---
+
+ALevelStreamingVolume
+
+매 틱 UWorld::ProcessLevelStreamingVolumes()가 호출되어 플레이어의 위치가 각 스트리밍 볼륨 안에 있는지 확인하고, 
+그 결과에 따라 연결된 ULevelStreaming 객체의 bShouldBeLoaded와 bShouldBeVisible 플래그를 설정한다
+
+이것이 World Partition 이전 시대의 오픈 월드 구현 방식
+
+---
+
+ULevel은 실제 로드된 레벨 데이터예요. Actor들이 들어 있는 실제 레벨 객체
+
+ULevelStreaming은 그 레벨을 어떻게 스트리밍할지 관리하는 제어 객체
+“이 패키지를 로드해야 하는가?”, “로드되었다면 월드에 보이게 해야 하는가?”, “언로드 대기 중인가?”
+
+---
+
+MainWorld.umap          // Persistent Level
+ ├─ TownExterior.umap   // Streaming Level
+ ├─ ShopInterior.umap   // Streaming Level
+ ├─ CaveEntrance.umap   // Streaming Level
+ └─ BossRoom.umap       // Streaming Level
+
+Level Streaming은 “같은 무대에 세트장을 들였다 빼는 것”
+
+---
+
+1. 요청 발생
+   LoadStreamLevel("DungeonRoom")
+
+2. ULevelStreaming 상태 변경
+   ShouldBeLoaded = true
+   ShouldBeVisible = true
+
+3. 비동기 패키지 로드
+   DungeonRoom.umap 로드
+   UPackage / ULevel / Actor 데이터 deserialize
+
+4. Level을 World에 추가
+   AddToWorld
+   Actor / Component 등록
+   Collision / Rendering / Navigation 참여
+
+5. Visible 상태 적용
+   화면에 보이고, 게임플레이 공간에 들어옴
+
+---
+
+ULevelStreaming
+ ├─ 어떤 Level Package를 가리키는가?
+ ├─ 로드되어야 하는가?
+ └─ transform이 있는가?
+
+---
+
+Persistent Level에 등록된 SubLevel
+  Town.umap
+  Cave.umap
+  Dungeon.umap
+
+---
+
+방 하나짜리 .umap을 여러 위치에 인스턴싱하고 싶을 때
+
+Room_A.umap at Location 1
+Room_A.umap at Location 2
+Room_A.umap at Location 3
+
+ULevelStreamingDynamic::LoadLevelInstance
+특정 위치와 회전으로 레벨을 스트리밍
+
+---
+
+SubLevel.umap
+ ├─ Actor A
+ ├─ Actor B
+ ├─ Actor C
+ ├─ Light
+ ├─ StaticMeshActor
+ └─ Nav / 기타 데이터
+
+이 묶음 전체가 로드/언로드
+
+---
+
+Frame N:
+  Loaded: Town, Road
+  Unloaded: Cave, BossRoom
+
+Frame N + 1000:
+  Loaded: Road, Cave
+  Unloaded: Town, BossRoom
+
+---
+
+Level Streaming
+
+로딩 화면 없는 연결
+전체 맵 전환 대신, 플레이 중 뒤에서 로드
+
+
+작업 분리
+서로 다른 sublevel을 작업
+
+Persistent_Level
+Lighting_SubLevel
+Gameplay_SubLevel
+Art_SubLevel
+Audio_SubLevel
+
+
+게임플레이 상태 전환
+Village_Normal.umap
+Village_Burning.umap
+Village_Destroyed.umap
+
+---
+---
+---
+
+World Partition은 Level Streaming 위에 구축된 자동화 레이어이며, 
+런타임에 World Partition의 모든 셀 로딩은 Level Streaming 메커니즘을 직접 구동한다
+
+---
+
+Level Streaming 설계는 콘텐츠를 패키지 단위로 분리하고, 그 패키지의 실행 컨텍스트 진입을 런타임에 제어한다. 
+이 결정은 올바르다. 문제는 이 메커니즘이 완전히 수동이라는 것이다.
+
+무엇이 어떤 패키지에 들어갈지, 어떤 패키지가 언제 로드될지, 그 조건을 누가 판단할지 — 이 모든 결정을 개발자가 직접 내려야 한다
+서브레벨을 손으로 나누고, 스트리밍 볼륨을 손으로 배치하고, 어느 볼륨이 어느 레벨을 트리거하는지 수동으로 연결한다
+결과적으로 생기는 것은 수십 개의 서브레벨 패키지, 수백 개의 스트리밍 볼륨, 이들 사이의 복잡한 수동 관계망이다
+
+---
+
+World Partition
+
+Level Streaming이 수동으로 처리해야 했던 결정들을 자동화한다
+
+World Partition은 이것을 공간 좌표 기반으로 자동 계산한다. 
+액터의 위치를 보고 그것이 속할 셀을 결정하며, 빌드 시에 셀 단위 패키지를 자동으로 생성한다
+
+
+"언제 어떤 패키지를 로드할 것인가"라는 질문에 Level Streaming은 스트리밍 볼륨이나 수동 코드 호출을 요구한다. 
+World Partition은 이것을 스트리밍 소스와의 거리 계산으로 자동화한다.
+런타임에 UWorldPartitionStreamingPolicy가 매 틱 스트리밍 소스들의 위치를 평가하고, 어느 셀이 로드 범위 안에 있는지 판단한 다음, 
+그 판단 결과를 ULevelStreamingDynamic 요청으로 변환한다
+
+---
+
+World Partition의 결정이 ULevelStreamingDynamic으로 번역되는 순간, 
+이후의 처리는 완전히 표준 Level Streaming 파이프라인이 담당한다
+
+비동기 패키지 로더가 셀 패키지를 읽고, 상태 머신이 Unloaded → Loading → LoadedNotVisible → LoadedVisible 전이를 처리하고, 
+틱마다 컴포넌트 등록이 분할 처리된다
+
+World Partition은 이 과정을 전혀 모른다 — 요청만 넣고 결과를 기다린다.
+
+---
+
+수동 Level Streaming이 여전히 유효한 경우
+
+공간 좌표가 아닌 게임 상태에 따라 로드 여부가 결정되는 콘텐츠
+
+퀘스트 완료 후에만 나타나는 지역, 특정 이벤트가 발생했을 때만 존재하는 던전, 챕터 전환에 따라 교체되는 환경
+
+ULevelStreamingDynamic::LoadLevelInstance()를 직접 호출
+
+---
+
+World Partition
+  = 하나의 큰 World를 자동 Grid Cell로 나누고,
+    Streaming Source 주변 Cell을 자동으로 로드·언로드하는 UE5식 월드 스트리밍 시스템
+
+Level Streaming “맵 파일을 메모리에 로드/언로드하고 visibility를 토글하는 기능”
+
+World Partition은 큰 월드를 위한 자동 데이터 관리와 거리 기반 Level Streaming 시스템
+
+---
+
+                         World Streaming 큰 문제
+                                  │
+                ┌─────────────────┴─────────────────┐
+                │                                   │
+        Traditional Level Streaming          World Partition
+                │                                   │
+      사람이 만든 Sublevel 단위            엔진이 만든 Cell 단위
+                │                                   │
+      .umap을 직접 로드/언로드             Grid / Runtime Cell 자동 스트리밍
+                │                                   │
+      Trigger / Volume / Blueprint          Streaming Source / Loading Range
+
+---
+
+Traditional Level Streaming의 답:
+  "사람이 월드를 여러 Sublevel로 나누고, 직접 로드 규칙을 짠다."
+
+World Partition의 답:
+  "하나의 월드를 Actor 단위로 저장하고, 엔진이 공간 Cell로 나눠 자동 스트리밍한다."
+
+---
+
+World Partition에서는 보통 하나의 큰 Persistent World를 유지해요. 
+그리고 엔진이 내부적으로 월드를 Grid Cell로 나눠요.
+
+플레이어나 카메라 같은 Streaming Source 주변 Cell만 로드되고, 멀어진 Cell은 언로드돼요
+
+---
+
+ALandscape  (하나, 항상 로드)
+├── ALandscapeStreamingProxy_5_4_0
+├── ALandscapeStreamingProxy_5_5_0
+│   ...
+
+
+이름의 숫자 _X_Y_0은 이 분할 그리드의 좌표다. _7_7_0은 그리드 (7, 7) 위치의 Proxy이며, 
+마지막 _0은 LOD 레벨 또는 섹션 인덱스다.
+
+---
+
+ALandscape는 World Partition 컨텍스트에서 bIsSpatiallyLoaded = false 로 설정된다. 
+이것은 "공간 스트리밍 대상에서 제외하라"는 표시다. 
+플레이어가 어디에 있든, ALandscape는 항상 로드되어 있다. 
+
+왜냐하면 ALandscape는 지형 전체에 관한 메타데이터 — 섹션 크기, 컴포넌트 수, 머티리얼 레이어 정보 — 를 들고 있으며, 
+각 Proxy가 자신이 무엇의 일부인지 알기 위해 이 정보가 필요하기 때문이다
+
+
+반면 각 ALandscapeStreamingProxy는 bIsSpatiallyLoaded = true다. 
+이것들이 World Partition의 공간 스트리밍 대상이다. 플레이어가 접근하면 로드되고, 멀어지면 언로드된다
+World Partition은 각 Proxy의 공간 바운드를 보고 어느 셀에 배치할지 결정
+
+---
+
+ALandscapeStreamingProxy_7_7_0
+├── LandscapeComponent_238
+├── LandscapeComponent_239
+├── LandscapeComponent_254
+├── LandscapeComponent_255
+├── LandscapeHeightfieldCollisionComponent_0
+├── LandscapeHeightfieldCollisionComponent_1
+├── LandscapeHeightfieldCollisionComponent_2
+├── LandscapeHeightfieldCollisionComponent_3
+└── RootComponent
+
+---
+
+각 ULandscapeComponent는 하나의 렌더링 단위다
+자체적인 버텍스 버퍼, 높이맵 텍스처, 레이어 웨이트맵
+GPU에 독립적으로 드로우콜을 발행
+
+ULandscapeHeightfieldCollisionComponent
+Chaos 물리 엔진에 높이필드(heightfield) 충돌 형상을 등록하는 컴포넌트
+렌더링 컴포넌트와 1:1로 대응
+이 둘이 서로 다른 스레드에서, 서로 다른 타이밍에, 서로 다른 LOD로 작동
+렌더링은 카메라 거리에 따라 LOD를 바꾸지만 물리 충돌 정밀도는 다른 기준으로 결정된다
+
+---
+
+Landscape 내부 분할
+ALandscape → ALandscapeStreamingProxy
+이것은 Landscape 시스템이 자체적으로 관리하는 분할이며
+에디터에서 지형을 생성할 때 섹션 크기 설정에 따라 자동으로 만들어진다
+
+
+World Partition 분할
+ALandscapeStreamingProxy → World Partition Cell
+각 Proxy는 자신의 공간 바운드를 기준으로 하나 이상의 셀에 배정된다
+
+---
+
+Landscape 전체
+  = 여러 LandscapeStreamingProxy Actor들의 집합
+    + 각 Proxy 내부의 LandscapeComponent들
+    + 각 Component에 대응하는 Collision Component들
+
+
+ALandscape
+  전체 Landscape의 중심/대표 Actor
+
+ALandscapeStreamingProxy
+  Landscape의 일부 타일/영역을 대표하는 Actor
+
+---
+
+전체 Landscape
+│
+├─ Proxy_5_5_0
+├─ Proxy_5_6_0
+├─ Proxy_5_7_0
+├─ Proxy_6_5_0
+└─ Proxy_7_7_0
+
+전체 Landscape의 일부를 대신 대표하는 대리자
+
+---
+
+LandscapeStreamingProxy_7_7_0
+  ├─ LandscapeComponent_238
+  ├─ LandscapeComponent_239
+  ├─ LandscapeComponent_254
+  └─ LandscapeComponent_255
+
+LandscapeComponent
+  ├─ 렌더링 단위
+  ├─ LOD 계산 단위
+  ├─ 머티리얼/weightmap 처리 단위
+  ├─ culling 단위
+  ├─ lightmap / virtual texture 관련 단위
+  └─ collision component와 대응되는 지형 단위
+
+
+World
+└─ LandscapeStreamingProxy Actor들
+   └─ LandscapeComponent들
+      ├─ 렌더링
+      ├─ LOD
+      ├─ 머티리얼
+      └─ 지형 표면 데이터
+
+---
+
+Landscape는 일반 Static Mesh처럼 삼각형 Mesh Collision을 단순히 붙이는 방식이 아니라, 
+heightfield 기반 collision을 사용
+
+
+렌더링용 지형
+  LandscapeComponent
+
+물리 충돌용 지형
+  LandscapeHeightfieldCollisionComponent
+
+
+눈에 보이는 땅
+  → Render Scene / LandscapeComponent
+
+발이 닿는 땅
+  → Physics Scene / LandscapeHeightfieldCollisionComponent
+
+---
+
+PersistentLevel
+├─ SubLevel_A
+│  └─ LandscapeStreamingProxy_A
+├─ SubLevel_B
+│  └─ LandscapeStreamingProxy_B
+└─ SubLevel_C
+   └─ LandscapeStreamingProxy_C
+
+
+World Partition Runtime Cell
+├─ LandscapeStreamingProxy_5_5_0
+├─ StaticMeshActor_X
+├─ FoliageActor_Y
+└─ 기타 Actor들
+
+---
+
+Landscape 전체를 LandscapeStreamingProxy_X_Y 격자로 나눔
+
+   X →
+Y   ┌──────┬──────┬──────┐
+↓   │ 5,5  │ 6,5  │ 7,5  │
+    ├──────┼──────┼──────┤
+    │ 5,6  │ 6,6  │ 7,6  │
+    ├──────┼──────┼──────┤
+    │ 5,7  │ 6,7  │ 7,7  │
+    └──────┴──────┴──────┘
+
+
+Proxy 하나가 다시 여러 LandscapeComponent를 묶고 있다
+
+LandscapeStreamingProxy_7_7_0
+  ├─ LandscapeComponent_238
+  ├─ LandscapeComponent_239
+  ├─ LandscapeComponent_254
+  └─ LandscapeComponent_255
+
+---
+
+HLOD0_Instancing / OpenWorld_MainGrid_L0_X-1_Y-1_Z0
+
+
+HLOD 레이어 0
+HLOD 빌더 타입 (Instancing)
+Grid 이름 OpenWorld_MainGrid
+L0: HLOD 레이어 인덱스
+셀 좌표 (X, Y, Z)
+
+---
+
+로드되지 않은 영역은 시각적으로 어떻게 존재하는가
+
+Level Streaming이 "무엇이 존재하는가"의 경계를 제어한다면, 
+HLOD는 존재하지 않는 것의 시각적 유령을 제공한다
+
+원본 콘텐츠가 메모리에 없는 동안, 그것을 대신하는 경량 표현이 항상 렌더링되고 있어야 한다.
+
+---
+
+AWorldPartitionHLOD
+
+World Partition 셀과 1:1 대응
+각 셀마다 하나(또는 레이어 수만큼)의 HLOD 액터가 존재한다
+이름의 좌표 X-1_Y-1_Z0은 바로 그 셀의 그리드 좌표
+
+음수 좌표가 존재하는 것(X-1, Y-1)은 그리드의 원점이 월드 중심(0, 0)에 있고 셀들이 양방향으로 펼쳐져 있기 때문이다
+
+
+원본 셀이 로드 범위 안으로 들어오면 → 그 셀의 콘텐츠가 로드되고 → AWorldPartitionHLOD는 자신을 숨긴다(SetHidden(true))
+원본 셀이 로드 범위 밖으로 나가면 → 콘텐츠가 언로드되고 → AWorldPartitionHLOD가 자신을 드러낸다
+
+두 상태 사이에 순간적인 교차 시점이 있는데, 이 전환이 팝인/팝아웃 없이 부드럽게 이어지도록 전환 거리와 페이드 처리가 설계된다
+
+---
+
+실제 셀 콘텐츠의 로드 반경이 예를 들어 500m라면, HLOD 액터의 로드 반경은 수 킬로미터에 달한다
+멀리서 보이는 실루엣을 제공해야 하기 때문이다
+
+---
+
+HLOD 폴더는 모든 HLOD 레이어의 컨테이너
+
+HLOD0은 첫 번째(가장 세밀한) HLOD 레이어다
+
+레이어가 여러 개 있다면 HLOD1, HLOD2도 존재할 수 있으며, 각 레이어는 더 큰 셀 크기로 더 넓은 거리를 커버한다.
+
+
+HLOD0_Instancing은 이 레이어에서 사용된 HLOD 빌더 타입이다
+HLOD 빌더 타입은 "원본 셀의 콘텐츠를 어떻게 단순화할 것인가"의 전략이다
+
+Instancing 방식은 셀 안의 동일한 스태틱 메시들을 인스턴스 기반으로 통합한다
+원본 메시 에셋을 그대로 쓰되 드로우콜을 GPU 인스턴싱으로 합친다
+
+Merged 방식(모든 메시를 하나의 새 메시로 굽는다)과 대비된다
+
+Instancing은 에셋을 새로 생성하지 않아 빌드 비용이 낮고, 
+Merged는 드로우콜이 단 하나가 되어 런타임 비용이 낮다.
+
+---
+
+ActorTextureStreamingBuildDataComponent_2 
+
+텍스처 스트리밍 메타데이터 컨테이너
+UE의 텍스처 스트리머는 어떤 텍스처의 어느 밉맵을 로드해야 하는지 결정하기 위해 화면상의 텍셀 밀도와 뷰 거리를 사용한다
+
+HLOD 액터는 빌드 타임에 이미 자신의 표시 거리와 크기가 알려져 있으므로, 이 데이터를 사전 계산해 컴포넌트로 저장해둔다
+런타임에 텍스처 스트리머가 이것을 참조해서 적절한 밉맵 레벨을 결정한다.
+
+---
+
+LandscapeMeshProxyComponent_128 
+
+숫자 128은 이 메시 프록시가 사용하는 높이맵 해상도다
+ULandscapeMeshProxyComponent는 지형의 고해상도 높이맵을 저해상도 스태틱 메시로 변환한 결과물이다
+
+---
+
+HLOD는 빌드 타임 프로세스의 산물이다
+HLOD 액터의 내용물 — 병합되거나 인스턴싱된 메시, 사전 계산된 텍스처 스트리밍 데이터는 
+에디터에서 "Build HLOD" 커맨드를 실행할 때 오프라인으로 생성된다.
+
+
+HLOD 생성이 실시간으로 할 수 없는 작업이기 때문이다
+런타임이 처리할 수 없는 복잡도를 에디터 단계에서 처리하고 결과를 에셋으로 저장한다
+
+---
+---
+---
+
+HLOD / WorldPartitionHLOD는 **“언로드된 세계도 완전히 사라지는 것이 아니라, 먼 거리용 대리 Actor로 다시 나타난다”**
+
+---
+
+LOD는 보통 하나의 Mesh 내부에서 거리별로 더 단순한 모델을 쓰는 방식이에요
+
+StaticMeshActor
+└─ StaticMeshComponent
+   ├─ LOD0  // 가까운 거리, 고품질
+   ├─ LOD1
+   ├─ LOD2
+   └─ LOD3  // 먼 거리, 저품질
+
+
+반면 HLOD, 즉 Hierarchical Level of Detail는 하나의 Mesh가 아니라 
+여러 Actor / 여러 Component / 한 지역 전체를 묶어서 먼 거리용 대리 표현으로 바꾸는 시스템이에요
+
+
+가까운 거리
+  Tree_001
+  Tree_002
+  Rock_001
+  House_001
+  Landscape 조각들
+  Fence_001
+  Barrel_001
+
+먼 거리
+  WorldPartitionHLOD Actor 하나 또는 소수의 Proxy Component
+
+---
+
+LOD
+  하나의 Mesh 안에서 디테일을 낮춤
+
+HLOD
+  여러 Actor들의 집합을 하나의 더 싼 표현으로 대체함
+
+---
+
+World Partition은 플레이어 주변 Cell만 실제로 로드하려고 해요
+그런데 먼 Cell을 그냥 언로드하면 문제가 생겨요
+그래서 HLOD가 들어와요.
+HLOD는 World Partition의 “시야 연속성 보존 장치”라고 볼 수 있어요
+
+---
+
+원본 Actor들이 언로드될 수 있도록,
+그 원본들의 시각적 흔적을 별도 Actor로 구워둔 것
+
+---
+
+HLOD와 World Partition의 런타임 교대
+
+
+가까워짐
+  HLOD Actor 숨김 또는 언로드
+  원본 Cell 로드
+  실제 Actor 표시
+
+멀어짐
+  원본 Cell 언로드
+  HLOD Actor 표시
+
+---
+
+Landscape
+  LandscapeStreamingProxy
+    ├─ LandscapeComponent
+    └─ LandscapeHeightfieldCollisionComponent
+
+
+WorldPartitionHLOD
+    └─ LandscapeMeshProxyComponent
+
+---
+
+가까운 곳에서는 Landscape가 실제 Landscape 시스템으로 존재
+먼 곳에서는 단순한 Mesh Proxy 형태로 보일 수 있어요.
+
+---
+
+LandscapeStreamingProxy
+  실제 지형 조각
+  밟을 수 있음
+  Collision 있음
+  Landscape 편집/렌더링 시스템의 일부
+
+
+LandscapeMeshProxyComponent
+  먼 거리 시각 대리자
+  주로 보이기 위한 표현
+  실제 지형 gameplay 공간으로 보면 안 됨
+
+---
+
+ActorTextureStreamingBuildDataComponent_2
+
+이 HLOD Actor가 화면에 어느 정도 크기로 보이는가?
+어떤 Texture Mip이 필요한가?
+언제 더 높은/낮은 Mip을 가져와야 하는가?
+
+---
+
+Instancing
+  같은 Static Mesh들을 인스턴싱해서 묶음
+  원본 모양과 재질을 비교적 보존
+  생성 비용이 낮고 품질 손실이 적음
+
+Merged Mesh
+  여러 Mesh를 하나의 Mesh로 병합
+  draw call 감소
+  재질/UV/텍스처 병합 문제가 생길 수 있음
+
+---
+
+HLOD Actor들은 HLOD Builder가 생성한 결과물이에요.
+
+원본 World
+  ├─ LandscapeStreamingProxy
+  ├─ StaticMeshActor
+  ├─ Foliage
+  └─ 기타 Actor
+
+HLOD Build
+  ↓
+
+생성된 HLOD World
+  ├─ WorldPartitionHLOD_X-1_Y-1_Z0
+  ├─ WorldPartitionHLOD_X-1_Y-2_Z0
+  ├─ WorldPartitionHLOD_X-2_Y-1_Z0
+  └─ ...
+
+
+그래서 원본 배치를 바꾸면 HLOD를 다시 빌드해야 할 수 있어요.
+
+원본 Actor 이동 / 추가 / 삭제
+  ↓
+기존 HLOD가 낡음
+  ↓
+HLOD Rebuild 필요
+
+---
+
+OpenWorld_MainGrid_L0_X-1_Y-1_Z0
+
+HLOD가 World Partition Runtime Grid와 연결되어 있다는 흔적
+
+OpenWorld_MainGrid
+  메인 Runtime Grid
+
+L0
+  HLOD Level 또는 Runtime grid level
+
+X-1_Y-1_Z0
+  Cell 좌표
+
+---
+
+World Partition Near Side
+  실제 Actor들이 로드됨
+
+World Partition Far Side
+  HLOD Actor들이 로드됨
+
+
+가까운 지형
+  LandscapeStreamingProxy
+  LandscapeComponent
+  HeightfieldCollisionComponent
+
+먼 지형
+  WorldPartitionHLOD
+  LandscapeMeshProxyComponent
+
+---
+---
+---
+
+UE의 직렬화 시스템은 월드 안의 객체를 두 범주로 나눈다
+
+AActor에서 파생된 것들은 __ExternalActors__에 저장된다. 
+
+AActor가 아닌 UObject — 레벨 데이터 에셋, 일부 외부화된 컴포넌트 — 는 
+__ExternalObjects__에 저장된다
+
+
+---
+
+__ExternalActors__/ActionRoguelike/Map/P_TestMap/0/1L/ZUY6GZP8RVMCAPYCUE2FSY.uasset
+
+소유 맵의 콘텐츠 경로(/Game/ActionRoguelike/Map/P_TestMap)를 그대로 미러링
+
+0/1L/
+액터의 GUID(ZUY6GZP8RVMCAPYCUE2FSY에 인코딩된)의 앞 몇 바이트를 가져와 디렉토리 경로를 결정한다
+수백 개의 파일을 단일 디렉토리에 두면 대부분의 파일시스템에서 디렉토리 순회 성능이 급격히 저하된다
+두 단계 해시 분산이 각 디렉토리의 항목 수를 일정 이하로 유지한다
+
+이것은 콘텐츠-주소 지정(content-addressable) 스토리지의 고전적인 구현 패턴이다
+Git의 .git/objects/ 디렉토리 구조와 동일한 원리다
+
+---
+
+ZUY6GZP8RVMCAPYCUE2FSY.uasset
+
+이 GUID는 불변이다. 액터가 맵 안에서 이름이 바뀌거나 이동하거나 수정되어도 이 파일명은 바뀌지 않는다
+
+---
+
+GUID → 파일 경로의 결정론적 매핑
+
+GUID의 첫 바이트들을 가져와 16진수 문자열로 변환하고, 그것으로 디렉토리 경로를 구성한다
+
+World Partition은 "이 셀에 어떤 액터들이 있는가"를 런타임 공간 인덱스(Runtime Hash Grid)에서 GUID 목록으로 얻은 다음, 
+각 GUID를 즉시 파일 경로로 변환해서 비동기 로더에 넘길 수 있다
+
+---
+
+World Partition이 런타임에 어떤 셀을 로드해야 한다고 결정하면, 
+실제로 무슨 파일들을 로드해야 하는지 알아야 한다. 
+
+이 정보는 빌드 타임에 생성된 Runtime Spatial Hash 데이터 구조에 인코딩되어 있다
+
+이 구조는 그리드 셀 좌표 → 그 셀에 속하는 액터 GUID 목록의 매핑이다
+
+---
+
+1 Runtime Spatial Hash에서 셀 (X, Y)의 GUID 목록을 얻는다
+2 각 GUID를 파일 경로로 변환한다 (__ExternalActors__/.../해시/GUID.uasset)
+3 비동기 패키지 로더에 이 경로들을 요청한다
+4 각 .uasset이 로드되면 그 안의 액터가 역직렬화되고 월드에 등록된다.
+
+
+디렉토리의 각 파일은 이 흐름에서 하나의 원자적 로딩 단위다
+Level Streaming의 "패키지 단위 로드"라는 개념이 OFPA에서는 "액터 단위 패키지"로 세분화된 것이다.
+
+---
+
+P_TestMap.umap 하나 안에 모든 것이 들어 있지 않다.
+
+P_TestMap.umap
+  + __ExternalActors__
+  + __ExternalObjects__
+  + World Partition runtime data
+  + HLOD generated data
+  + Actor descriptor data
+
+---
+
+Outliner에 Actor로 보이는 것들
+  → 대체로 __ExternalActors__ 쪽
+
+Actor는 아니지만 맵/월드/액터와 연결된 외부 UObject 데이터
+  → __ExternalObjects__ 쪽
+
+---
+
+1. Actor/Object 이름 변경에 덜 취약하게 하기 위해
+
+
+2. 파일 시스템 폴더 하나에 너무 많은 파일이 몰리지 않게 하기 위해
+외부 패키지를 분산 저장하기 위한 해시 버킷
+
+
+3. source control에서 개별 actor/object 파일을 안정적으로 추적하기 위해
+
+---
+
+Traditional Level Streaming
+  사람이 SubLevel .umap들을 나눔
+
+World Partition + OFPA
+  하나의 큰 map에 속한 Actor/Object들을
+  엔진이 외부 패키지 파일로 분산 저장
+
+---
+
+만약 모든 Actor와 Object가 P_TestMap.umap 안에 들어 있다면:
+
+P_TestMap.umap
+  ├─ 모든 Landscape proxy
+  ├─ 모든 HLOD data
+  ├─ 모든 placed actor
+  ├─ 모든 generated object
+  ├─ 모든 map-local object
+  └─ 모든 component-related serialized data
+
+---
+
+UE5 World Partition 감각:
+  Map 파일은 World의 중심 인덱스이고,
+  실제 Actor/Object 데이터는 주변 외부 패키지들에 흩어져 있다.
+
+---
+
+World Partition / OFPA 이후
+
+P_TestMap.umap
+  = World Settings
+  = World Partition 설정
+  = 외부 Actor/Object들과 연결되는 기준 경로
+
+---
+
+Actor 하나를 수정했으면,
+map 전체 파일이 아니라,
+그 Actor의 외부 패키지 파일 하나만 바꾸자.
+
+---
+
+Actor Descriptor
+  ├─ Actor class
+  ├─ Actor name / package
+  ├─ Bounds
+  ├─ Runtime Grid
+  ├─ Data Layer
+  ├─ Spatially Loaded 여부
+  └─ references / tags 등
+
+---
+
+World가 네 번 쪼개져요
+
+파일로 쪼개지고,
+공간으로 쪼개지고,
+상태로 쪼개지고,
+거리 표현으로 쪼개진다.
+
+---
+
+LevelIsPartitioned        → "1"
+LevelIsUsingActorFolders  → "1"  
+LevelIsUsingExternalActors → "1"
+
+---
+
+bIsSpatiallyLoaded = false로 설정된 항상 로드되는 액터들
+
+WorldExternalActorsReferences
+
+공간 스트리밍 대상이 아닌 액터들만 퍼시스턴트 맵이 직접 참조를 보유한다
+
+---
+
+Import Table
+패키지가 외부에서 가져오는 것들
+
+/Game/ActionRoguelike/Map/P_TestMap_HLOD0_Instancing
+/Game/ActionRoguelike/World/BP_ExplosiveBarrel
+/Game/ActionRoguelike/World/BP_Lever
+/Game/ActionRoguelike/World/BP_ProjectileSpammer
+/Engine/EngineMaterials/WorldGridMaterial
+/Script/CoreUObject
+/Script/Engine
+/Script/NavigationSystem
+/Script/ActionRoguelike
+/Script/BlueprintGraph
+
+
+HLOD 패키지가 임포트 테이블에 있다. 퍼시스턴트 맵이 HLOD 데이터를 직접 참조하고 있다
+HLOD 액터가 bIsSpatiallyLoaded = false로 로드 범위 관계없이 존재하기 때문
+
+---
+
+Export Table
+이 패키지 안에 실제로 존재하는 객체들 (& 공개하는 것들)
+
+PersistentLevel         (ULevel)
+P_TestMap               (UWorld)
+P_TestMap_C             (BlueprintGeneratedClass - LevelScript)
+WorldSettings           (AWorldSettings)
+WorldPartition          (UWorldPartition)
+WorldDataLayers         (AWorldDataLayers)
+ContentBundleManager
+NavigationSystemConfig
+LevelScriptBlueprint    (Blueprint - 이것이 BP 그래프 전체를 담고 있다)
+EditorHash              (WorldPartitionEditorSpatialHash)
+
+
+ExecuteUbergraph_P_TestMap
+Level Script는 레벨 자체의 일부이므로 퍼시스턴트 패키지에 남아 있다
+
+---
+---
+---
+
+AWorldSettings의 멤버로 TObjectPtr<UWorldPartition> WorldPartition이 선언
+
+UWorld accesses it through GetWorldSettings()->GetWorldPartition()
+
+UWorld → AWorldSettings → UWorldPartition
+
+---
+
+UWorldPartition::Initialize() gets called during world setup
+
+---
+
+UWorldSubsystem
+UWorldPartitionSubsystem 
+
+tick through the subsystem manager during the world tick
+
+---
+
+UEngine::LoadMap() or UWorld::InitWorld() 
+
+---
+
+World Partition에 스트리밍 소스가 등록되는 시점
+
+IWorldPartitionStreamingSourceProvider 인터페이스를 구현한 객체가
+UWorldPartition::RegisterStreamingSourceProvider(this)를 호출
+
+
+APlayerController는 이 인터페이스를 구현하며, APlayerController::OnPossess() 또는 BeginPlay() 시점에 등록한다
+
+---

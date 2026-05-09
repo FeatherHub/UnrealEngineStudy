@@ -1,0 +1,382 @@
+C++ 타입 정보를 런타임에 쿼리 가능한 데이터 구조로 변환하는 것
+
+---
+
+DECLARE_FUNCTION(execMethod);
+
+static void execMethod(UObject* Context, FFrame& Stack, void* Result) 형태의 시그니처를 선언
+이것이 thunk 함수 — 네이티브 C++ Method(float)를 Blueprint VM의 스택 기반 호출 규약으로 감싸는 어댑터다
+
+---
+
+INCLASS_NO_PURE_DECLS
+
+static void StaticRegisterNatives URogueSimpleObject();
+
+함수 이름 → execXxx 포인터 매핑을 등록
+gen.cpp에서 구현된다
+
+---
+
+DECLARE_CLASS2 
+
+StaticClass(), GetClass(), StaticPackage() 등
+
+---
+
+ENHANCED_CONSTRUCTORS
+
+UObject는 복사/이동이 금지된다. GC가 오브젝트의 생명주기를 소유하기 때문이다.
+
+URogueSimpleObject(URogueSimpleObject&&) = delete;
+URogueSimpleObject(const URogueSimpleObject&) = delete;
+
+
+VTABLE_PTR_HELPER_CTOR 계열은 Hot Reload 지원을 위한 것이다
+재컴파일 후 vtable 포인터를 패치할 수 있도록 특수 생성자를 제공한다
+
+---
+
+프로퍼티 디스크립터
+
+const UECodeGen_Private::FFloatPropertyParams 
+
+Z_Construct_UFunction_URogueSimpleObject_Method_Statics::NewProp_MyArg 
+
+{
+    "MyArg",                               // 이름
+    nullptr,                               // RepNotify 함수명 (없음)
+    (EPropertyFlags)0x0010000000000080,    // CPF_Parm | CPF_HasGetValueTypeHash
+    UECodeGen_Private::EPropertyGenFlags::Float,
+    RF_Public|RF_Transient|RF_MarkAsNative,
+    nullptr, nullptr,
+    1,                                      // ArrayDim
+    STRUCT_OFFSET(RogueSimpleObject_eventMethod_Parms, MyArg), // 오프셋
+    METADATA_PARAMS(0, nullptr)
+};
+
+---
+
+Blueprint에서 Method를 호출하면: Blueprint VM이 execMethod를 찾아 호출
+execMethod가 스택에서 인수를 꺼내 네이티브 Method(float)를 직접 호출
+결과를 Z_Param__Result에 씀
+
+
+DEFINE_FUNCTION(URogueSimpleObject::execMethod)
+{
+    P_GET_PROPERTY(FFloatProperty, Z_Param_MyArg);
+    P_FINISH;
+    P_NATIVE_BEGIN;
+    *(bool*)Z_Param__Result = P_THIS->Method(Z_Param_MyArg);
+    P_NATIVE_END;
+}
+
+---
+
+클래스 전체의 리플렉션 데이터
+
+Z_Construct_UClass_URogueSimpleObject_Statics
+
+---
+
+GENERATED_BODY() 는 UHT 가 만든 여러 선언을 클래스 몸 안에 끼워 넣는 접속 슬롯입니다
+
+---
+
+UFUNCTION()
+bool Method(float MyArg);
+
+#define FID_..._RPC_WRAPPERS_NO_PURE_DECLS \
+    DECLARE_FUNCTION(execMethod);
+
+
+execMethod 는 같은 클래스의 멤버 함수로 선언됩니다
+그래서 private 함수인 Method 를 호출할 수 있습니다
+
+---
+
+UFunction* Z_Construct_UFunction_URogueSimpleObject_Method()
+{
+    static UFunction* ReturnFunction = nullptr;
+    if (!ReturnFunction)
+    {
+        UECodeGen_Private::ConstructUFunction(&ReturnFunction, Z_Construct_UFunction_URogueSimpleObject_Method_Statics::FuncParams);
+    }
+    return ReturnFunction;
+}
+
+
+void URogueSimpleObject::StaticRegisterNativesURogueSimpleObject()
+{
+    UClass* Class = URogueSimpleObject::StaticClass();
+    static const FNameNativePtrPair Funcs[] = {
+        { "Method", &URogueSimpleObject::execMethod },
+    };
+    FNativeFunctionRegistrar::RegisterFunctions(Class, Funcs, UE_ARRAY_COUNT(Funcs));
+}
+
+---
+
+왜 struct인가
+
+네임스코프 격리
+friend 선언의 필요성
+
+---
+
+왜 static 인가
+
+저장 위치 - BSS/rodata 영역에 배치
+리플렉션 메타데이터는 프로그램 생애 전체에 걸쳐 존재해야 한다
+
+
+_Statics가 보내는 신호
+ 
+인스턴스화 하지 말아라
+
+---
+---
+---
+---
+---
+
+FProperty가 공개하는 핵심 연산 계약
+
+InitializeValue       (void* dest)
+DestroyValue          (void* dest)
+CopyCompleteValue     (void* dest, void* src)
+SerializeItem         (FArchive&, void* data, ...)
+AddReferencedObjects  (FReferenceCollector&, void* data)
+
+---
+
+TArray<TArray<UObject*>>는 구조는 있지만 의미가 없다. 
+두 겹의 배열이라는 것은 알 수 있지만, 내부 배열이 게임 세계에서 무엇인지는 알 수 없다.
+
+USTRUCT는 그 의미를 강제로 부여한다. 이름을 짓는 행위 자체가 "이 구조가 무엇인지"를 선언하는 것이다.
+
+
+Outer List
+  [0]  ──→  Inner List
+              [0]  "hello"
+              [1]  "world"
+  [1]  ──→  Inner List
+              [0]  "foo"
+  [2]  ──→  Inner List
+              (empty)
+
+
+Wave List
+  [0]  EnemyWave
+         EnemyTypes: [Goblin, Orc, Troll]
+         SpawnCount: 10
+  [1]  EnemyWave
+         EnemyTypes: [Dragon]
+         SpawnCount: 1
+         
+---
+---
+---
+
+FProperty object graph 의 표현 불가능성이 아니라,
+UHT / public reflection grammar 가 container-as-element 를 정책적으로 금지한다
+
+---
+
+Array<Array<T>> 뿐 아니라 Map<Array<T>, Set<Map<K,V>>> 같은 조합도 원칙적으로 Account 해야 하게 된다
+
+Editor,
+Blueprint
+
+---
+
+ValueProperty가 UhtIntProperty든 UhtStructProperty든 UhtArrayProperty든, 이 코드는 그냥 위임한다. 
+타입을 검사하지 않는다. 각 타입이 자기 코드 생성 방법을 안다
+전형적인 OOP 설계
+
+---
+
+TOptional의 비대칭
+
+
+// UhtArrayProperty
+PropertyCaps &= ~(CanBeContainerValue | CanBeContainerKey);
+
+// UhtOptionalProperty
+PropertyCaps &= ~(CanBeContainerKey);   // CanBeContainerValue는 제거하지 않음
+
+---
+---
+---
+
+UField / FField 가 포착하는 추상화
+
+Type theory에서 field는 "어떤 scope에 이름을 가지고 속하는 것"
+
+Reflection 시스템이 하는 일은 이름으로 찾는 것이다
+
+"어떤 outer scope 안에 이름을 가지고 존재하는 것"
+
+scope-내의 이름 있는 존재
+
+---
+
+UClass 는 UObject 세계의 type object 입니다.
+
+어떤 UObject instance
+  → GetClass()
+  → UClass
+
+
+FFieldClass 는 FField 세계의 type object 입니다.
+
+어떤 FIntProperty instance
+  → GetClass()  // FField 에서 정의됨
+  → FFieldClass(FIntProperty)
+
+---
+
+UScriptStruct 는 인스턴스 안에 있는 것이 아니라, 그 값을 해석하는 외부 설명서입니다
+USTRUCT 인스턴스는 자기 타입을 들고 다니지 않습니다
+
+
+UObject*는 항상 런타임 다형성의 문맥에 있다
+UObject* obj = GetSomething();   // 실제론 AMyActor일 수도, UDataAsset일 수도
+obj->GetClass();                  // 런타임에야 알 수 있음
+
+
+포인터 뒤에 무엇이 있는지 컴파일 타임에 모른다. 
+그래서 각 인스턴스가 ClassPrivate를 직접 들고 있어야 한다.
+
+---
+
+void* structPtr만 주어졌을 때, 그 struct가 무슨 타입인지 물어볼 방법이 없다
+
+그래서 FStructProperty는 UScriptStruct*를 스스로 보관한다
+
+class FStructProperty : public FProperty {
+    UScriptStruct* Struct; 
+};
+
+---
+
+UFUNCTION()
+void Foo(int32&& Value); // Refleticon 경계에 && 가 노출됨
+
+---
+
+UFUNCTION()
+void Foo(int32 Value)
+{
+	int32&& Temp = 10;
+}
+
+여기서 && 는 함수 바깥으로 노출되지 않습니다
+Refleticon 경계에 닿지 않습니다
+
+
+&& 가 Refleticon 경계에 있느냐, 바깥에 있느냐가 결정적입니다
+
+---
+
+DEFINE_FUNCTION(URogueSimpleObject::execMethod)
+{
+    P_GET_PROPERTY(FFloatProperty, Z_Param_MyArg);   // FFrame → 로컬 복사
+    P_FINISH;
+    P_NATIVE_BEGIN;
+    *(bool*)Z_Param__Result = P_THIS->Method(Z_Param_MyArg);  // ← 이 선을 넘으면
+    P_NATIVE_END;
+}
+
+Method(float MyArg) 의 중괄호 안은 순수 C++ 세계
+Reflection 시스템은 이 경계 안을 볼 수 없다. 
+
+---
+
+UMyActor* A = NewObject<UMyActor>();
+UMyActor B = std::move(*A);  // B는 다른 주소에 있다
+
+
+A의 주소를 가리키던 모든 참조가 일순간 dangling이 된다.
+GC는 A의 주소를 추적하고 있었지 B의 주소를 모른다. 
+
+---
+---
+---
+
+GUObjectArray: FUObjectArray 
+
+struct FUObjectItem
+{
+    UObjectBase* Object;        // pointer to the UObject
+    int32 Flags;                // EInternalObjectFlags
+    int32 ClusterRootIndex;     // for GC clustering
+    int32 SerialNumber;         // for weak pointer validation
+};
+
+
+GC가 오브젝트의 내부를 볼 필요 없이 엔트리만 보고 많은 결정을 내릴 수 있다.
+오브젝트 본체에는 접근하지 않고도 GC 작업을 할 수 있게 한다.
+
+---
+
+EInternalObjectFlags
+
+EObjectFlags(오브젝트 자체에 있는 RF_Public, RF_Transient 등)와 별개
+
+EInternalObjectFlags는 GC 전용 내부 상태다
+
+Unreachable        — GC 마크 단계에서 "아직 도달되지 않음"
+RootSet            — 이 오브젝트를 루트로 삼아 Reachability 분석을 시작
+ClusterRoot        — GC 클러스터의 루트
+ReachableInCluster — 클러스터 내에서 도달 가능
+Async              — 비동기 로딩 관련
+
+Native             — 엔진 초기화 시점에 C++ 코드가 직접 등록한 오브젝트들
+
+---
+
+struct TWeakObjectPtr
+{
+    int32 ObjectIndex;        // GUObjectArray 의 인덱스
+    int32 ObjectSerialNumber; // 생성 당시의 SerialNumber
+};
+
+오브젝트가 소멸되면 GUObjectArray[i].Object는 null이 되고, 그 슬롯은 재사용 대기 상태가 된다. 
+새 오브젝트가 같은 슬롯을 할당받을 때 SerialNumber가 증가한다.
+
+---
+
+Sweep 단계 — GUObjectArray 선형 순회
+
+Sweep은 GUObjectArray를 처음부터 끝까지 선형으로 읽는다
+
+
+GarbageCollectionKeepFlags = Native | Async | AsyncLoading
+
+for each FUObjectItem in GUObjectArray
+    if (item.Flags & Unreachable) && !(item.Flags & GarbageCollectionKeepFlags):
+        → BeginDestroy, FinishDestroy, 메모리 해제
+
+---
+
+Mark 단계 — 그래프 순회, GUObjectArray 순회가 아니다
+
+Mark 단계는 다르다. GUObjectArray를 선형으로 훑지 않는다.
+
+1. 루트셋에서 시작: RootSet, Native 오브젝트 등을 작업 큐에 넣음
+
+2. 큐를 소진할 때까지:
+    오브젝트를 꺼냄
+    → Unreachable 플래그 해제
+    → 이 오브젝트의 Reference Token Stream을 실행
+       (어떤 offset에 UObject*가 있는지 미리 컴파일된 정보)
+    → 발견된 UObject* 들을 큐에 추가
+
+---
+
+UObject GC 의 sweep 대상 universe 는 C++ 전체 heap 이 아니라 등록된 UObject 집합입니다
+
+그 집합을 선형으로 잡아놓은 것이 GUObjectArray 입니다
+
+---
