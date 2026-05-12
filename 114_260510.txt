@@ -1,0 +1,309 @@
+함수 정의 자체는 어떤 값과도 묶이지 않은 매개 슬롯들을 외부로 노출한 미완성의 계산
+
+타입화된 결손
+
+definition-site vs call-site
+intensional vs extensional
+abstract vs concrete
+
+---
+
+UNiagaraComponent::SetVariableFloat("User.Intensity", 5.0f)
+
+Niagara 가 내부적으로 parameter 를 FNiagaraVariable 로 표상
+
+---
+
+UNiagaraSystem ↔ FNiagaraSystemInstance
+
+UNiagaraEmitter / FVersionedNiagaraEmitterData ↔ FNiagaraEmitterInstance
+
+UNiagaraScript ↔ FNiagaraScriptExecutionContext / FNiagaraComputeExecutionContext
+
+UNiagaraRendererProperties ↔ FNiagaraRenderer
+
+UNiagaraDataInterface ↔ PerInstanceData
+
+---
+
+UNiagaraComponent 
+
+모든 instance 를 잡아주는 경계 객체
+내부에 FNiagaraSystemInstance 를 소유
+
+같은 시스템 asset 이 레벨에 100번 배치되면 1 개의 UNiagaraSystem + 100 개의 FNiagaraSystemInstance
+
+---
+
+여기에 재사용 단위 세 종: Function, Module, DynamicInput
+
+---
+
+런타임 데이터는 세 자리 중 하나에 있다.
+
+
+(1) FNiagaraDataSet — per-emitter 파티클 attribute 저장소
+
+두 개의 FNiagaraDataBuffer (current / destination) 를 보유
+각 DataBuffer 는 SoA (Structure of Arrays) 레이아웃
+
+
+(2) FNiagaraParameterStore — parameter map 의 런타임 표현
+모든 namespaced parameter (User., System., Emitter. 등) 가 결국 이 store 의 한 자리
+
+
+(3) UNiagaraDataInterface
+Niagara 가 외부 세계의 어떤 것을 샘플하거나 쓰려 할 때는 항상 DataInterface 추상화를 거친다
+
+---
+
+UNiagaraScriptSourceBase 가 보유한 UNiagaraGraph (UEdGraph)
+노드들은 NiagaraNode 의 자손
+
+
+이 그래프가 컴파일되어 두 갈래로 갈라진다
+
+CPU 경로: 그래프 → Niagara VM 바이트코드 → FNiagaraVMExecutableData
+런타임에 FNiagaraScriptExecutionContext 가 이걸 들고 VM 으로 실행
+
+컴파일 결과의 정체성은 FNiagaraVMExecutableDataId 라는 hash 가 결정
+
+
+GPU 경로: 그래프 → FHlslNiagaraTranslator → HLSL 소스 → 표준 셰이더 컴파일러 → FNiagaraShader
+NiagaraShader 모듈이 셰이더 측 컴파일/관리
+
+---
+
+FNiagaraWorldManager 
+ParameterCollection tick 의 주체
+ScalabilityManager 의 호스트
+
+
+FNiagaraSystemSimulation 
+같은 시스템 asset 의 모든 인스턴스가 여기 모여 함께 tick 된다
+이게 batched simulation 의 핵심
+단순 per-component tick 이 아님
+
+System 레벨 spawn/update 스크립트가 여기서 실행
+결과가 각 EmitterInstance 로 흘러간다
+
+각 EmitterInstance 는 자기 FNiagaraDataSet 과 (GPU 면) FNiagaraComputeExecutionContext 을 소유
+ComputeExecutionContext 는 render thread 측 더블 버퍼 DataBuffers_RT[2] 까지 분리해서, 
+game thread 시뮬레이션과 render thread 렌더가 같은 데이터에 충돌 없이 swap 으로 협조하게 한다
+
+
+FNiagaraSystemInstance 
+한 UNiagaraComponent 가 소유하는 단일 인스턴스
+
+
+FNiagaraGpuComputeDispatchInterface 
+per-FXSystem (≈ per-Scene) GPU dispatch 관리자
+ExecuteTicks 로 한 프레임의 모든 GPU sim tick 을 모아 render graph 에 dispatch
+
+---
+
+World → System(simulation 배치) → Component(SystemInstance) → Emitter → DataSet 갱신
+
+---
+
+UNiagaraRendererProperties (asset)
+
+Sprite / Mesh / Ribbon / Light / Decal / Volume / Component 
+
+각 emitter 가 RendererProperties[] 를 보유
+
+한 emitter 가 동시에 Sprite + Mesh + Ribbon 셋을 모두 렌더할 수 있다
+
+---
+
+FNiagaraRenderer (runtime) 
+
+RendererProperties 가 생성한 런타임 렌더러
+
+frame-specific render-thread payload (FNiagaraDynamicDataBase)를 생성
+
+---
+
+FNiagaraSceneProxy 
+
+UNiagaraComponent 의 FPrimitiveSceneProxy
+
+UE 표준 렌더링 파이프라인이 직접 보는 객체
+
+GetDynamicMeshElements 에서 자기가 가진 모든 FNiagaraRenderer 의 dynamic data 를 종합해 
+mesh batch 들을 collector 에 등록
+
+---
+
+FNiagara{Sprite,Mesh,Ribbon}VertexFactory
+
+NiagaraVertexFactories 모듈에 거주
+
+vertex factory 의 셰이더가 instanceID 로 인덱싱해서 
+Position[i], Color[i], Size[i] 를 서로 다른 buffer 에서 읽어 한 vertex 를 조립
+
+---
+
+Niagara 는 어떻게 particle 의 mesh batch 를 만들지까지 가 자기 책임이고, 그 다음 UE 가 받아간다.
+
+---
+
+UNiagaraEffectType, scalability profile asset
+"이런 종류 이펙트는 동시에 N 개까지", "거리 D 이상이면 컬링", "프레임 예산 초과 시 우선순위 낮음" 등
+
+
+UNiagaraComponentPool 
+빈번한 spawn/destroy 비용 회피 풀
+
+
+FNiagaraPlatformSet 
+어떤 quality 레벨 / 플랫폼에서 동작할지를 emitter/system 별로 격리
+
+
+UNiagaraCullProxyComponent 
+정밀 시뮬레이션 대신 가벼운 대리 렌더링
+
+---
+
+UNiagaraDataChannel 
+
+pub/sub 데이터 채널
+UNiagaraDataChannelWriter / UNiagaraDataChannelReader 가 양단
+임팩트 위치 한 번 publish → 여러 이펙트가 동시에 receive 해 각자 spawn.
+
+---
+
+Stateful emitter (UNiagaraEmitter)
+
+매 tick 모든 particle 의 상태를 저장 하고 갱신
+매 tick 이전 상태에서 다음 상태로 누적적으로 전진
+
+
+Stateless emitter (UNiagaraStatelessEmitter) 
+
+입자 상태를 저장하지 않고 time t 로부터 해석적으로 계산.
+Internal/Stateless/Modules/ 에 들어있는 모듈들
+
+---
+
+UNiagaraSimulationStageBase 
+
+ParticleUpdateScript 외에 임의 추가 시뮬레이션 패스 정의
+Niagara 가 단순 파티클 시뮬을 넘어 GPGPU 플랫폼이 된 통로
+
+---
+
+UNiagaraSimCache 
+
+시뮬을 시간에 따라 기록한 asset. 재생 시 시뮬을 다시 안 돌리고 cache 송출.
+
+
+NiagaraBakerOutput / NiagaraBakerSettings
+
+시뮬레이션을 오프라인에서 굽기
+Volume Texture / Static Mesh / Sparse Volume Texture / Texture2D 등으로 변환
+
+
+동적 시뮬레이션을 정적 데이터로 변환 하여 런타임 비용을 제거
+시뮬레이션 정의 자체는 손대지 않고, 그 결과 만 응고시킨다.
+
+---
+
+한 tick 동안의 실행 순서를 펼치면
+
+1 System Spawn (시스템 첫 활성화 시 1회)
+2 System Update (매 tick)
+
+3 각 emitter 에 대해:
+  Emitter Spawn (emitter 첫 활성화 시 1회)
+  Emitter Update (매 tick, 1회)
+  Particle Spawn (이번 tick 에 새로 만들어질 N 개의 입자 각각)
+  Particle Update (현존하는 모든 입자 각각)
+  Sim Stages (옵션, 별개 thing — 아래에서 짧게)
+  Event Handlers (옵션)
+
+4 Render
+
+---
+
+Stage 의 격자
+
+스코프 (3): System / Emitter / Particle — 무엇의 상태인가
+위상 (2): Spawn / Update — 언제 (한 번 / 매 tick)
+
+거기에 변형/보조 stage 
+
+ParticleSpawnScriptInterpolated (intra-frame 보간), 
+ParticleEventScript (이벤트 응답), 
+ParticleSimulationStageScript (커스텀 패스)
+
+---
+
+"Sim Stage" 는 완전히 다른 것
+
+위에서 다룬 stack stage
+
+Simulation Stage (UNiagaraSimulationStageBase) 
+GPU compute 위에서 Particle Update 이후에 추가로 돌릴 임의 커스텀 패스
+
+자기 iteration source (입자? Grid2D 의 cell? Grid3D 의 voxel?) 와 stack context 를 가진다
+
+
+---
+
+Emitter Spawn / Update
+
+"이번 tick 에 몇 개를 spawn 할지" 라는 결정이 어디에 살아야 하는가?
+매 tick 1회 돌면서 "이번 frame 에 spawn rate × deltaTime 개를 spawn"
+"burst 이벤트로 50 개 추가" 같은 결정
+
+
+그 결과를 FNiagaraSpawnInfo 류의 출력으로 시스템에 알린다
+시스템이 그 N 을 받아 DataSet 에 N 개의 새 slot 을 할당한 다음, ParticleSpawn 을 N 번 dispatch
+
+---
+
+emitter 가 자기가 spawn 한 입자들보다 오래 산다
+
+자기 나이 (Emitter.Age) — 0 → 30 단조 증가.
+자기 루프 상태 (Emitter.LoopAge, CurrentLoopIndex) — 사이클을 돌고 있는지, 몇 번째 루프인지.
+자기 위상 — 예컨대 1 초마다 강하게 펄스하는 분수라면 sin(2π · LoopAge / LoopDuration) 같은 값.
+
+---
+
+Spawn 과 Update 의 분리
+Emitter Spawn 은 첫 활성화 시 한 번만 실행됨이 보장
+
+---
+
+DataSet 
+
+입자만이 아니라 시스템 인스턴스 파라미터, event record, sim stage 의 iteration source 등 비-입자 상황에도 그대로 쓰인다
+
+만약 "ParticleArray" 였다면 이 재사용이 부자연스러웠을 것이다. "DataSet" 은 입자성을 추상화에서 제거 한다
+
+
+
+사용자 UI / 문서 / 입자 컨텍스트 → "Attribute"
+
+백엔드 저장·메모리·전송 계층 → "Data"
+
+
+Attribute 는 의미를 함의하고 ("이건 입자가 가진 위치속성 이다"), 
+Data 는 의미를 비운다 ("이건 그냥 Float buffer 의 N 번째 column")
+
+같은 DataSet/DataBuffer 메커니즘이 grid cell, event record, sim cache frame 같은 
+입자가 아닌 row 들에도 그대로 적용된다
+
+---
+
+DataInterface 는 함수 집합을 노출한다
+실제로 어떻게 자원에 닿는지는 DI 구현체가 알아서 한다
+
+
+---
+
+Set, Buffer, Store, Binding, Interface
+GPU compute / RHI / shader programming 의 어휘
+
+---
