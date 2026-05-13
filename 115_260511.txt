@@ -1,0 +1,841 @@
+기존 Parameter Map을 받음
+→ 필요한 값을 읽음
+→ 계산함
+→ 일부 값을 덮어씀
+→ 다음 모듈로 Parameter Map을 넘김
+
+---
+
+FNiagaraParameterStore
+  ├─ User.SpawnRate     → float bytes
+  ├─ User.Color         → linear color bytes
+  ├─ User.Mesh          → UObject / DataInterface reference
+  └─ System.RandomSeed  → int bytes
+
+Particle DataSet
+  Particles.Position[0]
+  Particles.Position[1]
+  Particles.Position[2]
+  ...
+
+---
+
+Namespace는 변수 이름 앞부분
+
+1. 이름 충돌 방지
+2. 데이터 소유자 표시
+3. 접근 가능 범위와 저장 위치에 대한 힌트 제공
+
+
+Particles.Position
+“각 파티클의 위치 attribute구나”
+
+User.Position
+“외부에서 넣어주는 사용자 파라미터구나”
+
+---
+
+Module
+
+Stack에서 보는 블록
+
+각 Module은 작게 보면 이런 함수
+
+Parameter Map In
+→ module logic
+→ Parameter Map Out
+
+
+Gravity Force Module
+  reads  : Particles.Mass, Emitter.Gravity, DeltaTime
+  writes : Particles.Force or Particles.Acceleration
+
+---
+
+컴파일러는 단일한 Parameter Map 을 보지만, 런타임에는 그게 여러 backend 로 흩어진다
+
+System./Emitter./User. parameter → 각 단위의 ParameterStore 로
+
+Particles. parameter (= Attribute) → DataSet 의 column 으로 (ParameterStore 아님)
+
+Engine. parameter → 엔진이 외부에서 주입
+
+---
+
+UNiagaraScript, ENiagaraScriptUsage
+
+Usage = ParticleSpawnScript / ParticleUpdateScript / EmitterUpdateScript / SystemSpawnScript / SystemUpdateScript / ...
+Stage Script (그냥 "Script")
+
+Usage = Module
+사용자 UI 에서 Module
+
+Usage = Function 또는 DynamicInput
+더 낮은 수준의 재사용 단위
+
+---
+
+1. SpawnRate 라는 UNiagaraScript (usage=Module) 가 프로젝트의 어떤 asset 으로 존재.
+2. Emitter Update 그래프에 그것을 가리키는 FunctionCall 노드 추가.
+3. 컴파일 시점에 SpawnRate 의 코드가 EmitterUpdateScript 안으로 inline.
+4. 런타임에 실행되는 것은 단 하나 — 거대해진 EmitterUpdateScript.
+
+Module 의 코드가 Stage Script 의 일부로 컴파일되어 Stage Script 가 실행될 때 함께 실행된다
+컴파일 시점에는 Module Script 의 코드가 각 Module 의 자리에 inline 되어 Stage Script 안으로 흡수
+
+---
+
+사용자는 module 을 블록 으로 보고 stack 에 부착 한다
+
+컴파일러는 Stage Script 의 그래프 안에 인라인된 코드 조각 으로 본다
+module 도 그저 script 의 한 종류
+
+---
+
+Parameter: script 의 parameter map 흐름에 참여. 
+NiagaraNodeParameterMapGet 노드가 Particles.Position 을 끌어내고, 
+NiagaraNodeParameterMapSet 노드가 새 값을 쓴다
+namespace prefix 로 분류
+어떤 저장소 (ParameterStore 또는 DataSet) 에 살게 됨.
+
+
+Attribute: per-particle 로 저장되는 Parameter.
+DataSet 의 column 에 거주
+SoA 로 double-buffered. 
+매 frame 입자별로 갱신.
+
+
+Data: 컴파일 후 DataBuffer 의 Float component slots 0, 1, 2 (x, y, z 의 SoA column 셋)
+매 입자의 위치 값들이 이 세 column 의 row 들에 거주
+
+---
+---
+---
+---
+---
+---
+
+Python Editor Script Plugin에는 내장 Python이 포함되어 있어서 별도로 Python을 설치하지 않아도 됩니다. 
+문서에는 Python 3.11.8이 내장되어 있다고 나옵니다
+
+Output Log의 Python Console에서 Unreal Editor의 console input bar를 Python 코드 입력으로 전환할 수 있습니다
+
+---
+
+/Game/Weapons 아래의 모든 Material Instance를 찾아서
+Scalar Parameter "RoughnessBoost"를 0.3으로 바꾸고
+저장해라.
+
+- Sequencer 일괄 조작 (Virtual Production / LED 월 / 시네마틱 워크플로)
+- CI/CD: nightly 빌드가 에디터를 headless 로 띄워 Python 스크립트로 자산 검증·일괄 패키징
+- 1000 개의 FBX 를 특정 설정으로 일괄 import
+- Maya / Houdini / Blender 로부터 자산 자동 동기화
+
+---
+---
+---
+
+Module Script vs Module
+정의 파일/그래프        vs   Stack에 꽂힌 사용 인스턴스
+
+Stage vs Module Group
+언제 실행되는가        vs   어느 Stack 구획에 놓이는가
+
+
+Module Script = 함수 정의
+Module        = 함수 호출 / Stack Entry
+
+
+// Module Script
+void AddVelocity(FVector V);
+
+
+// Stack 안의 Module
+AddVelocity(FVector(0, 0, 500));
+AddVelocity(FVector(100, 0, 0));
+
+
+1:N 관계: 한 Module Script 가 여러 Module (호출 사이트) 으로 사용된다
+"Spawn Rate" 를 Emitter A 의 Emitter Update 와 Emitter B 의 Emitter Update 에 각각 
+각 Module 은 자기만의 input 바인딩을 가짐
+
+---
+
+Module Script:  Add Velocity
+  내부 그래프:
+    읽음  : Input.Velocity
+    씀    : Particles.Velocity
+
+
+Stack에서의 Module:
+  Particle Spawn
+    └─ Add Velocity
+         Velocity = (0, 0, 500)
+
+---
+
+Parameter는 Niagara 그래프에서 이름으로 읽고 쓰는 값이에요
+
+Attribute는 그중에서도 시뮬레이션 상태로 개체별로 저장되는 값
+
+User.SpawnRate는 Parameter지만, 각 파티클마다 저장되는 Attribute는 아니에요.
+Particles.Position은 Parameter Map에서 읽고 쓰는 Parameter이면서, 
+런타임에서는 Particle DataSet에 저장되는 Attribute예요.
+
+---
+
+Parameter Map
+
+Map Get
+  ├─ Particles.Position
+  ├─ Particles.Velocity
+  └─ Engine.DeltaTime
+        │
+        ▼
+    계산 노드들
+        │
+        ▼
+Map Set
+  ├─ Particles.Position
+  └─ Particles.Velocity
+
+---
+
+Stack 의 모든 group 이 stage 인 것은 아니다. 
+"System Properties", "Emitter Properties" 그룹은 stage 가 아니다 — 이들은 configuration 묶음
+실행되는 script 가 아니라 읽히는 값들의 그룹
+
+
+"Render" 그룹도 stage 가 아니다
+실행 단위가 아니라 렌더 설정의 묶음.
+
+---
+
+[Input Map] → Map Get → ... 계산 ... → Map Set → [Output Map]
+
+
+그래프 시점에서는 이 시점에 사용 가능한 모든 parameter 의 모음
+그래프상의 환경 객체 (environment) 
+
+Module 은 사실상 Map → Map 의 순함수처럼 작성된다
+입력 Map 받고, 그 위 일부를 수정해 출력 Map 을 만든다.
+
+[stage entry: Map] → Module 1 → Module 2 → Module 3 → [stage exit: Map]
+
+---
+
+런타임에는 Map 이 객체로 존재하지 않는다. 
+
+컴파일러가 Map Get/Set 의 각 호출을 어느 저장 backend (ParameterStore? DataSet column? Engine constant?) 의 
+어느 byte offset 으로 읽고 쓸지를 사전 결정. 
+
+결과 코드 (VM 바이트코드 또는 HLSL) 에는 Map 이라는 것이 없고, 
+미리 결정된 offset 에 대한 직접적 byte 읽기/쓰기만 남는다.
+
+---
+
+List   = 순서가 중요함
+Bundle = 그냥 통째로 다루는 묶음이라는 느낌 /그 안의 한 항목을 골라 만지는 느낌이 아니다
+Store  = 실제 런타임 저장소라는 느낌
+Map    = 이름을 통해 값을 찾는 대응 관계
+
+Parameter Map
+  User.SpawnRate        → 30.0
+  Engine.DeltaTime      → 0.016
+  Emitter.Age           → 1.25
+  Particles.Position    → (x, y, z)
+  Particles.Velocity    → (vx, vy, vz)
+  Particles.Color       → (r, g, b, a)
+
+---
+
+"이전까지의 parameter 상태"
+       ↓
+"여기서 일부를 읽고 쓴 뒤"
+       ↓
+"다음 상태"
+
+---
+
+dictionary 는 런타임 hash lookup 의 함의가 강하다
+컴파일이 Parameter Map 의 lookup 을 정적 byte offset 으로 해체한다는 사실과 충돌
+사용자가 "dictionary" 라는 단어를 보고 런타임에 hash 조회가 일어난다 고 오해할 위험
+
+
+"Parameter Context" / "Parameter Environment"
+"어떤 시점에 사용 가능한 모든 name→value association" 
+
+---
+
+Niagara System Instance
+  ParameterStore
+    이름 있는 값 저장
+    User.SpawnRate, User.Color, Emitter.LocalSpace, DataInterface 참조
+  
+  DataSet
+    시뮬레이션 결과/상태 저장
+    Particles.Position[], Particles.Velocity[], Particles.Age[]
+  
+  DataInterface
+    Niagara 바깥의 데이터/기능에 접근
+    Texture, SkeletalMesh, RenderTarget, Audio, Grid, DataChannel
+
+---
+
+ParameterStore가 보통 각 파티클마다 하나씩 있는 값을 저장하는 곳은 아니라는 거예요
+Niagara System 전체 또는 Component 인스턴스에 주는 설정값에 가까워요.
+
+per-particle 값은 보통 DataSet 쪽으로
+
+---
+
+FNiagaraDataSet
+
+시뮬레이션 데이터 저장소
+per instance simulation data를 위한 storage class
+
+
+Index | Position      | Velocity      | Age  | Color
+------+---------------+---------------+------+----------------
+0     | (0,0,10)      | (0,0,100)     | 0.1  | (1,1,1,1)
+1     | (5,2,20)      | (0,5,80)      | 0.3  | (1,0,0,1)
+2     | (1,4,15)      | (3,0,120)     | 0.2  | (0,1,0,1)
+
+
+여기서 Position, Velocity, Age, Color 같은 열(Column)이 Particle Attribute예요
+
+---
+
+UNiagaraDataInterface
+
+Texture Data Interface
+Skeletal Mesh Data Interface
+Render Target Data Interface
+Grid 2D / Grid 3D Data Interface
+Audio Data Interface
+Niagara Data Channel
+
+---
+
+Niagara Script가 실행될 때는 실행 컨텍스트가 있고, 거기에 DataSet/DataBuffer가 바인딩됩니다
+
+
+Particle Update Script 실행 준비
+  ↓
+입력 DataSet/DataBuffer 연결
+  ↓
+Script가 Particles.Position 읽음
+  ↓
+Script가 Particles.Position 씀
+  ↓
+출력 DataSet/DataBuffer에 결과 저장
+
+---
+
+파티클 업데이트는 보통 이전 프레임 데이터와 이번 프레임 결과가 필요하므로,
+내부적으로는 read buffer / write buffer 같은 이중 버퍼링 
+
+Previous DataSet / Buffer
+  Position_old
+  Velocity_old
+  Age_old
+        │
+        ▼
+Particle Update Script
+        │
+        ▼
+Current DataSet / Buffer
+  Position_new
+  Velocity_new
+  Age_new
+
+---
+---
+---
+
+Dynamic Input
+Niagara Script의 한 종류
+
+---
+
+Niagara Script
+  ├─ Module Script
+  │    └─ Stack에 Module로 배치됨
+  │
+  ├─ Dynamic Input Script
+  │    └─ Module Input 값 자리에 꽂힘
+  │
+  ├─ Function Script
+  │    └─ 다른 Script 안에서 호출됨
+  │
+  └─ System / Emitter / Particle Script
+       └─ 실제 Stage 전체를 구성함
+
+---
+
+// Module Script에 가까움
+void InitializeParticle(float Lifetime, FVector Position);
+
+
+// Dynamic Input Script에 가까움
+float RandomRangeFloat(float Min, float Max);
+
+
+// Stack에서의 사용
+InitializeParticle(
+    RandomRangeFloat(1.0f, 3.0f),
+    FVector(0, 0, 0)
+);
+
+---
+
+Dynamic Input: Random Range Float
+
+Inputs
+  Min
+  Max
+
+Graph
+  RandomFloat()
+  Lerp(Min, Max, Random)
+
+Output
+  Result Float
+
+---
+
+Module
+  - Stack에 배치됨
+  - Parameter Map을 받아서 Attribute/Parameter를 바꿈
+
+Dynamic Input
+  - Module의 입력값 자리에 배치됨
+
+---
+
+Module 의 입력 슬롯을 채우는 방식들
+
+1 Literal — 사용자가 직접 입력한 상수. 
+  Spawn Rate = 100.
+
+
+2 Linked — parameter map 의 어떤 값에 link. 
+  Spawn Rate ← User.IntensityScale.
+  subgraph 안에 Map Get 노드 하나
+
+
+3 Dynamic Input — DynamicInput 스크립트를 호출해 값 계산. 
+  Spawn Rate ← SampleCurve(MyCurve, Particles.NormalizedAge)
+  subgraph 안에 DynamicInput 스크립트로의 FunctionCall 노드
+
+
+4 Data Interface — 어떤 DI 의 함수 호출 결과 (예: Texture2D 입력 등)
+
+---
+
+enum class ENiagaraScriptUsage : uint8 {
+    Function,          // 일반 reusable 함수
+    Module,            // stage 에 끼워 넣는 reusable 블록
+    DynamicInput,      // 입력 슬롯에 꽂는 value producer
+    ParticleSpawnScript,
+    ParticleUpdateScript,
+    ...
+};
+
+---
+---
+---
+
+기존 렌더링 인프라에 “하나의 PrimitiveComponent/SceneProxy”처럼 접속
+“시뮬레이션 + 렌더러 어댑터”
+
+Niagara CPU Simulation
+  = 파티클 상태를 CPU에서 계산
+
+Rendering Infrastructure
+  = 그 계산 결과를 FPrimitiveSceneProxy / FMeshBatch / VertexFactory / Material 경로로 그림
+
+---
+
+UNiagaraComponent
+  ↓ Game Thread
+FNiagaraSystemInstance
+  ↓ CPU simulation
+FNiagaraDataSet
+  ↓ renderer별 dynamic data 생성
+FNiagaraDynamicDataBase
+  ↓ Game Thread → Render Thread 전달
+FNiagaraSceneProxy
+  ↓
+FNiagaraRendererSprites / Meshes / Ribbons ...
+  ↓
+FMeshBatch / VertexFactory / MaterialRenderProxy
+  ↓
+기존 Unreal Renderer
+  ↓
+RHI / GPU draw
+
+---
+
+CPU Mode에서는 Niagara VM이 CPU 쪽에서 Script를 실행해서 DataSet을 갱신합니다
+
+그 결과는 Emitter별 FNiagaraDataSet 같은 구조에 저장됩니다
+
+Emitter Particle DataSet
+Index | Position     | Velocity     | Color       | Age
+------+--------------+--------------+-------------+------
+0     | (x,y,z)      | (vx,vy,vz)   | (r,g,b,a)   | 0.1
+1     | (x,y,z)      | (vx,vy,vz)   | (r,g,b,a)   | 0.3
+2     | (x,y,z)      | (vx,vy,vz)   | (r,g,b,a)   | 0.2
+
+---
+
+Sprite Renderer:
+  Position은 어떤 Attribute를 쓸까?
+  Color는 어떤 Attribute를 쓸까?
+  Size는 어떤 Attribute를 쓸까?
+
+Mesh Renderer:
+  어떤 StaticMesh를 인스턴싱할까?
+  Transform은 어떤 Attribute에서 만들까?
+  Material override는 있는가?
+
+Ribbon Renderer:
+  어떤 Particle들을 어떤 순서로 이어서 그릴까?
+
+
+Niagara DataSet의 Attribute들
+  ↓  Niagara Renderer
+Unreal Renderer가 이해할 수 있는 draw data로 변환
+
+---
+
+FNiagaraDynamicDataBase
+
+Game Thread에서 Render Thread로 넘기는 꾸러미 struct
+
+렌더러는 DataSet의 Attribute를 읽어서 렌더 스레드에 넘길 dynamic data를 만듭니다
+
+
+FNiagaraDataSet
+  Particles.Position[]
+  Particles.Color[]
+  Particles.SpriteSize[]
+        │
+        ▼
+FNiagaraRendererSprites::GenerateDynamicData
+        │
+        ▼
+FNiagaraDynamicDataSprites
+  render thread가 쓸 수 있는 형태의 sprite data
+
+
+Niagara DataSet은 시뮬레이션 저장소이고,
+DynamicData는 렌더링으로 넘기기 위해 가공한 스냅샷
+
+---
+
+Unreal 렌더링 인프라에서 일반적인 패턴
+
+
+UPrimitiveComponent
+  ↓
+FPrimitiveSceneProxy
+  ↓
+Renderer가 SceneProxy들을 수집
+  ↓
+GetDynamicMeshElements / MeshBatch 생성
+  ↓
+Mesh Pass / RHI draw
+
+
+UNiagaraComponent
+  ↓
+FNiagaraSceneProxy
+  ↓
+FNiagaraRendererSprites / Meshes / Ribbons
+  ↓
+FMeshBatch
+  ↓
+Mesh Pass / RHI draw
+
+"내 안의 파티클들은 내가 Renderer별로 FMeshBatch로 만들어 줄게"
+
+---
+
+UNiagaraComponent
+  Game Thread object
+  Transform, bounds, asset reference, system instance 소유
+
+FNiagaraSystemInstance
+  CPU simulation 실행
+  Emitter instance들 관리
+
+FNiagaraDataSet
+  Particle attribute 배열 보관
+
+FNiagaraRendererSprites
+  DataSet을 읽어서 sprite draw data 생성
+
+FNiagaraSceneProxy
+  Render Thread 쪽 proxy
+  Unreal renderer가 호출하는 진입점
+
+FMeshBatch
+  기존 Unreal mesh drawing pipeline으로 넘기는 단위
+
+FVertexFactory
+  GPU vertex shader가 particle data를 해석하는 방식
+
+MaterialRenderProxy
+  Niagara sprite/mesh/ribbon material을 renderer에 제공
+
+RHI
+  실제 GPU command 제출
+
+---
+
+Sprite Renderer는 DataSet를 읽어서 렌더링 데이터로 바꿉니다.
+
+Particle 0
+  → 카메라를 향하는 quad 하나
+
+Particle 1
+  → 카메라를 향하는 quad 하나
+
+
+Mesh Renderer는 DataSet를 읽어서 렌더링 데이터로 바꿉니다.
+
+Particle 0 → Mesh instance transform 0
+Particle 1 → Mesh instance transform 1
+Particle 2 → Mesh instance transform 2
+
+---
+
+기존 렌더링 추상화 / 경로
+
+SceneProxy
+MeshBatch
+VertexFactory
+Material
+Render Pass
+RHI
+
+---
+
+Niagara가 잘하는 것:
+  파티클 시뮬레이션
+  Attribute 계산
+  FX용 Renderer별 데이터 변환
+
+
+기존 Renderer가 잘하는 것:
+  View별 렌더링
+  Material 평가
+  Mesh pass 구성
+  Draw command 생성
+  GPU 제출
+
+- View family / View relevance
+- Frustum culling
+- Bounds
+- Material system
+- Translucency sorting
+- Mesh pass
+- Shadow / depth / velocity pass
+- RHI resource lifetime
+- Render thread synchronization
+
+---
+
+UNiagaraComponent ← UFXSystemComponent ← USceneComponent
+
+
+FNiagaraSceneProxy ← FPrimitiveSceneProxy
+  씬에 등록
+  컬링·셰도우·라이팅 패스에 참여
+
+
+FFXSystemInterface
+  Niagara 의 GPU dispatch 매니저가 이걸 구현해 UE 의 FXSystem 인프라에 연결.
+
+
+FNiagara{Sprite,Mesh,Ribbon}VertexFactory ← FVertexFactory
+  UE 의 VertexFactory 시스템에 plug 
+  셰이더가 vertex 당 입력을 어떻게 받는지 정의
+
+---
+
+Niagara 는 기존 흐름에 primitive 한 개분의 데이터를 공급 할 뿐이다. 
+SceneProxy 가 그 공급의 어댑터.
+
+---
+
+1
+UWorld 가 FNiagaraSystemSimulation 을 tick 
+(FNiagaraWorldManager 가 시스템·tick group 별로 묶어둠).
+
+2
+CPU VM 실행 — FNiagaraSystemSimulation 이 각 emitter 의 script 를 순서대로 실행
+실행 엔진은 Niagara VM (FNiagaraScriptExecutionContext + 컴파일된 FNiagaraVMExecutableData 의 바이트코드)
+
+3
+시뮬이 끝나면 emitter 의 FNiagaraDataSet 의 CurrentData (FNiagaraDataBuffer) 가 갱신된 입자 상태를 들고 있다
+SoA 의 column 들
+모두 CPU RAM 에 거주
+
+4
+시뮬 후, 각 emitter 의 FNiagaraRenderer 인스턴스에 대해 GenerateDynamicData가 호출
+  4-1 FNiagaraEmitterInstance 로부터 DataSet 을 얻음
+  4-2 CurrentData buffer 에서 필요한 column 들을 읽음
+  4-3 결과를 FNiagaraDynamicDataBase 으로 패키지
+
+5
+Render thread 로 enqueue
+각 FNiagaraRenderer 가 SetDynamicData_RenderThread 등의 enqueue 를 통해 RT 로 자기 DynamicData 를 보냄
+
+---
+
+6
+UE 가 씬 렌더링 시작
+UE 의 렌더링 패스 (BasePass, ShadowDepth, Translucency 등) 가 돌면서 각 primitive 에 일을 시킨다
+
+7
+SceneProxy 호출
+FNiagaraSceneProxy::GetDynamicMeshElements(Views, ViewFamily, VisibilityMap, Collector) 
+  Views — 어느 카메라에서 그릴지
+  VisibilityMap — 어느 view 에서 보이는지 비트마스크
+  Collector (FMeshElementCollector&) — 여기에 자기 MeshBatch 들을 등록
+
+8
+각 FNiagaraRenderer 가 MeshBatch 발행
+SceneProxy 가 자기가 가진 FNiagaraRenderer 들을 순회
+  8-1 자기 DynamicData (이미 RT 에 도착해 있음) 를 꺼냄
+  8-2 FMeshBatch 를 채움
+    VertexFactory 포인터, 머티리얼 (FMaterialRenderProxy), primitive uniform buffer, element info (vertex/index count)
+  8-2 FMeshElementCollector 에 Add
+
+---
+
+9
+CPU→GPU 업로드
+VertexFactory 가 셰이더에 vertex 당 / instance 당 입자 attribute 를 공급 해야 한다
+셰이더는 GPU 메모리에서만 읽을 수 있으므로, DynamicData 의 CPU 바이트들이 GPU 로 업로드되어야 한다.
+
+이 업로드가 매 frame 일어난다  (CPU 시뮬은 매 tick 새 데이터를 만들어 내므로)
+GPU 모드에서는 데이터가 처음부터 GPU 버퍼에 살기 때문에 업로드 자체가 필요 없다
+
+---
+
+10
+VertexFactory 가 셰이더 입력으로 변환
+
+업로드된 GPU 버퍼가 VertexFactory 의 vertex stream 으로 binding 되면, 
+vertex shader 가 instance_id (또는 vertex_id) 로 그 buffer 를 indexing 해 
+입자별 attribute 를 끌어쓴다
+
+---
+
+Game Thread
+
+Renderer별 GenerateDynamicData: FNiagaraDataSet => FNiagaraDynamicDataBase
+
+FNiagaraDynamicDataBase
+  └─ renderer별 파생 DynamicData
+      Sprite용 DynamicData
+      Mesh용 DynamicData
+      Ribbon용 DynamicData
+
+Game Thread에서 만든 Niagara 렌더링용 스냅샷
+Render Thread의 FNiagaraRenderer가 나중에 사용할 재료
+
+
+Render Thread로 enqueue 전달 (FSetDynamicDataCommand)
+
+FSetDynamicDataCommand
+  Renderer     : FNiagaraRenderer*
+  DynamicData  : FNiagaraDynamicDataBase*
+"이 DynamicData를 이 Renderer에게 세팅하라"라는 메시지
+
+---
+
+Render Thread
+
+Renderer가 현재 프레임용 DynamicData로 가지고 있음
+
+FSceneRenderer::GatherDynamicMeshElements
+
+FNiagaraSceneProxy::GetDynamicMeshElements()
+
+각 Niagara Renderer의 GetDynamicMeshElements
+
+FMeshBatch / VertexFactory / Material 관련 데이터 생성
+
+---
+
+FNiagaraRendererMeshes::GetDynamicMeshElements(FNiagaraSceneProxy* SceneProxy)
+
+Niagara Renderer는 SceneProxy 문맥 안에서 View별 dynamic mesh element를 만든다
+
+---
+
+Mesh Renderer라면 DynamicData는 각 particle을 mesh instance처럼 해석할 재료가 됩니다.
+
+Render Thread에서 Mesh Renderer가 이를 읽어
+
+Particle 0 → Mesh instance transform 0
+Particle 1 → Mesh instance transform 1
+Particle 2 → Mesh instance transform 2
+
+같은 식으로 MeshBatch 쪽에 필요한 instance 정보를 준비합니다
+
+---
+
+GenerateDynamicData가 실행되는 시점은 Game Thread 쪽이고, 
+“이번 View에서 실제로 어떻게 그릴지”의 많은 정보가 Render Thread/Renderer 쪽에 있어요.
+
+---
+
+FNiagaraDataSet
+  = 시뮬레이션 결과 테이블
+  = Position[], Velocity[], Age[] 등
+
+FNiagaraDynamicDataBase
+  = renderer별 렌더 스레드 전달용 스냅샷
+  = DataSet에서 필요한 것만 뽑아 포장
+
+FMeshBatch
+  = Unreal Renderer가 실제 mesh drawing pipeline에 넣는 draw primitive 단위
+
+---
+
+DataSet
+  ↓ GenerateDynamicData
+DynamicData
+  ↓ SetDynamicData_RenderThread
+Renderer 내부 current render data
+  ↓ GetDynamicMeshElements
+FMeshBatch
+  ↓ Renderer mesh pass
+GPU draw
+
+---
+
+FPrimitiveSceneProxy가 GetDynamicMeshElements와 DrawStaticElements 콜백을 통해 FMeshBatch를 renderer에 제출한다
+dynamic path는 FMeshBatch를 매 프레임 다시 만든다
+
+DrawStaticElements
+  = SceneProxy 생성 시점 등에 static mesh element를 등록/캐시
+
+GetDynamicMeshElements
+  = 렌더링할 때마다 현재 View 기준으로 dynamic mesh element를 모음
+
+이름이 완벽히 대칭이 아니죠.
+
+Static:
+  "한 번 등록해둘 테니 PDI에 그려 넣어라."
+  → DrawStaticElements(FStaticPrimitiveDrawInterface* PDI)
+
+Dynamic:
+  "이번 View에서 필요한 mesh batch들을 collector에 넣어라."
+  → GetDynamicMeshElements(..., FMeshElementCollector& Collector)
