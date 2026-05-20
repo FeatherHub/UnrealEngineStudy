@@ -1,0 +1,226 @@
+Game Instance
+temporal continuity
+persists across level transitions
+GameMode, GameState, Actor들은 모두 소멸함
+
+
+Game Mode
+configuration that shapes behavior
+by specifying which classes handle the Pawn, PlayerController, HUD, GameState, and PlayerState
+
+현재 World가 어떤 규칙으로 돌아가는지
+
+only exists on the server in multiplayer scenarios
+kind of a referee; server authoratity
+
+
+Game State
+
+서버가 모든 연결 클라이언트에게 브로드캐스트하고 싶은 공유 정보
+shared data that replicates to all clients
+elapsed time, connected players, match status
+
+State - 시스템의 현재 조건을 완전히 기술하는 값들의 집합
+게임의 나머지 상태는 어디에 있는가? GameMode 안에, 각 Actor 안에, PlayerState 안에, 그리고 수많은 컴포넌트 안에
+GameState는 게임 상태의 공개 게시판이지 전체 상태가 아니다
+
+
+PlayerState 
+
+per-player data separately
+
+
+AGameSession
+
+매치메이킹 세션의 등록 및 해제, 플레이어 연결 허가/거부
+
+a bounded interaction period
+어떤 활동의 기간
+
+---
+
+GameInstance 
+
+During a level transition, the World and everything in it gets destroyed, 
+so anything crossing that boundary must live outside it
+
+a container for whatever needs to survive level transitions
+which varies by game type
+
+GameInstance holds ULocalPlayer objects ; ULocalPlayer holds ULocalPlayerSubsystem
+GameInstance holds GameInstanceSubsystem
+
+In an RPG that's inventory and quest state, 
+in an FPS it's settings and score (오늘 몇 판 했는지, 세션 킬 수)
+in online games it's network and matchmaking state
+맵 전환 때 어떤 정보/에셋을 보여줄지
+
+for anything whose lifetime should match the game process
+
+---
+
+어떤 정보가 월드 수명(World lifetime)보다 긴 수명을 요구하는가
+
+---
+
+생성과 파괴의 경계는 소유 그래프가 결정한다
+   
+---
+
+소유자 (상위 스코프) 의 소멸로 인한 소멸
+명시적 소멸 함수 호출에 의한 소멸
+
+---
+
+seamless travel
+
+특정 Actor를 새 Level로 carry over할 수 있다
+e.g. PlayerController 계열
+
+---
+
+UWorld::SpawnActor
+
+Actor는 ULevel::Actors 배열에 귀속된다
+
+---
+
+1) Lifetime Owner
+2) UObject Outer Chain (Serialization)
+3) UPROPERTY GC Reachability
+4) Network Owner (수명 Owner 가 아니다)
+
+---
+
+명시적 파괴 호출
+  -> 모든 연결을 끊어야 함
+
+---
+
+ULevel
+
+상위 수명: UWorld
+하나의 UWorld 내에서 여러 ULevel 이 로드되고 언로드될 수 있다
+
+---
+
+AActor
+
+상위 수명: 어느 한 ULevel
+Level Unload (World Teardown, World Partition unload) 등에 의해 파괴될 수 있다
+
+---
+
+게임플레이 프레임워크 액터들(GameMode, GameState, PlayerController, PlayerState)
+
+상위 수명: UPersistenetLevel
+
+Controller 는 Pawn 을 Possess 하는 것이지, Pawn 의 Lifetime 을 소유하는 것은 아니다
+
+---
+
+UObjects as shared state containers
+
+class URogueSharedBlackboard : public UObject
+{
+    GENERATED_BODY()
+
+public:
+    UPROPERTY()
+    TArray<TObjectPtr<AActor>> Members;
+
+    UPROPERTY()
+    TObjectPtr<AActor> SharedTarget;
+};
+
+---
+
+상태를 소유 계층의 상위로 올린다
+여러 Actor가 상태를 공유해야 한다면, 그 상태는 원래부터 해당 Actor들의 개별 수명보다 긴 수명을 요구하고 있다는 신호다
+
+
+단일 소유자를 정하고 나머지는 참조한다
+A dedicated "manager" Actor
+One Actor owns the component, 
+others get a reference to that Actor and access the component through it.
+
+---
+---
+---
+
+UGameEngine    = 극장 운영 시스템
+GameInstance   = 이번 관객/플레이 세션의 장기 문맥
+WorldContext   = 특정 상영관의 현재 상영 상태
+World          = 지금 상영 중인 무대/장면
+
+---
+
+GEngine 
+
+UEditorEngine (UUnrealEdEngine)
+├─ WorldContext: Editor
+│  └─ Editor_World
+│
+├─ WorldContext: Preview
+│  └─ Preview_World
+├─ WorldContext: PIE_Client_1
+│  ├─ GameInstance_1
+│  └─ PIE_World03 -> PIE_World04 -> ...
+│
+└─ WorldContext: PIE_Client_2
+   ├─ GameInstance_2
+   └─ PIE_World01 -> PIE_World02 -> ...
+
+---
+
+World 에 GameInstance 가 필요하지 않은 World도 있다
+  Editor World, Preview World, PIE duplicated World
+
+UGameInstance only concerns itself with Game worlds
+
+UWorld의 Types: Game, Editor, PIE, Preview, Inactive
+
+---
+
+FWorldContext
+├─ CurrentWorld        // 이 context가 현재 가리키는 UWorld
+├─ WorldType           // Game, PIE, Editor, EditorPreview ...
+├─ OwningGameInstance  // 있을 수도 있고 없을 수도 있음
+├─ GameViewport        // 있을 수도 있고 없을 수도 있음
+
+
+---
+
+UGameInstance
+
+represents the game application running within the engine.
+UWorld 의 문맥 제공
+
+
+UWorld
+
+ULevel 의 문맥 제공
+
+---
+---
+---
+
+GuardedMain
+
+  GEngineLoop.PreInit
+  GEngineLoop.Init // GEngine 생성 + WITH_EDITOR 분기
+  GEngineLoop.Tick
+  GEngineLoop.Exit
+  GEditorEngineExit // WITH_EDITOR 분기
+
+---
+
+OS Process
+Platform Entry Point (e.g. WinMain)
+GuardedMain  // Runtime > Launch > Launch.cpp
+
+---
+---
+---
+
+UUnrealEdEngine → UEditorEngine → UEngine
