@@ -1,0 +1,304 @@
+UPrimitiveComponent
+  = 게임 스레드의 UObject 컴포넌트
+
+FPrimitiveSceneProxy
+  렌더 스레드가 볼 수 있도록 복사된 렌더링용 대리 객체
+  게임 스레드의 데이터를 렌더 스레드 쪽으로 mirror한 객체
+
+FMeshBatch
+  = "이 재질로, 이 vertex/index buffer를, 이런 방식으로 그려라"라는 렌더 제출 단위
+
+FMeshDrawCommand
+  = FMeshBatch를 실제 패스/셰이더/RHI가 실행하기 좋은 draw command로 낮춘 것 (Lowering)
+
+---
+
+UMyPrimitiveComponent
+  Material
+  Transform
+  Bounds
+
+CreateSceneProxy()
+
+FMyPrimitiveSceneProxy
+  MaterialRenderProxy
+  LocalToWorld
+  Bounds
+
+---
+
+FMeshBatch
+  VertexFactory
+  MaterialRenderProxy
+  PrimitiveUniformBuffer
+  ReverseCulling
+  Type
+  DepthPriorityGroup
+  Elements[]
+
+---
+
+FMeshBatch → Mesh Pass
+
+BasePass?
+DepthPass?
+ShadowDepthPass?
+VelocityPass?
+TranslucencyPass?
+CustomDepthPass?
+
+---
+
+FMeshBatch 
+↓ FMeshPassProcessor
+FMeshDrawCommand
+
+---
+
+FMeshDrawCommand
+  ↓
+RHI command list
+  ↓
+Graphics pipeline state
+  ↓
+Vertex shader
+  ↓
+Rasterizer
+  ↓
+Pixel shader
+  ↓
+Render Target
+
+---
+
+게임 스레드
+UPrimitiveComponent::SendRenderTransform()
+→ ENQUEUE_RENDER_COMMAND { Proxy의 LocalToWorld 갱신 }
+
+
+SceneProxy 재생성은 메시 자체나 머티리얼이 바뀌는 "렌더 상태" 변경 때만
+
+---
+
+struct FMeshBatch {
+    FVertexFactory*       VertexFactory;       // vertex 를 어떻게 조립할지
+    FMaterialRenderProxy* MaterialRenderProxy;  // 어떤 머티리얼로 그릴지
+    TArray<FMeshBatchElement> Elements;         // draw call 데이터
+    EPrimitiveType        Type;                 // PT_TriangleList 등
+    // + LOD, 깊이 우선순위, 컬링 모드 등
+};
+
+---
+
+1. View 구성 — FSceneView 생성. 카메라의 ViewMatrix, ProjectionMatrix, 뷰포트 크기
+
+2. Visibility 계산 — 어떤 primitive 가 frustum 안에 있는가 (-> VisibilityMap)
+
+3. Dynamic mesh elements 수집
+  SceneProxy -> GetDynamicMeshElements(Views, ViewFamily, VisibilityMap, Collector)
+  // SceneProxy 가 자신의 FMeshBatch 를 Collector 에 Add
+
+4. 렌더 패스 실행
+  각 패스가 자기 관심사의 FMeshBatch 들을 처리
+
+5. GPU draw
+  VertexFactory type × Material type → 셰이더 permutation 선택
+  PSO 바인딩
+  Uniform buffer 들 바인딩 (PrimitiveUB, ViewUB, MaterialUB)
+  VertexFactory 가 vertex stream 설정
+
+---
+
+OnRegister
+  ↓
+CreateRenderState_Concurrent
+  ↓
+Scene에 Primitive 등록
+  ↓
+CreateSceneProxy
+
+---
+
+UPrimitiveComponent 
+
+공간 정보
+  - ComponentToWorld
+  - Relative transform
+  - Bounds
+
+렌더링 설정
+  - Visibility
+  - CastShadow
+  - CustomDepth
+  - Mobility
+
+에셋/리소스 참조
+  - UStaticMesh
+  - UMaterialInterface[]
+  - USkeletalMesh
+  - UBodySetup 등
+
+---
+
+FMeshBatch 쪽 데이터
+
+그리기 재료
+  - MaterialRenderProxy
+  - VertexFactory
+  - IndexBuffer
+  - PrimitiveUniformBuffer
+
+그리기 범위
+  - FirstIndex
+  - NumPrimitives
+  - MinVertexIndex
+  - MaxVertexIndex
+
+Element 배열
+  - FMeshBatchElement[]
+
+---
+
+UStaticMeshComponent
+  StaticMesh = SM_Crate
+  Materials[0] = M_Wood
+  Transform = 월드 위치
+  CastShadow = true
+
+
+FMeshBatch
+  VertexFactory = SM_Crate의 vertex buffer 해석 방식
+  IndexBuffer = SM_Crate LOD0 Section0 index buffer
+  MaterialRenderProxy = M_Wood의 render proxy
+  NumPrimitives = 삼각형 개수
+  PrimitiveUniformBuffer = LocalToWorld 등 per-primitive uniform
+
+---
+
+UActorComponent::RegisterComponent()
+  └─ RegisterComponentWithWorld()
+       ├─ OnRegister()                   
+       │    (물리 부착, 틱 등록, 서브시스템 연결 등
+       │     렌더링과 무관한 게임플레이 로직)
+       │
+       └─ CreateRenderState_Concurrent()
+             ├─ CreateSceneProxy()
+             └─ Scene->AddPrimitive(this)
+
+---
+
+FScene 은 렌더 스레드의 세계 표현
+"이 프레임에 무엇을 그릴 것인가" 의 완결된 데이터베이스.
+
+
+FScene
+  ├─ FPrimitiveSceneInfo + SceneProxy
+  ├─ FLightSceneInfo + FLightSceneProxy
+  ├─ Sky Atmosphere, Height Fog, Reflection Capture 등 환경 요소
+  ├─ Static mesh draw list (정적 오브젝트의 사전 빌드된 draw call)
+  ├─ GPU scene data
+  ├─ Primitive bounds / spatial data
+  └─ Renderer가 View별로 순회할 render state
+
+---
+
+FSceneInterface 자체는 private scene manager 구현체에 대한 interfac
+즉 실제 구현은 보통 Renderer 쪽의 FScene이고, Engine 쪽에서는 FSceneInterface로 봅니다.
+
+
+UWorld
+  ├─ PersistentLevel
+  ├─ StreamingLevels[]
+  ├─ PhysicsScene
+  └─ Scene : FSceneInterface*
+          실제 구현은 FScene
+
+
+Dedicated Server / Commandlet / 렌더링 없는 World
+SceneCapture / ReflectionCapture
+
+---
+
+FScene이 오래 살아 있는 렌더러 쪽 세계라면, 
+FSceneRenderer는 특정 ViewFamily를 렌더하기 위해 생성되는 단기 실행 객체
+
+ISceneRenderBuilder::CreateSceneRenderer(FSceneViewFamily*)
+
+---
+
+일반 단일 플레이어
+  ViewFamily
+    └─ View 1개
+
+Split Screen
+  ViewFamily
+    ├─ Player 1 View
+    └─ Player 2 View
+
+Stereo / VR
+  ViewFamily
+    ├─ Left Eye View
+    └─ Right Eye View
+
+SceneCaptureCube
+  ViewFamily 또는 관련 렌더 요청
+    ├─ +X
+    ├─ -X
+    ├─ +Y
+    ├─ -Y
+    ├─ +Z
+    └─ -Z
+
+---
+---
+---
+
+Scene  = 무엇들이 렌더링 세계에 존재하는가
+View   = 그 Scene을 어디서/어떻게 바라보는가
+Render = 그 Scene+View 정보를 실제 GPU 작업으로 실행하는가
+
+---
+
+FSceneView
+  ├─ View location            // 카메라 위치
+  ├─ View rotation            // 카메라 방향
+  ├─ View matrix
+  ├─ Projection matrix
+  ├─ ViewRect                 // 렌더 타겟의 어느 영역에 그릴지
+  ├─ Near/Far 관련 정보
+  ├─ LOD / exposure / temporal 관련 정보
+
+
+“scene space에서 2D screen region으로의 projection”
+Scene을 화면 영역으로 투영하는 관찰 조건
+
+"같은 세계를 이 위치에서 이렇게 보면"
+
+---
+
+Scene 하나를 여러 View로 볼 수 있다
+
+하나의 FScene
+  ├─ Player Camera View
+  ├─ SceneCapture View
+  ├─ Shadow map용 View
+  ├─ Reflection capture용 View
+
+---
+
+ViewFamily
+
+여러 FSceneView 들이 같은 렌더 타겟을 공유하며 함께 처리될 때 그것을 묶는 그룹
+
+View 4 개 (Top/Front/Side/Perspective 각각)
+RenderTarget 1 개 (에디터 창)
+Scene 1 개 (같은 레벨)
+→ 이 셋을 묶는 ViewFamily 1 개
+
+
+View 2 개 (Player 1, Player 2)
+RenderTarget 1 개 (화면)
+Scene 1 개
+→ ViewFamily 1 개
+
+---

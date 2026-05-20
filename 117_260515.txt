@@ -1,0 +1,322 @@
+AActor Instance 생성 — SpawnActor or Level Load
+
+메모리 할당
+생성자 실행
+PostInitProperties()
+
+PostLoad         // 레밸에 배치된 경우
+PostActorCreated // SpawnActor 로 생성된 경우
+
+---
+
+PreRegisterAllComponents
+RegisterAllComponents
+PostRegisterAllComponents
+
+---
+
+ExecuteConstruction()
+  User Construction Script  // BP
+  OnConstruction            // C++
+
+PostActorConstruction()
+
+---
+
+PreInitializeComponents
+InitializeComponents
+PostInitializeComponents
+
+BeginPlay()
+
+---
+
+왜 어떤 Actor는 Play 누를 때 Construction Script 로그가 안 찍히지?
+
+배치된 Actor는 Play를 누를 때마다 Construction Script부터 다시 시작한다고 보면 안 됨
+
+이 Actor는 이미 에디터 월드에서 Construction Script 결과를 가지고 있어요
+
+---
+
+랜덤 작업
+   seed 없이 랜덤 배치하면 property 변경/compile 때 결과가 계속 바뀜
+
+매번 새 object 생성 후 이전 것 정리 안 함
+
+---
+---
+---
+
+Construction Script
+
+이 Actor 인스턴스를 현재 배치 상태에 맞게 다시 조립
+에디터 미리보기 + 스폰 직후 조립
+
+
+BeginPlay
+
+게임 세계가 실제로 시작되었으니 gameplay logic을 시작한다
+다른 Actor, Controller, GameMode, runtime state와 상호작용
+
+---
+
+Construction Script는 BeginPlay보다 앞에, 생성자보다 뒤에 위치
+
+---
+
+AActor::RerunConstructionScripts()
+
+Construction Script로 만들어진 컴포넌트들을 파괴하고 다시 생성한 뒤
+ExecuteConstruction()을 재호출한다.
+
+
+CreateDefaultSubobject로 만든 컴포넌트는 "native component"로 등록
+
+---
+
+Construction Script 
+
+프로퍼티 변경 시마다 재실행
+이 안에서 만든 컴포넌트는 "instance component"
+멱등성(idempotency)을 설계 전제로 갖는다 — 몇 번 실행해도 같은 결과여야 한다
+
+---
+
+설계 의도의 핵심은 "파라미터 → 시각적 결과"의 에디터 내 즉각적 피드백 루프
+
+레벨 디자이너가 Details 패널에서 FenceLength = 500 을 FenceLength = 1200으로 바꾸면, 
+PIE 없이 뷰포트에서 즉시 울타리가 늘어나는 것을 볼 수 있어야 한다
+
+
+절차적(procedural) 구조 생성
+
+파라미터 기반으로 SplineComponent를 따라 메시를 배열하거나, 
+격자 구조를 동적으로 배치하거나, 
+계단의 개수/높이를 조절하는 것
+InstancedStaticMesh 인스턴스 배치
+
+
+컴포넌트의 조건부 구성
+
+bHasLid == true이면 LidMesh 추가
+
+
+속성값을 바꾸면 즉시 mesh/material 변경
+preview collision / gizmo / helper component 구성
+지면 trace 후 자동 높이 보정
+선택한 DataAsset에 따라 mesh/material/sound 세팅
+
+
+Actor prefab을 파라미터화하는 장치
+파라미터를 실제 컴포넌트 배치/외형/초기 상태로 굽는 조립기
+
+---
+
+에디터 컨텍스트에서 SpawnActor를 호출하거나, 외부 상태를 변경하거나, 무거운 I/O를 수행하면 
+프로퍼티를 바꿀 때마다 그 연산이 반복 실행된다
+
+
+이 Actor의 모양과 구성을 파라미터로부터 결정론적으로 재도출하는 함수
+
+---
+
+Deferred Spawn 경로
+
+Construction Script를 늦추는 경로
+
+SpawnActorDeferred
+BeginSpawningActorFromClass / BeginSpawningActorFromBlueprint
+
+ExposeOnSpawn 값/ 초기 세팅 주입
+
+“생성은 했지만 아직 조립하지 않은 Actor”를 잠깐 잡을 수 있게 해주는 장치
+
+---
+
+1 Blueprint graph의 Construction Script
+  ≈ UserConstructionScript
+
+2 C++ virtual OnConstruction
+  ≈ construction pass 끝부분의 native hook
+
+Blueprint Construction Script가 먼저 돌고 OnConstruction이 뒤쪽에서 불린다
+
+---
+
+생성자
+
+NewObject<T>, StaticConstructObject_Internal
+
+CDO(Class Default Object) 생성 시 클래스 로딩 단계에서 한 번,
+실제 인스턴스 생성 시 한 번 실행
+
+생성자 내부에서 IsTemplate() 체크 없이 GetWorld()를 호출하면 nullptr이 반환된다
+
+---
+
+PostInitProperties()
+
+생성자 실행 이후, CDO로부터 프로퍼티가 복사된 직후
+
+UPROPERTY 기본값들이 이미 적용된 상태
+
+초기화 상태를 검증
+
+FObjectInitializer::PostConstructInit() 내부에서 생성자 직후 호출
+
+---
+
+PostLoad()
+
+디스크(레벨 파일, 에셋 패키지)에서 직렬화되어 로드된 오브젝트에 대해 호출
+
+로드 이후 포인터 수정(transient 포인터 재연결), 버전 마이그레이션, 캐시 재구성 등 
+"복원 후 후처리"가 필요한 작업을 여기서
+
+ULinker/FLinkerLoad 시스템이 패키지 로딩 완료 후 호출한다
+맵을 에디터에서 열거나, 레벨 스트리밍으로 서브레벨이 로드될 때 
+
+---
+
+PostActorCreated()
+
+레벨에서 로드된 것이 아니라 SpawnActor로 막 탄생한 Actor에 대해서만 호출되는 Callback
+
+World 포인터가 유효
+단, 아직 컴포넌트들이 완전히 초기화되지 않았고 BeginPlay도 아직이다.
+
+---
+
+OnConstruction
+
+"파라미터로부터 Actor의 형태를 결정론적으로 도출"하는 함수
+
+AActor::ExecuteConstruction()이 호출
+
+Runtime에서는 SpawnActor 흐름 안의 PostActorCreated 직후, 
+Editor에서는 RerunConstructionScripts()를 통해 호출
+
+---
+
+PostActorConstruction()
+
+Construction Script 실행이 끝난 뒤, 컴포넌트 초기화 진입 전의 경계점
+
+엔진 내부에서 Actor 등록 상태를 완료하는 작업을 수행한다
+
+---
+
+PreInitializeComponents()
+
+컴포넌트들의 InitializeComponent()가 일괄 호출되기 직전에
+Actor에게 주어지는 Opportunity
+
+컴포넌트들에게 초기화 전 데이터를 주입하고 싶을 때
+
+AActor::PostActorConstruction() 내부의 InitializeComponents() 호출 직전에 실행된다.
+
+---
+
+PostInitializeComponents()
+
+모든 컴포넌트의 InitializeComponent()가 완료된 직후의 콜백
+
+BeginPlay는 World 전체가 시작될 준비가 되었을 때 불리지만, (다른 Actor들은 아직 BeginPlay를 받지 않았을 수 있다)
+PostInitializeComponents는 Actor 자신의 초기화 완료 시점에 불린다
+
+---
+
+BeginPlay()
+
+World의 모든 Actor가 등록
+다른 Actor에 대한 참조, GameMode/GameState 접근, 타이머 등록, 델리게이트 바인딩 등 
+
+UWorld::BeginPlay()가 레벨의 모든 Actor를 순회하며 AActor::DispatchBeginPlay()를 호출
+이것이 내부적으로 BeginPlay()를 부른다.
+
+SpawnActor로 게임 도중 생성된 Actor는 
+World가 이미 BeginPlay 상태이므로 SpawnActor 완료 직후 즉시 BeginPlay를 받는다.
+
+---
+---
+---
+
+EndPlay
+
+BeginPlay의 대응쌍
+
+타이머 해제, 델리게이트 언바인딩, 외부 시스템에 등록된 자신의 핸들 정리 등 
+BeginPlay에서 설정한 것들을 역순으로 해제하는 곳
+
+---
+
+Destroyed()
+
+Destroy() 호출로 인한 제거에 특화된 콜백
+Destroyed()는 오직 Actor가 명시적으로 Destroy 처리될 때만 불린다
+
+---
+
+BeginDestroy()
+
+UObject GC 시스템 수준의 소멸 시작
+렌더링 리소스, GPU 리소스 등 GC가 자동으로 처리할 수 없는 외부 리소스의 해제 시작점
+World와의 연결은 이미 끊어진 상태다
+
+UObject 레밸에 존재하는 훅
+
+GC(Garbage Collector)가 레퍼런스가 없다고 판단한 오브젝트에 대해 호출한다
+
+---
+
+FinishDestroy()
+
+BeginDestroy에서 시작한 비동기 해제 작업이 완료되었음을 알리는 콜백
+
+렌더링 fence 등 비동기 작업의 완료를 기다리는 데 사용된다.
+
+GC 사이클에서 BeginDestroy 이후 비동기 조건이 충족되면(IsReadyForFinishDestroy) GC가 호출한다
+
+---
+---
+---
+
+PostEditChangeProperty
+
+Details 패널에서 프로퍼티가 변경될 때 호출된다
+RerunConstructionScripts()를 트리거하는 경로 중 하나
+
+
+PostEditMove
+
+뷰포트에서 Actor가 이동/회전/스케일될 때 호출된다
+트랜스폼에 반응하는 시각화나 스냅 로직에 사용
+
+---
+---
+---
+
+PreInitializeComponents
+
+Actor component들의 gameplay initialization이 시작되기 직전
+
+
+UActorComponent::InitializeComponent
+
+bWantsInitializeComponent가 설정된 경우에만 호출
+
+
+PostInitializeComponents
+
+Actor의 모든 component가 gameplay initialization을 마친 시점
+
+---
+---
+---
+
+PreReplication
+
+Actor가 replication 대상일 때, property replication 직전에 값을 정리하거나 replication 조건을 조정하기 위한 hook
+
+---
