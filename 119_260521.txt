@@ -125,9 +125,10 @@ FViewportClient
 
 The viewport's client processes input received by the viewport and draws the viewport
 
-FViewportClient 계열
-  MaterialEditor / FMaterialEditor ViewportClient
-  Persona / FAnimationAsset ViewportClient
+FViewportClient 
+  FEditorViewportClient
+    MaterialEditor / FMaterialEditor ViewportClient
+    Persona / FAnimationAsset ViewportClient
   Engine / Game ViewportClient
 
 ---
