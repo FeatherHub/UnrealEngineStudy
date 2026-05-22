@@ -1,0 +1,348 @@
+Script* 이름 패턴
+
+UScriptViewportClient, UScriptStruct 등
+이 C++ 개념을 UObject Reflection 시스템에 노출하는 레이어
+
+native C++ only world
+  vs
+script/reflection/uobject world
+
+---
+
+도메인별로 달라지는 것 -> 분화
+  입력 처리 / 해석
+  씬 렌더링
+
+도메인별로 거의 안 달라지는 것 -> 공통
+  Slate와 연결
+  RenderTarget 관리
+  mouse capture 관리
+  keyboard focus 관리
+  viewport size 관리
+
+
+FViewport 는 소수인데
+FViewportClient 는 도메인 별로 분화된다
+
+---
+
+FSceneViewport(FViewportClient* InViewportClient,
+               TSharedPtr<SViewport> InViewportWidget);
+
+---
+
+SMaterialEditor3DPreviewViewport           
+SNiagaraSystemViewport                     
+SAnimationEditorViewport                   
+
+-- creates ->
+
+FSceneViewport: FViewport + ISlateViewport
+
+-- delegate ->
+
+FMaterialEditorViewportClient              
+FLevelEditorViewportClient                 
+FNiagaraSystemViewportClient               
+FAnimationViewportClient                                           
+
+-- produce per frame ->
+
+FSceneView
+
+-- submitted to ->
+
+Scene Renderer (render thread)
+
+---
+
+FSceneViewport
+  "마우스 오른쪽 버튼이 눌렸어."
+
+
+FMaterialEditorViewportClient
+  "그럼 머티리얼 프리뷰 메쉬를 회전시키자."
+
+FLevelEditorViewportClient
+  "그럼 에디터 카메라를 회전시키자."
+
+UGameViewportClient
+  "그럼 게임 입력으로 PlayerController 쪽에 넘기자."
+
+---
+
+Viewport Client
+
+GUI 프레임워크 전통
+
+client = 할당받은 제한된 영역을 사용하는 쪽
+client = 어떤 프레임/창 안에서 실제 내용을 제공하는 쪽
+client = framework가 callback으로 일을 위임하는 사용자 코드
+
+
+Viewport Controller
+  Viewport 의 이벤트 호출들을 각 도메인에 맞게 Handle 한다
+  도메인 별 분화 지점
+
+---
+
+Viewport
+
+3D World Scene 을 잘라서 보여주는 구멍
+3D World Scene 을 들여다보는 창 (SceneView => Viewport Render Target)
+
+
+Viewport Area
+
+할당/배정 받은 땅
+
+
+그러나 입력 장치의 측면도 가진다
+
+receive mouse input, keyboard input ...
+
+Viewport Surface
+Viewport Endpoint
+Viewport Device
+
+
+그러나 자원을 들고 있기도 하다.
+
+렌더 타깃, 마우스 캡처(드래그) 상태, 키 상태
+
+Viewport Host 
+
+---
+---
+---
+
+Viewport 가 상위의 Event Routing Mechanism 으로부터 입력 이벤트를 배달받아서
+자신이 들고 있는 Viewport Client 의 메서드로 Forward 한다
+
+
+Slate의 이벤트 라우팅 시스템:
+  "이번 입력 이벤트는 이 SViewport에게 가야 한다."
+
+SViewport:
+  "나는 ISlateViewport로 연결된 FSceneViewport에게 넘긴다."
+
+FSceneViewport:
+  "나는 이 입력을 FViewportClient 의 메서드에게 넘긴다."
+
+---
+
+1. Windows OS
+   "Right mouse button down"
+
+2. FWindowsApplication
+   Win32 메시지를 Slate용 입력 이벤트로 변환
+
+3. FSlateApplication
+   현재 마우스 위치, focus, capture 상태를 보고
+   어느 SWidget으로 보낼지 결정
+
+4. SViewport
+   Slate widget event를 받음
+
+5. FSceneViewport
+   SViewport에 연결된 ISlateViewport로서 이벤트를 받음
+   viewport 내부 상태를 갱신하고 입력 형태를 변환
+
+6. virtual FViewportClient->InputKey
+   도메인별 의미 해석
+
+---
+---
+---
+
+SViewport는 Slate 세계 안에서 viewport가 살아갈 수 있게 해주는 UI 소켓
+FSceneViewport는 그 소켓에 꽂히는 Engine/RHI 쪽 어댑터
+
+
+SViewport 
+  Slate Widget 세계의 객체
+  "UI 트리 안에서 이 사각형은 viewport입니다."
+
+
+FSceneViewport: FViewport, ISlateViewport
+  Engine Viewport 세계로 브릿지하는 객체
+  "이 Slate viewport를 실제 엔진 render에 연결시킵니다."
+  "이 Slate viewport의 이벤트를 배달받습니다."
+
+---
+---
+---
+
+SViewport는 Slate 모듈 안에. 
+
+Slate는 Engine을 몰라야 해. 
+FRenderTarget, FViewport, RHI, FSceneView — 이런 것들에 의존하면 Slate가 Engine에 묶여버려. 
+
+Slate는 UI 프레임워크이고, 게임 엔진 없이도 에디터 UI나 툴 UI를 구동할 수 있어야 해.
+
+
+FSceneViewport는 Engine 모듈 안에 있어(Engine/Public/Slate/SceneViewport.h). 
+Engine.Build.cs에 Slate 모듈 의존성이 선언되어 있어.
+
+둘 사이의 참조 방향
+
+[Slate 모듈]                    [Engine 모듈]
+SViewport
+  ISlateViewport*  ←──────────  FSceneViewport
+                                  implements ISlateViewport
+                                  TWeakPtr<SViewport> ViewportWidget
+
+SViewport는 ISlateViewport 인터페이스 포인터만 들고 있어. FSceneViewport가 뭔지 몰라. 
+반대로 FSceneViewport는 SViewport를 TWeakPtr로 들고 있어 — Engine이 Slate를 아는 방향.
+
+ISlateViewport는 이 경계에 놓인 **계약(contract)**이야. 
+Slate가 직접 정의하고(Rendering/RenderingCommon.h, SlateCore 모듈), Engine이 구현해. 
+
+이 인터페이스가 Slate 모듈과 다른 모듈들 사이의 경계를 정의해준다.
+
+---
+
+같은 패턴
+
+
+WM_KEYDOWN이 들어오면 즉시 처리하지 않고 DeferMessage로 큐에 넣어. 
+메인 루프의 PumpMessages가 메시지를 긁어오면 ProcessDeferredMessage가 실행돼. 
+여기서 Win32 가상 키 코드(VK_*)를 UE FKey로 변환하고, MapVirtualKey로 문자 코드를 뽑아내. 
+
+그리고 MessageHandler->OnKeyDown()을 호출하는데, 
+MessageHandler는 FGenericApplicationMessageHandler 인터페이스야
+ApplicationCore는 Slate를 몰라도 돼.
+
+---
+
+UGameInstance
+  └─ LocalPlayers: TArray<ULocalPlayer*>
+        │
+        │  ULocalPlayer->PlayerController
+        ▼
+APlayerController
+  ├─ Player: ULocalPlayer* 또는 UNetConnection*
+  ├─ PlayerInput: UPlayerInput*
+  │
+  ├─ CameraManager
+  ├─ HUD
+  ├─ InputComponents
+  └─ Pawn
+
+---
+
+ULocalPlayer
+├─ ViewportClient: UGameViewportClient* // 분할화면 시나리오
+├─ Origin / Size // 분할화면 시나리오
+│
+├─ PlayerController
+├─ FPlatformUserId  // 어느 물리적 입력 장치와 연결되는지
+│
+├─ SubsystemCollection // ULocalPlayerSubsystem 인스턴스들
+│
+└─ 여러 변경 이벤트
+    ├─ OnControllerIdChanged
+    ├─ OnPlatformUserIdChanged
+    └─ OnPlayerControllerChanged
+
+---
+
+Object within PlayerController
+Only exists on the client in network games
+
+UPlayerInput  // UEnhancedPlayerInput 이 상속함
+├─ KeyStateMap
+│   └─ FKey → FKeyState
+
+---
+---
+---
+---
+---
+---
+
+FStruct를 new로 힙 할당하고 UPROPERTY 없이 들고 있는 것 자체는 가능해. 
+단 그 struct 안에 UObject 참조가 있다면, GC에게 그 참조를 알리는 책임을 개발자가 수동으로 져야 해. 
+그 수단이 AddReferencedObjects 오버라이드야.
+
+
+VS
+
+
+UObject
+  독립 객체 identity 있음
+  UObject heap / GC / reflection object graph 안에 들어감
+
+---
+
+UPROPERTY()
+FRogueAttribute* HealthPtr;
+
+이것은 보통 UHT가 허용하지 않습니다.
+UPROPERTY 포인터는 기본적으로 UObject 계열 포인터를 대상으로 설계되어 있습니다
+
+
+옵션
+
+UPROPERTY()
+FInstancedStruct AttributeData;
+
+AttributeData.InitializeAs<FRogueAttribute>();
+FRogueAttribute* Attribute = AttributeData.GetMutablePtr<FRogueAttribute>();
+
+---
+---
+---
+---
+---
+
+A
+
+GetLifetimeReplicatedProps
+Replicated Properties = UPROPERTY(Replicated)
+
+이 클래스의 replication layout(schema)를 만드는 기초 재료
+
+RepLayout.cpp 흐름을 보면 엔진은 class replication layout을 만들 때 CDO에게 묻습니다.
+
+TArray<FLifetimeProperty> LifetimeProps;
+
+UObject* Object = InObjectClass->GetDefaultObject();
+Object->GetLifetimeReplicatedProps(LifetimeProps);
+
+Class Default Object에게 물어서 class-level replication schema를 만듭니다
+
+이 함수가 만들어야 하는 것은 “지금 이 순간 보낼 목록”이 아니라
+이 class의 replication property schema 
+
+Replicate 되어야 할 목록만 따지면 UPROPERTY(Replicated) 로 충분하지만
+Lifetime Condition 의 설정까지 유연하게 처리하려면 GetLifetimeReplicatedProps의 형태가 필요
+
+---
+
+B
+
+"it may be the first time an Object is replicating to a Specific Connection, 
+and we would consider that an Initial Replication, even though the object may have replicated previously."
+
+
+Replication은 항상 "서버 Actor - 클라이언트 Connection" 쌍에 대해 일어나
+하나의 Actor가 10개의 클라이언트에 Replicate되면, 10개의 독립적인 "ActorChannel"이 생겨
+
+
+Initial Replication
+Actor의 탄생이 아니라 특정 Connection / ActorChannel 관계에서의 첫 replication
+
+---
+
+C
+
+void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps)
+
+DOREPLIFETIME_CONDITION(AMyActor, Health, COND_OwnerOnly);
+
+"이 프로퍼티가 객체의 네트워크 수명 중 어느 구간/조건에서 활성화되는가"
+
+Get Lifetime Condition For Replicated Props
+
+---
