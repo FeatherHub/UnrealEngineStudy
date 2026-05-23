@@ -1,0 +1,510 @@
+“빨간 진입 노드”들
+
+“여기서 실행 흐름이 시작된다”
+
+---
+
+Semantics & Interpretation
+
+바깥에서 호출하는 경우 -> 기존 Event 아키텍처 Semantics
+  e.g. 자신이 바깥의 Event Dispatcher에 바인딩 함
+
+내부에서 호출하는 경우 -> 내가 정의한 이벤트 신호를 (인위적으로) 발생시키겠다
+  e.g. 내부 호출한 Latent 노드의 OnCompletion Callback 계열
+  e.g. 초기상태 초기화 발사 
+
+---
+
+Decoupling 의 종류
+
+Structural Decoupling 
+발신자는 수신자의 정체성(Identity)을 모른다. Delegate Signature 계약으로만 연결(Binding)된다.
+반면 수신자는 발신자를 추상적으로 참조할 수도 있고, 간접적으로 참조할 수도 있다
+  e.g. FindComponentBy 등의 쿼리로 해당 Delegate를 가진 Component에 접근
+
+Cardinality Decoupling
+수신자는 없을 수도 있고 1명 일수도 있고 여러 명일 수도 있다. (= 컴파일 타임에 모른다.)
+수신자 목록이 런타임에 동적으로 결정된다.
+
+
+Temporal Decoupling
+발신자가 수신자의 실행 완료를 기다리지 않는다.
+비동기.
+
+---
+---
+---
+
+MyEventDispatcher
+
+1. named event
+   "MyEvent"라는 일이 발생할 수 있다
+
+2. signature
+   이 일이 발생하면 이런 인자들을 전달한다
+
+3. invocation list
+   이 일이 발생했을 때 호출할 handler들이 등록되어 있다
+
+handler들이 등록되어 있다에 초점 => Event Channel  // 수동적 뉘앙스
+handler들을 호출한다는 동작에 초점 => Event Dispatcher  // 능동적 뉘앙스
+
+Outbound channel 
+
+---
+
+Event dispatcher 를 Blueprint 클래스에 추가 한다
+
+이 Blueprint 클래스에 이름 붙은 multicast outbound event channel 을 하나 추가한다
+
+런타임에 그 Blueprint 오브젝트 마다 Dispatcher 가 각각 존재하게 된다
+
+---
+
+SourceOfVarousEvents -> MouseOverEventChannel -> RegisteredHandlers -> Add ( NewHandler )
+
+SomeObject -> MouseOverEventDispatcher -> Add ( NewHandler )
+
+---
+---
+---
+
+Delegate 는 Event Handler List 보다는 광범위한(일반적인) 의미론을 가진다
+
+조건을 검사할 predicate
+정렬 기준으로 사용할 comparator
+비동기 로딩이 끝났을 때 호출할 함수
+Timer가 만료됐을 때 호출할 함수
+버튼 클릭이 발생했을 때 호출할 함수
+메뉴 항목을 눌렀을 때 실행할 command
+
+---
+
+동기적 이벤트 전파
+
+Call Dispatcher
+   │
+   ▼
+Broadcast()
+   │
+   ├─ Handler A 호출
+   ├─ Handler B 호출
+   └─ Handler C 호출
+   │
+   ▼
+다음 노드로 진행
+
+---
+---
+---
+
+DECLARE_*_DELEGATE : delegate container 의 type 을 정의
+  1. single vs multicast
+  2. native vs reflected
+  3. delegate signature
+  4. sparse vs non-sparse
+
+  5. delegate 의 signature 를 정의 ( delegate할 callable 의 모양을 정의 )
+
+
+FOnAttributeChanged
+"위임하기" 버튼을 가짐
+ delegate 의 타입이 박혀있음 (시그니처 刻印)
+
+- Broadcast           
+- Registered Delegates // 비유: 연락처 목록 (호출가능한 callable endpoint)
+                       // DECLARE 에서 정의한 signature 로 typed 되어 있다
+
+[ADVANCED]
+  Registed Delegates 에서 "위임받는 자"는 어떤 객체라기보다는
+  callable endpoint이다
+  
+
+FOnAttributeChanged OnAttributeChanged
+  delegate 들을 저장하는 instance
+    컴파일 타임에 delegate 미결정
+    런타임에 delegate 가 Add/Remove 됨
+  실제 "위임하기"버튼을 누르는 실체
+
+위임하는 자는 그 구조체를 소유하고 Broadcast를 호출하는 Owning 클래스
+  일종의 실행 버튼을 쥐고 있다
+
+---
+
+delegate 의 단어 의미
+  위임하다
+  위임받은 사람 = delegatee (<-> delegator: 위임하는 자)
+
+Unreal Engine 에서 delegate 단어의 용법
+1 delegate object
+  container
+
+2 delegate entry
+  delegatee 
+
+---
+---
+---
+
+단어가 자기 자신을 지칭하지 않고 자기 안의 내용물을 지칭하는 구조
+"사람들"이라고 이름 붙은 상자 안에 사람들이 들어있는 것처럼
+
+---
+
+타입화된 실행의 빈 자리 
+코드의 흐름 중 특정 지점에 뚫어놓은 구멍
+그 구멍이 어떤 모양(시그니처)인지만 명시
+
+---
+
+Blueprint의 빨간 노드들
+
+실행이 들어오는 이유
+이 실행 흐름은 왜 여기서 시작되는가? 에 대한 표지
+  BeginPlay 때문에 시작됨
+  Dispatcher Binding 떄문에 시작됨
+
+
+외부 세계의 원인
+        │
+        ▼
+[빨간 노드]
+        │
+        ▼
+Blueprint 내부 실행
+
+---
+
+delegate
+
+이 일이 어떤 실행흐름을 가지게 될 지는 지금 이 코드가 결정하지 않겠다
+
+---
+
+BP_Lever
+  ├─ Interface Event Interact
+  │    = 들어오는 문
+  │
+  └─ Call OnLeverPulled Dispatcher
+       = 나가는 문
+
+outbound port
+바깥으로 열린 출구
+
+
+node 에 pin 이 있듯이
+개념적으로 실행흐름의 inbound port, outbound port 도 그려볼 수 있다
+그래프에 표면의 선((지역적 exec wire)으로 표현되지 않는 차원이 있다
+local 에서는 보이지 않는 제어 흐름 그래프
+
+
+               Object Boundary
+        ┌────────────────────────────┐
+        │                            │
+IN  ───▶│ Interface Event            │
+        │                            │
+        │ Internal State / Logic     │
+        │                            │
+OUT ◀───│ Event Dispatcher           │
+        │                            │
+        └────────────────────────────┘
+
+---
+
+1. Static Control Flow Graph
+   코드/Blueprint wire에 보이는 실행 흐름
+
+2. Runtime Binding Graph
+   Delegate, Event Dispatcher, Timer, Async Callback 등에 의해
+   런타임에 구성되는 실행 흐름
+
+런타임 실행 그래프를 구성하는 도구
+
+---
+
+동적으로 탈부착되는 exec wire (실행흐름)
+
+Bind Event
+=
+bind runtime exec-wire
+
+Unbind Event
+=
+remove runtime exec-wire
+
+---
+
+Interface 는 표준화된 Inbound Port 이고
+Dispatcher 는 표준화된 Outbound port 이다
+
+Delegate Entry 는 Outbound port 에 (외부로) 연결된 전화 배선들이다
+Event 는 Inbound port 에 (외보에서) 연결된 실행흐름이다
+
+
+객체는 Interface로 요청을 받고,
+Dispatcher로 사실을 알린다.
+
+---
+
+외부 caller는 구체 타입을 모르고도 그 표준 소켓으로 실행 흐름을 연결할 수 있어요.
+Target이 무엇이든,
+Interact 소켓을 가지고 있으면 실행을 보낼 수 있다.
+
+---
+---
+---
+
+일반 함수 호출
+
+A가 B를 안다.
+A가 B의 함수를 직접 호출한다.
+
+A ─────▶ B
+
+
+A는 B를 모른다.
+A는 call signature만 공개한다.
+B는 A에 등록한다.
+A는 broadcast한다.
+
+A ─────▶ Channel ─────▶ B
+
+
+Coupling 의 방향이 바뀌고, 위치가 이동한다
+
+호출자 쪽 부담을 줄이고
+수신자 쪽으로 부담을 이동시키는 구조 장치
+
+---
+---
+---
+
+{
+  Foo()
+}
+
+를 해체
+
+Event, Signal -> 언제 호출할 것인가? / 호출이 발생하는 이유
+Callback, Delegate -> 무엇을 호출할 것인가? / 그 시점에 실행될 callable 의 모양과 자리
+Delegator, Dispatcher ->  누가 호출할 것인가? / event 를 invocation 으로 변환하는 장치
+
+---
+
+Foo();
+
+A가                 - 누가 호출할지
+지금                - 언제 호출할지
+B의                 - polymorphism
+Foo를               - 무엇을 호출할지
+이 인자로           - 인자 전달 의미론 
+하나만              - 0개, 1개, 여러 개
+동기적으로          - 동기, 비동기 큐, 비동기 스레드
+호출하고            
+결과를 버린다       - 결과를 사용
+
+---
+
+관계의 분산
+
+A가 broadcast했다.
+그 시점에 등록되어 있던 것들이 실행됐다.
+그 등록은 이전의 다른 여러 때, 다른 여러 곳에서 일어났다.
+
+
+질문(=디버깅)이 바뀐다
+
+누가 이 Channel 에 Bind 했지?
+언제 Bind 했지?
+broadcast 시점의 invocation list 는 무엇이었지?
+
+---
+
+#include "a/b.h"
+
+int a = foo() // b.h 에서 선언
+
+1. "./a" 디렉터리에 b.h 라는 파일이 존재한다는 것을 전제
+2. b.h 라는 파일에 foo라는 이름이 존재한다는 것을 전제
+3. 그 foo 가 callable 한 속성을 가지고 존재한다는 것을 전제
+4. 그 foo 가 ()=>int 라는 형태로 존재한다는 것을 전제
+
+---
+
+컴파일 타임의 정적 지식의 일부 지식을 런타임으로 옮긴다
+
+what abstraction layers really do
+
+they convert specific assumptions into contractual assumptions.
+
+---
+
+Delegate Container 의 문장
+
+나의 호출자가 [어떤 때에] [누군가들]의 [Foo-like]를 호출할 것을 명령할 것이다.
+
+---
+
+Coupling은 형태를 바꾸고 이동하고 지연된다
+
+A가 B,C,D를 안다.
+B,C,D가 A의 Delegate Contract를 안다.
+
+Composer가 A와 B 둘 다 안다.
+
+Caller가 concrete type은 모르지만,
+interface contract는 안다.
+
+좋은 설계는 Coupling 을 없애는 것이 아니라
+더 자연스러운 곳으로 옮기고 형태를 만든다
+
+---
+---
+---
+---
+---
+---
+---
+---
+---
+
+Event 자체는 실행이 아니에요
+
+Event
+  “무언가가 발생했다”
+
+Delegate
+  “그 발생을 누구에게 어떤 signature로 전달할까?”
+
+Dispatch
+  “이 callable들을 실제로 호출한다” ( => 활성화한다)
+
+
+JS 에서는 Event 가 payload 를 가진 오브젝트로 표현되지만
+UE 에서는 Event 가 delegate type signature 로 표현된다
+
+---
+
+즉 함수의 parameter roles 가 event 를 표현하는 역할을 한다
+Event Delegate 의 Signature 가 event 를 어떤 문장으로 말할지 정한다
+  
+DECLARE_DELEGATE_ThreeParams (FOnAttributeChanged, FGamePlayTag AttributeTag, float NewValue, float OldValue)
+
+사건의 형태(구조): "어떤 Attribute 가 OldValue 에서 NewValue 로 바뀌었다"
+
+사건 1: "Health Attribute 가 120 에서 100 으로 바뀌었다"
+사건 2: "Rage Attribute 가 30 에서 60 으로 바뀌었다"
+
+
+DECLARE_DELEGATE_ThreeParams (FOnAttributeChanged, FGamePlayTag AttributeTag, AActor* InstigatorActor, float Delta)
+
+사건의 형태(구조): "누군가가 어떤 Attribute 를 얼마만큼 변화시켰다"
+
+사건 1: "Projectile 이 Health Attribute 를 -20만큼 변화시켰다"
+사건 2: "Potion 이 MoveSpeed Attribute 를  +30만큼 변화시켰다"
+
+
+Delegate 변수명 = 사건의 이름
+signature = 사건의 문법, 사건의 형태, 사건의 구조
+
+사건을 어떤 관점에서 불특정 다수에게 말할지 정하는 선택
+
+이 시그니처가 깨지면 모든 핸들러들이 깨진다
+
+---
+
+Event Source 에서 Event 가 생성되는 시점(발생하는 시점)과 
+Event handler 가 호출되는 시점이 분리될 수 있디
+
+---
+
+FStruct 로 event object 선언하기
+
+struct FAttributeChangedEvent
+
+DECLARE_DELEGATE (FAttributeChangeEvent, Event)
+
+---
+
+thematic role
+동사는 자기 주변에 의미역 슬롯들을 거느려
+행위자(AGENT), 피영향자(PATIENT), 도구(INSTRUMENT), 정도(EXTENT)...
+
+동사의 결합가(valency)
+
+OnDeath()           →  결합가 0, 자동사  ("죽었다")
+OnHit(Other)        →  결합가 1, 타동사  ("X를 때렸다")
+OnDamage(A, B, C)   →  결합가 3, 수여동사 격
+
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+
+
+Event 이름은 “명령”이 아니라 “발생”이어야 한다
+Dispatcher는 명령 포트가 아니라 알림 포트
+
+좋음:
+  OnLeverPulled
+  OnHealthChanged
+  OnDeathStarted
+  OnQuestCompleted
+  OnInteractionAvailable
+
+애매함:
+  PullLever
+  ChangeHealth
+  CompleteQuest
+  UpdateUI
+
+반대로 Interface는 명령/요청형이 자연스러워요
+
+Interact
+CanInteract
+GetInteractionText
+
+
+c.f. command broadcast
+  OnSaveGame.Broadcast()
+
+---
+
+너무 많이 공개된 Event 
+
+OnHealthChanged
+OnHealthAboutToChange
+OnHealthDeltaCalculated
+OnHealthClampApplied
+OnHealthUIShouldUpdate
+OnHealthAnimationShouldPlay
+
+---
+---
+---
+
+게임 자체가 본질적으로 사건들의 장
+게임은 함수 호출 목록이라기보다 사건들의 극장에 가까워요.
+
+맞았다
+죽었다
+겹쳤다
+눌렀다
+도착했다
+끝났다
+열렸다
+획득했다
+
+---
+---
+---
+
+---
+---
+---
