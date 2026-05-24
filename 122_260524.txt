@@ -1,0 +1,978 @@
+픽셀
+
+구별되는(Discrete) 단위로서의 단위
+개수(Counting)의 기반
+
+cm 같은 길이를 함축하지 않는다
+
+---
+
+해상도 (Resolution)
+
+가로 x 세로 픽셀 개수
+디스플레이 장치의 면적, 단위 면적당 픽셀밀도를 함축하지 않는다
+
+
+"연속적인 시각 정보를 이산적으로 샘플링했다"는 맥락
+픽셀은 그 샘플의 단위가 된다
+
+얼마나 작은 디테일을 구별할 수 있는가 (Resolving power)
+
+---
+
+해상도 + 디스클레이 장치 크기
+
+=> 칸들이 어느 면적 위에 펼쳐졌는가?
+
+=> 각 단위면적 당 칸들이 얼마나 들어가 있는가?
+
+---
+
+1. 물리 픽셀
+
+실제 디스플레이 패널에 있는 작은 발광 단위 (OLED)
+실제 특정 물리 위치에 있는 표시 단위
+
+2. 논리 픽셀
+
+소프트웨어가 좌표 계산에 쓰는 가상의 단위
+
+image[100, 50] = 어떤 색
+framebuffer[100, 50] = 어떤 색
+
+---
+
+모니터가 가로 3840개, 세로 2160개의 점을 가지고 있으면 
+물리 픽셀은 3840 × 2160개
+
+격자 구조로 칸들이 Layout된다
+
+┌─────────────────────────┐
+│ □ □ □ □ □ □ □ □ □ □ □ □ │
+│ □ □ □ □ □ □ □ □ □ □ □ □ │
+│ □ □ □ □ □ □ □ □ □ □ □ □ │
+│ □ □ □ □ □ □ □ □ □ □ □ □ │
+│ □ □ □ □ □ □ □ □ □ □ □ □ │
+└─────────────────────────┘
+
+---
+
+“논리 좌표 1칸”이 실제 물리 픽셀 2×2개에 대응될 수 있다 (Scale Factor = 2.0)
+
+논리 픽셀 1개
+┌─────┐
+│ ■ ■ │
+│ ■ ■ │
+└─────┘
+물리 픽셀 4개
+
+
+Scale 1.5
+  논리 1칸 ≈ 물리 1.5×1.5칸
+  이 경우 정확히 정수 픽셀로 딱 떨어지지 않음
+
+1.5배, 1.25배 같은 비정수 스케일에서는 내부적으로 보간, 래스터화, 반올림이 일어나고 
+레이아웃 snapping 같은 문제가 생길 수 있어요.
+
+
+물리 픽셀 위치 ≈ 논리 좌표 × scale factor
+
+---
+
+비정수 스케일 문제
+
+Scale 1.5에서 논리 좌표 (0, 0)과 (10, 0)은 물리 픽셀 0과 15에 대응된다. 
+하지만 논리 좌표 (1, 0)은 물리 픽셀 1.5 — 존재하지 않는 위치다. 
+
+두 가지 대응이 가능하다. 픽셀 1에 넣거나 픽셀 2에 넣거나. 
+혹은 두 픽셀에 가중 평균으로 분배 (서브픽셀 정밀도 렌더링)
+
+이 결정이 레이아웃 엔진마다 다르고, 이 때문에 경계 픽셀이 약간 다르게 렌더링되는 것이 레이아웃 Snapping 문제다.
+
+---
+
+해상도 = 픽셀이 몇 개 있는가
+해상도는 화면의 물리적 크기를 말하지 않는다
+
+---
+
+27인치 모니터 1920×1080
+27인치 모니터 3840×2160
+
+둘 다 27인치지만, 두 번째는 같은 면적 안에 픽셀이 훨씬 더 촘촘하게 들어가 있어요
+
+
+24인치 1920×1080
+55인치 1920×1080
+
+둘 다 해상도는 같지만, 55인치는 픽셀 하나하나가 훨씬 커요
+
+---
+
+DPI는 원래 인쇄 쪽 용어
+Dots Per Inch
+1인치 안에 점이 몇 개 들어가는가
+
+디스플레이에서는 더 정확히는 PPI
+Pixels Per Inch
+1인치 안에 픽셀이 몇 개 들어가는가
+
+
+가로 PPI = 가로 픽셀 수 ÷ 물리적 가로 길이 (인치) 
+PPI = 대각선 픽셀 수 ÷ 물리적 대각선 길이 (인치)
+
+
+A: 10인치에 대각선 1000픽셀
+B: 10인치에 대각선 2000픽셀
+
+A = 100 PPI
+B = 200 PPI
+
+---
+
+대각선 2400 픽셀, 24인치 -> 2400 / 24 = 100 PPI 
+대각선 2400 픽셀, 6인치  -> 2400 / 6  = 400 PPI
+
+대각선 PPI 에서 손실되는 정보
+  60 x 40 일수도 있고, 40 x 60 일수도 있고, 120 x 20 일수도 있다
+  즉, 화면비 (aspect ratio) 정보가 손실된다
+
+24인치, 80 PPI -> 대각선 픽셀 개수 1920
+6인치,  80 PPI -> 대각선 픽셀 개수 480
+
+---
+
+버튼 크기 = 100px × 50px
+
+낮은 PPI 화면에서는 이 버튼이 손가락으로 누르기 적당할 수 있어요
+그런데 PPI가 2배 높은 화면에서는 물리 픽셀 하나가 훨씬 작아요
+그러면 같은 100픽셀 버튼은 물리적으로 절반 크기처럼 보일 수 있어요.
+
+물리 크기 = 픽셀 수 / PPI => 몇 인치
+
+
+100 PPI 에서 100 px => 100 px / 100 ppi => 1 inch
+200 PPI 에서 100 px => 100 px / 200 ppi => 0.5 inch
+
+---
+
+그래서 UI 시스템은 보통 이렇게 해요
+
+고밀도 ( 높은 PPI ) 화면장치에서는
+논리 픽셀 1개를
+물리 픽셀 여러 개로 그린다.
+
+픽셀이 작아졌으니
+같은 물리 크기를 유지하려면
+더 많은 픽셀을 써야 한다.
+
+---
+
+UI 버튼의 논리 크기 = 100 × 50
+
+Scale 1.0
+→ 실제 물리 픽셀 100 × 50
+
+Scale 2.0
+→ 실제 물리 픽셀 200 × 100
+
+
+이렇게 논리 픽셀은 사람이 의도한 UI 크기와 디스플레이의 실제 픽셀 밀도 사이에 완충층을 만듭니다.
+
+---
+---
+---
+
+디스플레이에서는
+  픽셀 = 여러 색 서브픽셀 + 구동 회로 + 패널 제조 단위
+
+소프트웨어에서는
+  픽셀 = 이미지 샘플 하나 / 주소 하나 / 좌표 단위 하나
+
+---
+
+물리 픽셀
+
+RGB stripe
+세 개의 발광/투과 단위
+  Red subpixel
+  Green subpixel
+  Blue subpixel
+
+
+LCD에서는 픽셀 자체가 빛을 내는 것이 아니라, 뒤쪽 백라이트의 빛을 액정 셀과 컬러 필터를 통해 조절
+OLED에서는 각 서브픽셀이 직접 빛을 냄
+
+---
+
+pixel pitch
+
+인접한 픽셀 중심과 중심 사이의 거리
+
+┌─────┐     ┌─────┐
+│ RGB │ gap │ RGB │
+└─────┘     └─────┘
+
+픽셀 사이에는 여러 장치가 있다
+그래서 물리 픽셀을 빈틈없는 타일처럼 생각하면 안 된다
+
+(같은 조건에서)
+PPI 가 커지면
+Pixel Pitch 가 작아진다
+
+---
+
+aperture ratio
+“전체 픽셀 면적 중 실제로 빛에 기여하는 비율”
+
+  ┌───────────────┐
+  │ 회로          │
+  │ ┌──┐┌──┐┌──┐  │
+  │ │R ││G ││B │  │
+  │ └──┘└──┘└──┘  │
+  └───────────────┘
+
+빛을 내거나 통과시키는 면적은
+픽셀 전체 면적보다 작을 수 있음
+
+즉, 픽셀 칸 전체가 빛나는 것은 아니다
+
+---
+---
+---
+
+입력 신호 해상도와 패널 native 해상도가 다른 경우
+
+GPU framebuffer 1920×1080
+        │
+        ▼
+모니터 내부 scaler
+        │
+        ▼
+패널 native grid 3840×2160
+
+---
+
+Supported mode
+  모니터가 입력받을 수 있는 신호 형식
+  1920×1080 60Hz, 2560×1440 120Hz, 3840×2160 60Hz
+
+Preferred mode
+  모니터가 기본/권장으로 제시하는 모드
+
+Native resolution
+  패널이 실제로 가진 고유 픽셀 격자 (Grid, Matrix, Lattice)
+
+OS Current output mode ( OS Resolution )
+  지금 GPU가 모니터에 보내는 pixel
+
+---
+
+UMG의 100×50은 “반드시 물리 픽셀 100×50”이 아니라, 
+UI 레이아웃 공간의 크기.
+
+viewport scale / DPI scale을 거쳐 물리 픽셀로 변환
+
+---
+
+여러 물리 픽셀 구조
+RGB/RGBW 같은 subpixel layout
+
+RGB stripe
+PenTile RGBG
+QD-OLED
+
+텍스트나 색 경계에서는 RGB stripe를 전제로 한 렌더링과 어긋날 수 있어요
+
+---
+
+1. panel pixel 
+
+2. Subpixel 
+   R/G/B/W 등 색 성분
+
+3. Input active pixel 
+   GPU가 현재 모니터에 보내는 영상 신호의 active 해상도
+
+4. Render target pixel 
+   게임이 내부적으로 렌더링하는 framebuffer 크기
+
+5. Backbuffer / swapchain 
+    OS/GPU 가 화면에 제출하는 최종 버퍼 크기
+
+6. Logical UI pixel
+   소프트웨어가 Widget Layout 계산에 사용하는 논리 좌표 단위
+
+---
+---
+---
+
+소프트웨어는 픽셀을 이렇게 봐요
+
+Framebuffer[x, y] = Color
+Framebuffer[100, 50] = (R: 1.0, G: 0.2, B: 0.1)
+
+
+디스플레이 하드웨어에서는 이런 일이 일어나요
+
+각 서브픽셀 전압/전류 제어
+
+---
+---
+---
+
+100px 은 몇 인치인가?
+
+
+32인치 4K 장치에서
+100px 은 몇 인치인가?
+
+4K, 100 PPI 장치에서
+100px 은 몇 인치인가?
+
+
+물리 크기 = 논리 크기 × scale / 실제 PPI
+
+---
+
+DPI scaling의 이상적인 목표
+
+같은 논리 크기가 비슷한 물리 크기를 유지
+
+100 PPI 화면
+  scale = 1.0
+
+200 PPI 화면
+  scale = 2.0
+
+150 PPI 화면
+  scale = 1.5
+
+---
+---
+---
+
+Pixel
+
+[샘플링 이론]
+  2D 공간 상의 색 정보 샘플 한 개
+
+[물리적 표시]
+  작은 면적을 가진 표시 칸
+
+[메모리]
+  framebuffer[x, y] 주소의 값
+
+[UI 시스템]
+  논리 좌표, layout unit
+
+[GPU 출력]
+  영상 신호의 active sample
+
+[패널 내부]
+  subpixel = R/G/B/W 광학 요소
+
+[사람의 눈]
+  빛의 패턴으로 통합되어 지각되는 것
+
+---
+---
+---
+
+LCD 픽셀은 “발광 단위”라기보다 “빛을 조절하는 창문”에 가까워요.
+
+백라이트 빛
+    │
+    ▼
+액정층이 통과량 조절
+    │
+    ▼
+컬러 필터 R/G/B
+    │
+    ▼
+눈으로 들어오는 색
+
+
+OLED
+
+픽셀별로 발광을 완전히 끌 수 있으므로 완전한 블랙이 가능
+
+---
+
+Unreal UMG의 DPI Scale
+
+실제 모니터의 물리 PPI를 직접 재서 계산하는 값이라기보다
+viewport 크기 기반 UI scale 정책
+
+
+Viewport Size
+   ↓
+DPI Scale Rule
+   ↓
+DPI Curve
+   ↓
+UMG DPI Scale
+
+---
+
+지금 화면이 1920×1080이다
+
+render target?
+OS output mode?
+monitor input signal?
+panel native grid?
+UMG logical space?
+
+---
+---
+---
+
+a logical pixel space in memory, a physical grid of light emitters, and the mapping between them
+Logical Grid  →  Mapping  →  Physical Grid
+
+---
+
+In the most basic embedded system,
+
+you'd write directly to the framebuffer as if it were the physical pixel grid itself
+a perfect 1:1 mapping
+
+that creates a fragility: the moment you change the display hardware, your code breaks because the pixel count changed
+
+The logical/physical split emerges as a practical solution to the portability problem
+
+Without it, your UI code is locked to specific pixel grid configuration
+
+
+The logical pixel system is a practical way to encode "desired physical size in pixel units" relative to a reference PPI
+
+to keep physical sizes consistent across devices, DPI scaling compensates for PPI differences
+At its core: pixels are just a count with no inherent physical size, 
+but the screen's pixel grid has physical dimensions, represented by PPi
+
+---
+
+Application
+    │
+    │  memory[y][x] = (R, G, B)
+    ▼
+Framebuffer  ← 2D 배열, 메모리 안의 숫자들
+    │
+    │  "주소 (x, y)의 값을 LED (x, y)로"
+    ▼
+Display Controller  ← 메모리→빛 변환기
+    │
+    ▼
+16×16 RGB LED 격자
+physical size 16cm × 16cm
+
+
+Framebuffer는 숫자들의 배열이다. 
+memory[30][70]에서 [30][70]이라는 주소는 그냥 정수 인덱스이고 그곳에 저장된 것은 RGB 정보이다 
+픽셀이 몇 inch 라는 정보는 Framebuffer 어디에도 없다.
+
+
+LED 격자는 물리 객체다. 
+LED (3, 7)은 격자 좌상단 모서리에서 몇 inch 떨어진 위치에 있고, 그 칸에는 물리적 크기가 있다
+각 격자 안의 LED 장치는 켜거나 끌 수 있는 물리 장치이다
+
+---
+
+디스플레이 장치의 해상도: 16 x 16 = 256
+화면공간을 몇 개의 구별가능한 칸으로 나눴는가?
+
+여기에는 물리 크기에 대한 말은 없다
+
+물리 크기는 PPI 정보를 결합해서 구할 수 있다.
+
+e.g. PPI = 2
+
+16 x 16 디스플레이 장치는 pixel count / PPI = 8 inch, 8 inch x  8 inch
+각 픽셀의 크기는 1 / PPI = 1 / 2 = 0.5 inch 이다
+
+---
+
+스케일링은 언제 생기는가
+
+앱이 2×2 이미지를 만들었다고 해봅시다
+
+1 0
+0 1
+
+실제 디스플레이는 4×4라고 해봅시다
+
+그러면 대응 문제가 생깁니다.
+2×2 이미지를 4×4 장치에 어떻게 보여줄 것인가?
+
+1 1 0 0
+1 1 0 0
+0 0 1 1
+0 0 1 1
+
+여기서 “논리 픽셀 1개가 물리 픽셀 여러 개에 대응된다”가 생깁니다.
+논리 픽셀 1개 ↔ 물리 픽셀 2×2개
+
+---
+---
+
+먼저 “격자화된 값의 배열”이 있고,
+그 배열을 “물리적인 빛의 배열”에 대응시키는 과정이 있다.
+
+---
+
+PPI = 대각선 칸 개수 / 대각선 길이 inch 
+
+
+가로 pixel pitch = 가로 길이 / 가로 칸 개수
+세로 pixel pitch = 세로 길이 / 세로 칸 개수
+
+대각선 pixel pitch = 대각선 길이 / 대각선 칸 개수 =  1 / PPI 
+
+---
+
+상상
+
+PPI = 0.1
+
+cell 하나의 대각선 길이 = 10 inch
+
+---
+
+DPI Scaling이 생기려면 기준이 필요합니다.
+
+Reference PPI = 1
+
+논리 픽셀 1개는
+물리 크기 1 inch에 대응한다고 가정한다
+
+
+Button logical size = 2 × 2
+
+앱의 의도는
+기준 장치에서
+2 logical px => 2 inch
+
+---
+
+Physical Device PPI = 2
+Pixel pitch = 0.5 inch
+
+scaling 없이 앱의 2×2 버튼을 물리 픽셀 2×2에 그대로 그리면
+2 physical px × 0.5 inch = 1 inch
+
+
+Reference PPI 보다 높은 Physical PPI에서
+UI 가 원래 의도했던 것보다 작아진다
+
+---
+
+UI Design Space
+        │ App DPI Scale
+        ▼
+Application Surface / Viewport
+        │ OS DPI Scale
+        ▼
+OS Backbuffer
+        │ Display Scaling
+        ▼
+Physical Panel Grid
+
+
+Logical Grid
+  ↓ scale A
+Lower Logical Grid
+  ↓ scale B
+Lower Logical Grid
+  ↓ scale C
+Physical Grid
+
+
+위층의 한 칸을
+아래층의 몇 칸으로 대응시킬 것인가?
+
+---
+---
+---
+
+DPI-unaware 앱은 Mapping A=1로 그리고 나머지를 OS나 Display Controller에 떠넘긴다. 
+DPI-aware 앱은 OS로부터 스케일 값을 통보받아 처음부터 Mapping A 배율로 렌더링한다
+
+the OS and the app have a communication protocol. The app declares its DPI awareness, and the OS responds accordingly
+SetProcessDpiAwarenessContext
+OS 컴포지터는 이 선언을 보고 해당 윈도우에 대한 스케일링을 끈다.
+
+---
+---
+---
+
+문제 A.
+논리 픽셀 몇 개가 물리 픽셀 몇 개로 가는가?
+
+문제 B.
+그 물리 픽셀이 실제 화면에서 몇 cm인가?
+
+---
+
+DPI Scaling System
+
+PPI 차이 때문에
+논리 단위가 화면에서 너무 작거나 커지지 않도록
+논리 픽셀 → 장치 픽셀 변환 배율을, Reference PPI & Actual PPI 에 기반하여 정하는 체계
+
+---
+---
+---
+
+제조업계에서 Pixel Pitch라는 이름으로 쓴다.
+LED 전광판 스펙에 P2, P4, P10 같이 표기하는데, 이게 픽셀 피치 2mm, 4mm, 10mm다
+
+---
+
+OS DPI Scaling 의 목표
+
+논리 픽셀 1개가
+기준 장치에서 차지하던 물리 길이를
+실제 장치에서도 비슷하게 유지하는 것
+
+---
+---
+---
+
+Viewport 픽셀 개수를 받아서 Scale Factor 를 돌려준다
+
+이 Scale Factor 가 UMG UI Pixel 공간과 Viewport Pixel 공간을 연결한다
+
+X축: Viewport (Shortest Side) 
+Y축: DPI Scale Factor
+
+2.0 ┤              ╭───
+    │          ╭───╯
+1.0 ┤      ╭───╯
+    │  ╭───╯
+0.5 ┤──╯
+    └──┴──────┴──────┴──
+      480    1080    2160
+
+여기서 Viewport 축의 값은 물리 디스플레이 패널의 native 해상도는 아니고
+Unreal Engine 이 현재 UI 를 배치하고 그리는 대상인 Viewport Pixel의 해상도
+
+UMG UI Pixel 단위와 Viewport pixel을 분리할 것
+(UI Layout Unit, Slate Unit)
+
+그러나 물리 픽셀에 대해 둘 다 논리 픽셀이다.
+
+---
+
+PPI 를 썼다면...
+  같은 모니터에서 창을 줄여도 UI 가 반응하지 않음
+
+---
+---
+---
+
+OS-level DPI values are not always a reliable representation of the physical display's true PPI.
+
+Windows DPI values are often wrong since users can override them
+monitors frequently misreport their physical dimensions through EDID
+Projectors don't have a meaningful PPI at all
+
+---
+---
+---
+
+논리 픽셀은 “물리 픽셀에 아직 박히지 않은 픽셀”
+
+물리 픽셀 격자에 최종적으로 rasterize되기 전에 쓰는 
+소프트웨어 픽셀 좌표계에서 쓰는 추상적인 단위
+
+---
+---
+---
+
+OS DPI Scale
+
+OS가 앱의 좌표계를 실제 출력 픽셀 쪽으로 몇 배로 매핑할 것인가?
+
+Windows Scale 200%
+CSS/앱 논리 100px
+→ OS 200px
+
+
+UE DPI Scale
+
+UMG 위젯의 100이라는 크기를 현재 viewport 안에서 몇 픽셀로 그릴 것인가?
+
+UMG Button Width = 100
+UE DPI Scale = 0.67
+
+Viewport 상 크기 ≈ 67 px
+
+---
+
+Device Content Scale = Physical Pixel / Viewport Pixel
+
+Device Content Scale 1.0 = Viewport Pixel과 Physical Pixel이 1:1.
+
+
+Viewport:             852 × 393   (iOS logical points)
+Device Content Scale: 3.0
+
+Physical Pixel = 852  × 3.0 = 2556
+               = 393  × 3.0 = 1179
+
+---
+
+[Device Profile]
+   │ Device Content Scale (= Mobile Content Scale Factor)
+   │  "이 기기를 몇 해상도로 렌더할까"
+   ▼
+Content / Render Resolution  (= 1280×720)
+   │ DPI Curve가 이 크기를 읽음
+   ▼
+DPI Scale (0.67)
+   │
+   ▼
+UMG Slate Unit → Render Pixel 변환
+
+---
+
+Device screen: 2560 × 1440
+Device Content Scale: 0.5
+
+Preview/content size: 1280 × 720
+
+그러면 UMG DPI Curve는 2560×1440이 아니라, preview/content size인 1280×720 쪽을 기준으로 평가될 수 있습니다.
+
+Device Content Scale이 UMG 버튼을 직접 0.5배 하는 게 아니라,
+DPI Curve가 바라볼 viewport/content size를 바꿀 수 있다.
+
+---
+
+Layout Transform
+  위젯이 “레이아웃 세계에서” 어디에 있고,
+  얼마만큼의 공간을 배정받는가를 정하는 변환.
+
+Render Transform
+  이미 배치가 끝난 위젯을 “그릴 때만”
+  이동/회전/스케일/기울이기 하는 변환.
+
+
+1. Desired Size 계산
+   “이 위젯은 자연스럽게 어느 정도 크기를 원하나?”
+
+2. Layout / Arrange
+   부모 패널이 자식들에게 공간을 나눠줌
+   여기서 Layout Transform이 중요함
+
+3. Paint
+   배정된 Geometry를 바탕으로 실제 Draw Element를 만듦
+   여기서 Render Transform이 적용됨
+
+4. Render
+   Slate draw elements가 화면에 그려짐
+
+---
+
+Render Transform Scale을 2.0으로 하면 시각적으로는 대략 200 × 80로 보일 수 있습니다.
+
+Layout상 크기:
+  100 × 40
+
+Render 결과:
+  200 × 80
+
+하지만 부모 패널과 형제 위젯은 여전히 이 버튼을 100 × 40짜리로 취급할 수 있습니다.
+
+레이아웃 세계:
+  [ Button A 100 ][ Button B ]
+
+렌더 결과:
+  [ Button A 200 ][ Button B ]
+         겹칠 수 있음
+
+
+반면 Layout 쪽 크기를 200 × 80으로 바꾸면 부모와 형제들도 그것을 반영합니다
+
+레이아웃 세계:
+  [ Button A 200 ][ Button B pushed ]
+           겹치지 않음
+
+---
+
+Render Transform은 레이아웃을 다시 계산하지 않고도 시각적으로 흔들거나, 커지게 하거나, 회전시킬 수 있습니다.
+
+---
+---
+---
+
+나는 몇 번째에 있는가? - 나는 어느 줄 어느 열에 있는가?
+
+단지 위치 관계의 확정만이 있다 (정보, 정의의 기능 = 확정, 봉인, 고정, 약속, 보장)
+
+
+그리고 그 의자 위에 비트패턴이 앉았어요
+그것은 비트패턴의 형태로 접힌 빛이었어요
+
+---
+
+메모리의 나라
+
+그곳에서 모든 것은 주소로 불렸어요
+모든 것은 칸이었어요
+
+0000
+0001
+0010
+0011
+0100
+...
+
+---
+
+1920×1080은 큰 화면인가요?
+
+그것도 모릅니다.
+그것은 단지 1920개의 칸이 가로로 있고,
+1080개의 칸이 세로로 있는 칸들의 격자라는 뜻입니다.
+그 칸들이 손바닥 위에 모였는지,
+벽만 한 유리판 위에 흩어졌는지는 아직 모릅니다.
+
+---
+
+물리 디스플레이는 말했어요.
+
+여기는 메모리가 아닙니다.
+여기는 공간입니다.
+
+메모리에서는 framebuffer[100, 50]이 그저 주소였어요.
+하지만 패널에서는 pixel[100, 50]이 물리적 거리로 특정되는 위치가 되었어요.
+
+
+---
+
+PPI가 커질수록 픽셀은 작아져요.
+작아진다는 것은 더 촘촘해진다는 뜻이에요.
+  더 작은 디테일을 구별할 수 있게 된다
+
+---
+
+2 PPI 장치를 위해 만든 버튼은 8 PPI 장치에서 작아졌어요.
+손가락이 누르던 버튼은 바늘 끝만 한 장식이 되었어요.
+
+논리 격자는 물리 격자에서 벗어나기 위해 만들어졌어요.
+
+Logical Grid → Mapping → Physical Grid
+
+논리 픽셀은 말했어요.
+나는 물리 픽셀에 아직 박히지 않은 픽셀입니다.
+나는 가능성의 픽셀입니다.
+
+위층의 1칸을 아래층의 몇 칸으로 보낼 것인가?
+
+---
+
+OS는 앱에게 말했어요.
+
+너희는 물리 모니터를 직접 신경 쓰지 마세요.
+나에게 논리 좌표로 말하세요.
+
+앱은 말했어요.
+
+버튼은 100입니다.
+창은 800입니다.
+글자는 14입니다.
+
+OS는 뒤에서 생각했어요.
+
+이 모니터는 고밀도군요.
+이 사용자는 200% 배율을 선택했군요.
+이 앱은 DPI-aware인가요?
+아니면 오래된 앱인가요?
+
+DPI-aware 앱은 OS와 대화했어요.
+
+OS: 이 모니터에서는 이렇게 스케일하세요.
+App: 알겠습니다. 처음부터 크게 그리겠습니다.
+
+DPI-unaware 앱은 말했어요.
+
+나는 96 DPI 세계만 압니다.
+
+그러면 OS는 한숨을 쉬고, 앱이 그린 화면을 통째로 늘렸어요.
+
+그 결과는 때로 흐릿했어요.
+  DPI를 아는 앱은 OS에게 배율을 통보받아 처음부터 그만큼 곱해 그리고, 
+  DPI를 모르는 앱은 1로 그린 뒤 나머지를 OS에 떠넘긴다. 
+  떠넘겨진 점은 흐리다. 정보가 늘지 않은 채 부풀려졌으므로.
+
+---
+
+UE DPI Scale이 말했어요.
+
+나는 UMG와 Viewport 사이의 통역관입니다.
+UMG의 100을 viewport에서 몇 픽셀로 보낼지 정합니다.
+내 곡선은 viewport 크기를 봅니다.
+
+---
+---
+---
+
+픽셀은 셀 수 있는 것이다.
+픽셀은 격자의 어딘가에 있는 것이다.
+그러나 픽셀은 길이를 잴 수 있는 것이 아니다
+
+---
+---
+---
+
+연속(連續)
+
+잴 수만 있고 셀 수는 없는 세계
+
+자리와 자리 사이에 또 자리가 있었고, 그 사이에 또 있었다. 끝없이 나뉘어도 빈틈이 없었다
+밝기는 한 점에서 옆 점으로 매끄럽게 흘렀고, 어디서 한 색이 끝나고 어디서 다음 색이 시작되는지 묻는 것은 무의미했다. 경계가 없었으므로
+
+여기에는 개수라는 말 자체가 성립하지 않는다
+
+---
+
+누군가 격자를 들이댔다
+연속의 들판 위에 그물을 던지듯, 일정한 자리마다 점을 찍어 그 자리의 빛을 한 숫자로 받아 적었다
+자리와 자리 사이는 버렸다
+
+그물코보다 가는 무늬는 잡히지 않고, 잡히지 않은 무늬는 거짓 무늬가 되어 돌아온다
+너무 성긴 그물로 잔물결을 뜨면 엉뚱한 큰 물결이 떠오른다
+
+---
+
+해상도
+
+"몇 개로 나누었는가"만을 안다.
+
+이 층의 점은 위치의 상대적 관계만 있다
+(0, 0) (0, 1)
+(1, 0) (1, 1)
+
+그 위치가 손톱 위인지 극장 벽인지는 모른다 (정해져 있지 않다, 무지)
+
+이 층의 점은 크기가 없다
+
+---
+
+마침내 맨 아래에 닿는다. 실제 물리적 패널의 격자. 진짜 발광하는 장치들.
+
+---
+
+픽셀 개수가 PPI 라는 맥락 안으로 들어가면
+물리적인 길이에 대응되게 된다
+
+mapping
+다리
+
+---
+
+빛이 눈으로 들어온다. 망막의 수용체들이 그 빛을 받는다. 
+그런데 눈에는 눈의 그물코가 있고, 눈의 Nyquist 한계가 있다. 
+칸이 충분히 촘촘하면 — 시청 거리에서 눈의 분해능을 넘어서면 — 눈은 더 이상 칸을 칸으로 보지 못한다
+
+직물이 다시 들판이 된다
