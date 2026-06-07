@@ -1,0 +1,400 @@
+첫째, 스레드/플랫폼 정체성 확립
+  GLog의 프라이머리 스레드 지정, 
+  TLS 캐시 설정, 
+  작업 디렉터리 전환, 
+  GGameThreadId 확정과 게임 스레드 우선순위/어피니티 설정
+
+둘째, 커맨드라인과 프로젝트 정체성 확정
+  프로젝트 경로 정규화
+
+셋째, 로깅/출력 장치 인프라
+  콘솔 출력 장치, 
+  GError/GWarn, 
+  백로그 활성화, 
+  -stdout 디바이스
+
+넷째, 파일/IO 계층
+  FIoDispatcher::Initialize, 
+  플랫폼 파일 매니저, 
+  async IO
+
+다섯째, 동시성 인프라
+  FTaskGraphInterface::Startup, 
+  여러 스레드 풀(GThreadPool, GLargeThreadPool, GBackgroundPriorityThreadPool, GIOThreadPool), 
+
+여섯째, 모듈 시스템
+  LoadCoreModules(CoreUObject), 
+  LoadPreInitModules(Engine, Renderer, RenderCore, TextureCompressor 등)
+
+일곱째, 실행 모드 결정
+  커맨드릿/에디터/서버/일반 클라이언트
+
+여덟째, 그래픽/렌더링/UI 부트스트랩
+  셰이더 시스템 전체(RHIInit부터 글로벌 셰이더맵 컴파일까지), 
+  Slate 애플리케이션
+  렌더러
+
+---
+
+"Begin → Wait/Init" 비동기 2단계 패턴
+부팅 시간을 줄이기 위해 의도적으로 작업을 쪼개고 늦출 수 있는 부분은 늦추는 설계
+
+BeginPreInitTextLocalization() (1957)
+
+FTextLocalizationManager::Get().WaitForAsyncTasks() (2907에서 회수)
+
+
+FShaderCodeLibrary::PreInit()(1963줄)
+
+RHIInit 이후의 InitForRuntime(GMaxRHIShaderPlatform) (2994줄)
+
+
+FIoDispatcher::Initialize()(1948줄)
+
+시스템 설정이 끝난 뒤의 InitializePostSettings() (2729줄)
+
+---
+
+RHIInit(bHasEditorToken)가 실행되고 나면 G Max RHI Shader Platform과 G Using Null RHI 라는 두 전역값이 확정
+
+이후 FShaderCodeLibrary::InitForRuntime, 
+FShaderPipelineCache::Initialize, 
+InitializeShaderTypes,
+CompileGlobalShaderMap, GetRendererModule, Slate 렌더러 생성까지 전부 이 값들을 직접 소비
+
+---
+
+모드 선택(에디터/커맨드릿/서버/클라이언트)
+AppInit() 이전에 끝나야 한다
+config 시스템과 플러그인 코드가 GIsEditor/GIsClient/GIsServer를 보고 다르게 동작
+
+---
+
+"X를 로드하기 전에 Y를 끝내라"
+세밀한 순서 의존성
+
+LoadPreInitModules 
+
+"SlateRHIRenderer는 InitializeShaderTypes 호출 전에 로드되어야 한다", 
+"RenderCore는 Renderer와 셰이더 타입을 구현하는 다른 모듈들 이후에 초기화되어야 한다", 
+"TextureCompressor는 어떤 텍스처도 로드되기 전에 로드해야 한다"
+"AudioEditor는 엔진 클래스 CDO가 로드되기 전에 로드해야 한다"
+
+---
+
+UGameUserSettings::PreloadResolutionSettings()은 무비 플레이어가 시작되기 전에 끝나야 하는데
+("critical that resolution settings are loaded before the movie starts playing"), 
+윈도우 크기/풀스크린 상태를 알아야 하기 때문
+
+---
+
+Oodle 압축 초기화는 InitEngineTextLocalization보다 앞서야 하는데
+이 함수가 Oodle로 압축됐을 수 있는 Pak 파일을 로드하기 때문
+
+---
+---
+---
+
+암묵적 순서를 "단계(Stage) 파이프라인 + 명시적 입출력"으로 바꾸기
+
+하나의 거대한 함수 본문 안에서 지역 변수들이 수백 줄에 걸쳐 생성되고 소비됩니다
+EngineBinariesRootDirectory가 1846줄에서 만들어져 2491줄에서 쓰이는 식으로
+
+대신 각 단계를 FBootStage_ProjectPathResolution, FBootStage_RHIInit처럼 독립된 단위로 만들고, 
+각 단계가 "이런 타입의 입력을 받아 이런 타입의 출력을 낸다"고 함수 시그니처 자체로 선언
+
+지금처럼 GMaxRHIShaderPlatform이라는 전역 변수를 아무 데서나 읽을 수 있는 구조에서는, 
+그 변수를 읽는 코드가 RHIInit 이전에 우연히 끼어들어도 
+"컴파일러가 막아주지 못합니다"
+
+컴파일러의 활용
+
+---
+
+"Begin / Wait" 비동기 페어를 퓨처(Future) 기반으로 통일
+
+"시작은 했는데 회수를 깜빡했다"거나 "회수 시점이 잘못됐다" 같은 실수를 한 군데서 막을 수 있다
+
+---
+
+순서 의존이 없는 단계들을 모아서 명시적으로 병렬화하기
+
+"독립적인 초기화 작업 묶음"으로 명시적으로 표시
+새로 추가하는 사람이 굳이 필요하지도 않은 위치 결정을 매번 고민
+그 결과(어디에 뒀는지)가 또 다른 "왜 여기 있지?"의 씨앗이 됩니다
+
+---
+
+"왜"를 코드 옆 주석이 아니라 단계의 "계약(contract)"으로 끌어올리기
+의존성 정보가 "원인" 옆에만 적혀 있고 "결과" 옆에는 없는 비대칭 구조
+
+각 단계가 Requires()/Provides() 같은 선언을 갖고, 
+이걸 부팅 시퀀스를 조립하는 최상위 코드에서 검증하는 식으로
+의존성 정보가 양쪽 모두에서, 그리고 기계적으로 검증 가능한 형태로 존재
+
+---
+
+"스플래시 화면을 띄우기 전까지 화면에 뭔가 보이게 만드는 데 필요한 최소한의 하부구조를 갖추되, 
+그 과정에서 각 단계의 순서 의존성에 따라 자원들(RHI, 모드 결정, 프로젝트 경로, 스레딩 인프라)을 초기화한다"
+
+---
+
+복잡도가 갈라져 나오는 축을 찾는다
+
+---
+
+"커맨드라인 확정 → 프로젝트 경로 → 플랫폼 파일 → IO/Pak → Oodle → 텍스트 로컬라이제이션 → 스플래시"
+
+"RHIInit → {셰이더 코드 라이브러리, 파이프라인 캐시, 셰이더 타입, 글로벌 셰이더맵, Slate 렌더러}"
+(한 노드에서 부채꼴로 갈라지는 흐름)
+
+---
+---
+---
+
+첫째, 
+
+PreInitContext에서 SlowTask, SlateRenderer 등을 회수
+로딩 화면 설정, 얼리 스타트업 무비/프리로드 스크린 재생
+번들 매니저 후킹을
+
+둘째
+Pak 마운트
+셰이더 코드 라이브러리/파이프라인 캐시 오픈
+
+셋째
+패키지 이름 등록, 
+애셋 레지스트리, 
+IPackageResourceManager/IBulkDataRegistry, 
+ProcessNewlyLoadedUObjects(클래스 등록과 CDO 생성),
+가상화 시스템,
+패키지 로컬라이제이션 캐시, 
+디폴트 머티리얼 검증
+
+넷째
+텍스처 스트리밍 매니저, 
+LoadStartupCoreModules/LoadStartupModules(게임 클래스가 로드되는 지점), 
+템플릿 공유 경로,
+애니메이션 압축 설정
+
+다섯째, 
+PostInitRHI/InitRenderingThread, 
+
+여섯째
+실행 경로의 분기 — 커맨드릿 vs 일반 클라이언트
+
+---
+
+check(PreInitContext.SlowTaskPtr)는 전 단계가 SlowTaskPtr을 할당해뒀다는 사실에 대한 검증
+
+checkf(PRIVATE_GIsRunningCommandlet, TEXT("This should have been set in PreInitPreStartupScreen"))
+
+---
+
+얼리 스타트업 무비/위젯은 "uobject나 엔진 기능과 어떤 상호작용도 할 수 없다"
+ProcessNewlyLoadedUObjects를 비롯한 UObject 기동 전체보다 앞에 있어야 하는지에 대한 이유
+
+---
+
+IPackageResourceManager::Initialize()
+"애셋 레지스트리 모듈 이후에 초기화되어야 한다(에디터 구현체가 그것에 의존하기 때문)"
+
+---
+
+UMaterialInterface::InitDefaultMaterials()
+
+"의존성 로딩 중에 이미 로드됐을 수 있다, 아니면 지금 한다"
+
+"혹시 이미 끝났을 수도 있는 작업을 방어적으로 한 번 더 보장한다"는 멱등(idempotent) 안전망 패턴
+
+---
+
+600줄짜리 장거리 의존성
+
+---
+
+상태 객체에 EnsureInitialized()를 요청
+실제로 누가 처음 트리거했는지가 로그나 디버거에서 보이게 됩니다.
+
+---
+
+커맨드릿 실행 경로를 별도 함수/클래스로 분리하기
+FCommandletExecutionPath 
+
+---
+
+"enough time should have passed since loading global SM to avoid a blocking load"
+
+명시적 신호(퓨처, 펜스, 이벤트)
+
+---
+
+함수 꼬리의 "그랩백" 구간
+
+RegisterPostStartupTask(name, dependencies, fn)처럼 등록하는 형태로
+
+---
+
+위험을 감수하면서까지 바꿀 이유가 없다
+
+---
+
+UObject 시스템 기동 체인
+IPackageResourceManager → ProcessNewlyLoadedUObjects → PerformLazyInitialization → InitDefaultMaterials
+
+---
+
+이 시스템들은 서로의 초기화를 트리거할 수 있는 다대다 관계
+누가 먼저 했는지 단정하기가 힘들다
+
+---
+
+의존성 진술
+
+"after X because Y"
+"first used in Z"
+
+---
+
+UEngine 변종 결정과 생성 → GEngine->Init → GEngine->Start
+
+ini에서 GameEngine/UnrealEdEngine 클래스 이름을 읽고, 
+StaticLoadClass로 그 클래스를 로드하고, NewObject로 실제 엔진 객체를 만든 뒤, 
+ParseCommandline과 InitTime으로 준비를 마치고, 
+GEngine->Init(this)
+
+---
+
+그 주위를 감싸는 건 모듈 로딩과 알림 체계
+
+---
+
+CoreDelegates.h / OnPostEngineInit 선언주석
+
+Called at the end of UEngine::Init, right before loading PostEngineInit modules 
+for both normal execution and commandlets
+
+
+GEngine->Init(this) → OnPostEngineInit.Broadcast() → LoadModulesForProject(PostEngineInit)
+
+---
+
+OnFEngineLoopInitComplete
+
+Called at the very end of engine initialization, right before the engine starts ticking. 
+This is not called for commandlets
+
+---
+
+Disable the backlog only after module loading is complete 
+because that gives modules a chance to consume the backlog when constructing output devices
+
+backlog = buffered logs
+
+---
+
+자동화 도구가 의존하는 로그 줄
+코드 밖 시스템과의 계약
+
+"Emit logging. Don't edit! 
+Automation looks for this to detect failures/success during initialization."
+
+외부 CI/오토메이션 시스템이 이 정확한 문자열과 위치에 의존
+
+---
+
+FShaderPipelineCache::PauseBatching()과 ResumeBatching() 사이에 
+OnFEngineLoopInitComplete.Broadcast()
+
+"외부에서 구독자들이 무거운 작업을 할 수도 있는 이 브로드캐스트 동안에는, 셰이더 컴파일 경쟁을 잠시 멈춰두자"
+
+---
+
+"설정 문자열 → 클래스 로드 → 객체 생성" 패턴
+
+---
+
+임베디드 앱 절전 처리
+
+---
+
+"Startup" 토큰을 놓은 시점과 "FirstTicks" 토큰을 잡는 시점
+
+새 토큰을 먼저 잡고 옛 토큰을 나중에 놓는 방식
+
+---
+
+Commandlet
+
+엔진을 GUI 게임/에디터로 띄우는 것이 아니라, 명령줄에서 특정 작업 하나를 수행하고 종료하는 작은 실행 단위
+
+UnrealEditor-Cmd.exe ActionRoguelike.uproject -run=ResavePackages -fixupredirects -projectonly
+
+엔진 프로세스를 띄운 뒤 ResavePackages라는 작업만 수행하고 종료
+
+UCLASS()
+class UMyCommandlet : public UCommandlet
+{
+    GENERATED_BODY()
+
+public:
+    virtual int32 Main(const FString& Params) override;
+};
+
+---
+
+UnrealEditor.exe MyProject.uproject
+
+UnrealEditor.exe MyProject.uproject -game
+UnrealEditor.exe로 실행하지만, 에디터 UI를 여는 것이 아니라 지정한 맵을 게임처럼 실행
+
+UnrealEditor.exe MyProject.uproject -server
+
+UnrealEditor-Cmd.exe MyProject.uproject -run=Cook
+
+---
+
+EBootStage::HeavyInitComplete
+
+---
+
+// Don't edit!
+
+vs
+
+구조화된 신호
+  이 시점의 의미 표현 (코드가 이 라인에 있는 것의 의미)
+  구독 관계
+
+FBootProfiling::OnInitComplete()
+FEngineInitTelemetry::ReportSuccess() 
+
+---
+
+스코프 가드
+
+정상 종료든 중도 반환이든 예외 발생이든
+마무리하는 짝이 맞춰지는 구조
+
+---
+
+AllowSleep(TEXT("Startup")) → KeepAwake(TEXT("FirstTicks"), true) 
+사이의 미세한 틈새
+
+FEmbeddedCommunication::TransitionWakeToken(TEXT("Startup"), TEXT("FirstTicks"))
+원자적 전환
+
+
+그 틈새가 실제로 안전한지 증명하는 것보다 더 나은 길
+
+---
+
+엔진이 떴으니 마저 처리할 잡다한 일들" 무더기를 등록형 Hook 목록으로
+
+---
+
+EDelayedRegisterRunPhase 
+
+부팅 시퀀스의 축약된 지도
+
+---

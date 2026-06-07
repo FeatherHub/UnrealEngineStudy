@@ -1,0 +1,132 @@
+C# 에서 new keyword 를 남겨놓은 이유... 
+
+MyClass My1 = new MyClass(); // Heap 할당 -> O
+MyClass My2 = MyClass(); // Stack 할당 -> X
+
+GC 언어 
+C#
+heap allocation
+object identity가 만들어진다 
+
+어차피 무조건 Heap 할당이라면 왜 사용자에게 new 개념을 노출?
+
+Python 의 경우
+MyClass()만 써도 됨
+내부적으로 __new__ + __init__ 호출
+
+---
+
+MyStruct s1 = new MyStruct(); // Stack 할당
+MyStruct s2 = MyStruct(); // 불가능
+
+---
+
+Person p0;
+Person p1 = new Person();
+Person p2 = p1;
+Person p3 = null;
+Person p4 = GetPersonFromDatabase();
+
+new 는 이 중에서 객체 생성을 눈에 띄게 만든다 
+
+코드 탐색을 용이하게 할 수 있다
+  find "new SomeClass(" 
+  vs
+  find "SomeClass("
+
+---
+
+C#의 new는 “heap allocation”이 아니에요
+C#의 new는 allocation 키워드가 아니라 construction 키워드
+"constructor를 new operator로 invoke한다"
+
+var v = new MyStruct(); // value type, stack
+var r = new MyClass();  // reference type, heap
+
+class, struct, array, anonymous type 생성을 하나의 creation syntax로 묶는다
+생성과 호출을 문법적으로 분리한다
+
+---
+
+Person p = new Person("Alice");
+Dictionary<string, List<int>> map = new Dictionary<string, List<int>>();
+
+vs 
+
+Person p = new("Alice");
+Dictionary<string, List<int>> map = new();
+
+target-typed new
+
+---
+---
+---
+
+CLI (Common Language Infrastructure, ECMA-335 표준)
+.NET의 전체 스펙
+
+CLI
+├── CTS: Common Type System
+├── CLS: Common Language Specification
+│     언어 간 interoperability를 위한 CTS의 최소 공통 부분집합
+├── CIL: Common Intermediate Language
+│     모든 .NET 언어가 컴파일되는 공통 instruction set (= IL)
+└── VES: Virtual Execution System
+      CIL을 실제로 실행하는 런타임 (= CLR의 실행 엔진)
+
+---
+
+CTS type
+├─ value type
+│  ├─ primitive value type: int, bool, double ...
+│  ├─ enum
+│  └─ struct
+│
+└─ reference type
+   ├─ class
+   ├─ interface
+   ├─ array
+   ├─ delegate
+   └─ string 등
+
+---
+
+CIL은 C# 컴파일러가 내보내는 중간 명령어 언어
+예전 이름으로 MSIL이라고도 불렸어요
+
+C#이든 F#이든 컴파일하면 CIL이 나와
+
+CIL이 실행되기 전에 CLR을 대상으로 native code로 컴파일되어야 하며
+이 변환은 JIT compiler 또는 native image 방식으로 이루어진다
+
+---
+
+CLR: Common Language Runtime
+
+CIL → native code JIT compiler
+
+실헹, GC ...
+
+---
+
+CTS type 계층
+
+System.Object에서 파생 ( = Reference Type )
+
+System.Object
+├── System.ValueType ( = Reference Type )
+│     ├── System.Int32      (int) ( = Value Type )
+│     ├── System.Single     (float) ( = Value Type )
+│     ├── System.Double     (double) ( = Value Type )
+│     ├── System.Boolean    (bool) ( = Value Type )
+│     ├── System.Char       (char) ( = Value Type )
+│     └── ...
+└── System.String           (string)
+
+
+CLR/CTS의 특수한 설계
+ValueType 아래의 타입들은 특별히 value type semantics를 갖게 한다.
+System.ValueType을 직접 상속하는 타입은, 그 instance를 value type으로 취급한다
+  copy by value, stack/inline storage
+  
+unboxed int 값은 object identity를 가진 heap object가 아니에요

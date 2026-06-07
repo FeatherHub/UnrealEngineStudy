@@ -1,0 +1,190 @@
+##1
+
+Module.ActionRoguelike .cpp.obj
+
+Error  : LNK2019: unresolved external symbol 
+
+"__declspec(dllimport) class UClass * __cdecl Z_Construct_UClass_UUserWidget_NoRegister(void)" 
+
+(__imp_ ? Z_Construct_UClass_UUserWidget_NoRegister @@ YAPEAVUClass @@ XZ) referenced in function 
+
+"void __cdecl `dynamic initializer for 'public: static struct UECodeGen_Private::FObjectPropertyParams const Z_Construct_UClass_ARoguePlayerController_Statics::NewProp_InGameMenuWidget''(void)" 
+
+(??__E ? NewProp_InGameMenuWidget @ Z_Construct_UClass_ARoguePlayerController_Statics @@ 2UF ObjectPropertyParams @ UECodeGen_Private @@ B @@ YAXXZ)
+
+
+
+##2
+
+RoguePlayerController.cpp.obj
+
+Error  : LNK2001 : unresolved external symbol 
+
+"__declspec(dllimport) class UClass * __cdecl Z_Construct_UClass_UUserWidget_NoRegister(void)" 
+
+(__imp_ ? Z_Construct_UClass_UUserWidget_NoRegister @@ YAPEAVUClass @@ XZ)
+
+
+##3
+
+RoguePlayerController.cpp.obj
+
+Error  : LNK2019 : unresolved external symbol 
+
+"__declspec(dllimport) public: void __cdecl UUserWidget::AddToViewport(int)" 
+
+(__imp_? AddToViewport @ UUserWidget @@ QEAAXH@Z) referenced in function "protected: void __cdecl ARoguePlayerController::ToggleInGameMenu(void)" (? ToggleInGameMenu @ ARoguePlayerController @@ IEAAXXZ)
+
+
+
+##4
+
+RoguePlayerController.cpp.obj
+
+Error  : LNK2019: unresolved external symbol 
+
+"__declspec(dllimport) public: static class UUserWidget * __cdecl UUserWidget::CreateWidgetInstance(class APlayerController &,class TSubclassOf<class UUserWidget>,class FName)" 
+
+(__imp_ ? CreateWidgetInstance @ UUserWidget @@ SAPEAV1 @ AEAV APlayerController @@ V? $TSubclassOf @ VUUserWidget @@@@ VFName @@@ Z) 
+referenced in function "class UUserWidget * __cdecl CreateWidget<class UUserWidget,class ARoguePlayerController *>(class ARoguePlayerController *,class TSubclassOf<class UUserWidget>,class FName)" 
+
+(??$CreateWidget@VUUserWidget@@PEAVARoguePlayerController@@@@YAPEAVUUserWidget@@PEAVARoguePlayerController@@V?$TSubclassOf@VUUserWidget@@@@VFName@@@Z)
+
+
+
+##5
+UnrealEditor-ActionRoguelike-Win64-DebugGame.dll: Error  : LNK1120: 3 unresolved externals
+
+---
+
+컴파일러 입장에서는:
+
+Forward Declaration 혹은 헤더를 통해 
+
+"UUserWidget 이라는 클래스가 있고
+AddToViewport() 라는 함수가 선언되어 있다"
+
+여기까지만 확인하면 끝입니다.
+
+"UUserWidget (symbol) 의 구현체는 어딘가에 (external) 있을 것이다"
+
+
+
+하지만 실제 구현체(.cpp)는 아직 본 적이 없어요.
+그걸 찾는 건 링커의 일입니다.
+
+---
+
+MSVC 링커 내부 구현
+
+LNK -> Linker 에러
+
+LNK2019
+
+unresolved external symbol Foo
+referenced in function Bar
+
+LNK2001
+
+unresolved external symbol Foo
+누가 Foo를 참조했는지는 안 나옵니다.
+
+---
+---
+---
+
+__cdecl
+MSVC 기본 규약
+
+인자:
+오른쪽 → 왼쪽 push
+
+스택 정리:
+호출자(caller)
+
+가변 인자 지원:
+가능
+
+---
+
+__stdcall
+__fastcall
+__vectorcall
+
+오늘날 x64 에서는 사실상 의미가 많이 사라졌습니다.
+Windows x64 ABI가 사실상 하나로 통일되었거든요
+
+---
+
+MSVC C++ (cl.exe) Mangled Name
+
+컴파일러가 내부적으로 변환한 것
+오버로드가 있기 때문
+링커가 구분해야 해요
+
+UClass* Z_Construct_UClass_UUserWidget_NoRegister()
+=>
+__imp_ ? Z_Construct_UClass_UUserWidget_NoRegister @@ YAPEAV UClass @@ XZ
+
+
+MSVC 맹글링 규칙으로 인코딩된 시그니처
+
+Q — public 비가상 멤버 함수
+E — x64 포인터 한정자
+A — non-const non-volatile 인스턴스
+X — void 반환
+H — int 파라미터
+@Z — 파라미터 목록 끝
+
+컴파일러가 .obj에 심볼을 집어넣을 때 이 맹글드 이름으로 집어넣고, 링커는 이 이름으로 검색한다. 
+타입이 달라서 overload가 다르면 맹글드 이름이 달라지므로 서로 다른 심볼로 취급된다.
+
+
+---
+
+__imp
+DLL Import용 심볼
+DLL Import Stub
+
+Import Address Table(IAT)을 거치게 된다
+
+---
+---
+---
+
+"__declspec(dllimport)"
+
+해당 함수나 클래스가 현재 빌드 중인 모듈 내부가 아니라, 
+외부에 분리된 다른 "dll" 파일로부터 가져와야 하는 것임을 나타내는 컴파일러 키워드
+
+빌드 시점에 링커가 참고하는 것은 lib 파일
+
+정적 링크의 lib
+  출력 실행파일에 코드가 복사됨
+
+동적 링크의 lib
+  import library
+
+---
+---
+---
+
+컴파일러(MSVC에서는 cl.exe)는 .cpp 파일 하나를 받아서 .obj 파일 하나를 만든다. 
+1:1 대응이다. 이 .cpp 하나가 컴파일의 독립적인 단위이고, 이걸 번역 단위(translation unit, TU) 라고 부른다
+
+RoguePlayerController.cpp  →  cl.exe  →  RoguePlayerController.cpp.obj
+Module.ActionRoguelike.cpp →  cl.exe  →  Module.ActionRoguelike.cpp.obj
+
+링커에게 .cpp는 존재하지 않는다. 링커가 보는 단위는 .obj다.
+
+---
+---
+---
+
+resolve
+
+컴퓨터는 끊임없이 이름/기호(name/symbol)을 실제 대상(object)에 연결합니다.
+
+---
+---
+---
