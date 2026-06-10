@@ -1,0 +1,905 @@
+platform entry point
+GuardedMain 
+
+FEngineLoop::Init() 에서 GEngine 이 생성된다
+
+The engine class is data-driven, read from [/Script/Engine.Engine] in Engine.ini
+
+Game (!GIsEditor): reads the GameEngine key (default /Script/Engine.GameEngine)
+then GEngine = NewObject<UEngine>(GetTransientPackage(), EngineClass)
+
+Editor: reads UnrealEdEngine key 
+GEngine = GEditor = GUnrealEd = NewObject<UUnrealEdEngine>(...)
+(one object, three globals)
+
+Commandlets are special: they create GEngine earlier, during PreInit
+
+---
+
+UEngine::Init
+
+initializes all UEngineSubsystems via EngineSubsystemCollection.Initialize(this)
+calls AddToRoot() (this is why GEngine survives GC despite living in the transient package)
+
+---
+
+UGameEngine::Init
+
+Loads and applies GameUserSettings
+Creates the one and only UGameInstance from UGameMapsSettings::GameInstanceClass
+(Project Settings → Maps & Modes)
+
+GameInstance->InitializeStandalone()
+creates the single EWorldType::Game FWorldContext, a dummy world (so code always has a world before the real map loads)
+and calls UGameInstance::Init()
+
+If a client (GIsClient): creates the UGameViewportClient
+
+Logs "Game Engine Initialized.", sets bIsInitialized
+
+---
+
+GEngine->Start() 
+
+UGameEngine::Start simply calls GameInstance->StartGameInstance()
+and calls Engine->Browse() → LoadMap()
+That replaces the dummy world with the real one
+
+---
+---
+---
+
+Module — the C++ build unit
+unit of compilation and linking
+
+one folder with a .Build.cs file
+compiled into one DLL
+or linked into the single executable (shipping/monolithic builds)
+
+Core, CoreUObject, Engine, Launch, RenderCore are each one module
+Your game is a module too (ActionRoguelike.Build.cs)
+
+Each module declares dependencies in its .Build.cs (PublicDependencyModuleNames)
+and can implement IModuleInterface with StartupModule()/ShutdownModule() hooks
+
+FModuleManager loads module, register its UClasses, call StartupModule
+
+---
+
+Plugin — a container of modules (and content), with metadata
+A plugin is a folder with a .uplugin descriptor
+zero or more ordinary modules, and optionally a Content folder
+A content-only plugin with zero modules is perfectly valid.
+
+IPluginManager reads descriptors and asks FModuleManager to load each module
+
+---
+
+Package — the UObject/asset container
+
+UPackage is itself a UObject that serves as the root container for other UObjects
+and it's the unit of serialization
+
+one package ↔ one .uasset or .umap file on disk
+
+Package names are virtual paths
+/Game/... maps to your project's Content folder
+/Engine/... to engine content, 
+/PluginName/... to a plugin's Content folder
+
+Every UObject has an Outer chain that terminates in exactly one package
+"loading an asset" means loading its package and creating the objects inside
+
+When LoadMap runs, it's loading a map package
+
+---
+
+UObject must have an outer package — but runtime-only objects don't belong to any asset file
+The transient package is the designated "no file" package
+RF_Transient means it is never serialized to disk
+It's also the default outer when you call NewObject without specifying one
+
+GObjTransientPkg = NewObject<UPackage>(nullptr, TEXT("/Engine/Transient"), RF_Transient);
+GObjTransientPkg->AddToRoot();
+
+---
+---
+---
+
+When UBT compiles monolithically, IS_MONOLITHIC is defined and there are no per-module DLLs and no manifests
+the linker put every module's code into the one executable. 
+The same IMPLEMENT_MODULE macro compiles to something different
+  : a global static FStaticallyLinkedModuleRegistrant<FMyModule>
+Being a global object, its constructor runs before main()
+
+
+What survives from the "loading" concept is purely the ordering
+  which module's StartupModule runs first
+
+---
+
+DLLs in development buy fast iteration 
+(relink one module instead of the whole engine, 
+hot reload/Live Coding patch loading, 
+editor loads modules on demand)
+
+Shipping wants the opposite trade: 
+whole-program/LTO optimization, no dynamic-linking startup cost
+
+---
+---
+---
+
+UnrealEditor-ActionRoguelike.dll — your game module, Development Editor config
+UnrealEditor-ActionRoguelike-Win64-DebugGame.dll — same module, DebugGame Editor config
+
+The naming is <Target>-<Module>-<Platform>-<Config>.dll
+The UnrealEditor- prefix says: this DLL is built to be loaded into UnrealEditor.exe
+
+C:\Program Files\Epic Games\UE_5.6\Engine\Binaries\Win64\ has UnrealEditor.exe, UnrealEditor-Core.dll, UnrealEditor-CoreUObject.dll,
+and hundreds more
+
+---
+
+UnrealEditor-Win64-DebugGame.modules
+
+{
+    "BuildId": "43139311",
+    "Modules":
+    {
+        "ActionRoguelike": "UnrealEditor-ActionRoguelike-Win64-DebugGame.dll"
+    }
+}
+
+---
+
+The patch_N.exe files are Live Coding output
+Each successful live compile emits a patch binary plus .exp/.lib/.pdb 
+it patches your DLL
+They just accumulate
+
+---
+
+Intermediate
+
+UnrealHeaderTool's generated reflection code (*.generated.h, *.gen.cpp 
+under Intermediate\Build\Win64\UnrealEditor\Inc\ActionRoguelike\UHT)
+
+---
+
+DerivedDataCache
+
+compiled shaders, transcoded/compressed textures, built mesh data
+launcher engines default to a shared machine-wide DDC at %LOCALAPPDATA%\UnrealEngine\Common\DerivedDataCache
+
+---
+---
+---
+
+Intermediate/Build is UnrealBuildTool's workspace
+everything inside is organized by UBT's coordinate system
+
+platform → target → (config/arch for object files)
+
+Intermediate/Build/Win64/UnrealEditor/Inc/ActionRoguelike/UHT
+
+Win64 — the platform
+UnrealEditor — the target your module is compiled into
+when you build the editor target, your game module is built as a piece of the UnrealEditor application
+
+
+Inc — literally "includes". UBT appends this directory to the compiler's include paths
+
+UHT — which generator wrote it. Engine modules have sibling folders from other generators (e.g. Verse), 
+so the tool gets a namespace
+
+a configuration level. Development and DebugGame editor builds share this one Inc tree
+generated code doesn't vary with optimization level
+
+this layout encodes exactly what generated code is assumed to vary by: platform and target, but not config.
+
+---
+
+UHT runs in the define-context of one target — WITH_EDITORONLY_DATA
+
+the macro names embed the source path
+FID_ActionRoguelike_5_6_Source_ActionRoguelike_AI_RogueAICharacter_h_10_DELEGATE
+
+---
+
+Build systems always buy the megabytes
+
+---
+
+.generated.h
+.gen.cpp
+
+early UE4 generated one monolithic per-module file (first <Module>.generated.inl, later <Module>.generated.cpp)
+around 4.15–4.16 Epic split generated code into one file per source header 
+so it could compile in parallel and rebuild incrementally
+The new scheme got a new, shorter suffix
+
+nobody pays the migration cost for aesthetics
+
+---
+---
+---
+
+UGameEngine owns machinery: 
+the list of FWorldContexts, 
+the game window and UGameViewportClient, 
+the per-frame Tick, 
+and the travel pipeline (Browse, LoadMap, TickWorldTravel). 
+It knows nothing about your game's rules
+
+
+UGameInstance is the persistent session
+it survives every map change
+created once in UGameEngine::Init, destroyed at shutdown
+
+It owns the LocalPlayers
+
+the engine's designated hook surface: at every meaningful moment, the engine calls out to it
+
+---
+---
+---
+
+UGameEngine::Init creates the GameInstance
+InitializeStandalone() creates the world context + dummy world, 
+then UGameInstance::Init()
+  binds input-device delegates
+  CreateInitialPlayer 
+Start() → StartGameInstance()
+
+ULocalPlayer exists before any real map, representing "a person at this screen." 
+
+---
+
+if you ever need cross-map state (run progression, meta-currency — natural for a roguelike), 
+a URogueGameInstance or a GameInstance subsystem is the intended shelf for it
+
+---
+---
+---
+
+Why the engine keeps the travel pipeline
+
+"browse" to a map or a server the way a browser navigates to a URL
+
+History first
+
+Unreal Engine 1 (1998)
+UGameInstance arrived in UE 4.4 (2014)
+PIE-multiplayer needed per-instance session state
+
+Epic retrofitted hooks into the ancient pipeline
+rather than relocating it
+every game and the entire editor depended on where it sat.
+
+---
+
+Mechanism vs. policy
+
+That's cross-cutting engine machinery, none of which the GameInstance owns
+The design consults the instance at every decision point and keeps the procedure in the engine
+
+Handing the procedure to a game-extensible policy object would let game code break invariants the engine must guarantee
+
+---
+
+Travel must work when there is no instance — or no world
+
+The editor's world context has no OwningGameInstance at all
+
+---
+
+WorldContexts can be thought of as a track. 
+By default we have 1 track that we load and unload levels on. 
+Adding a second context is adding a second track; another track of progression for worlds to live on
+
+For the GameEngine, there will be one WorldContext until we decide to support multiple simultaneous worlds. 
+For the EditorEngine, there may be one WorldContext for the EditorWorld and one for the PIE World.
+
+---
+
+maintaining a forked "exactly one world" copy of the most failure-prone machinery in the engine would cost plenty.
+
+---
+
+FWorldContext exists to kill the global. 
+UE3 had a single GWorld and PIE worked by swapping it
+
+Making "current world + pending travel + viewport + owning instance" an explicit record
+
+---
+---
+---
+
+SViewport 
+a hole in the widget tree where another rendering system's output appears
+
+UGameViewportClient is the object that governs what happens inside that hole
+
+SWindow                        — the OS window (Slate)
+└─ SViewport                   — "host external content here" (line 237)
+   └─ SGameLayerManager        — per-player UI layers, splitscreen aware (218)
+      └─ SOverlay              — where AddToViewport content lands (216)
+
+---
+
+FSceneViewport :  FViewport, ISlateViewport
+
+to the renderer it's an FViewport (a render target with a size)
+
+to Slate it's an ISlateViewport (the thing an SViewport widget displays and forwards input to)
+
+CreateGameViewport creates it and plugs it into both sides
+
+GameViewportClient->Viewport = SceneViewport
+GameViewportWidgetRef->SetViewportInterface(SceneViewport) 
+
+---
+
+FViewportClient is an old engine pattern
+
+an FViewport is a dumb surface that delegates its behavior to a "client."
+
+Editor viewports use FEditorViewportClient; 
+the game's screen uses UGameViewportClient
+
+It is the policy object for "the game's screen,"
+and it earns its existence three ways
+
+Drawing the world. UGameViewportClient::Draw
+builds an FSceneViewFamily, asks each ULocalPlayer for its view via CalcSceneView
+kicks the renderer: GetRendererModule().BeginRenderingViewFamily(...)
+
+It also draws the FCanvas layer, a third drawing system, older than Slate, composited into the same viewport.
+
+---
+
+Demultiplexing input
+
+Slate routes OS input through the widget tree
+UI widgets get first
+
+Whatever reaches the SViewport flows FSceneViewport → UGameViewportClient::InputKey
+which maps the input device/user to the correct ULocalPlayer's PlayerController
+
+One OS window, N local players — somebody must own that mapping, 
+and it's neither Slate (doesn't know about players) 
+nor PlayerController (there are several).
+
+---
+
+Hosting game UI
+
+It owns the SGameLayerManager/overlay
+UMG's AddToViewport ultimately lands in AddViewportWidgetContent or a per-player layer
+
+---
+
+USTRUCT()
+struct FWorldContext
+public:
+	TObjectPtr<UGameViewportClient> GameViewport;
+	TObjectPtr<UGameInstance> OwningGameInstance;
+  TArray<FNamedNetDriver> ActiveNetDrivers;
+
+private:
+	TObjectPtr<UWorld> ThisCurrentWorld;
+
+---
+---
+---
+
+OS Window / Slate Window
+└─ SViewport
+   ├─ 3D World 렌더 결과
+   └─ Game UI / UMG / Debug Overlay
+  
+
+---
+
+UGameViewportClient
+game instance마다 하나가 생성된다
+
+---
+
+the 3D scene renderer, 
+the immediate-mode FCanvas layer (HUD, console, debug text), 
+and the Slate/UMG widget system
+
+---
+
+one stream of OS input must be split correctly between UI widgets and N local players
+this must work identically whether the game lives in its own window, inside an editor tab (PIE), or not at all (dedicated server)
+
+---
+
+OS window (HWND)
+└─ SWindow                  Slate: window management
+   └─ SViewport             Slate: "a hole for someone else's content"
+      ║  ISlateViewport     ← the contract across the boundary
+      FSceneViewport        the bridge — lives on BOTH sides
+      ═  FViewport          render surface (it IS a render target)
+      │  FViewportClient    ← the behavior contract
+      UGameViewportClient   the game's behavior
+      └─ ULocalPlayers, UWorld, UMG layers
+
+The discipline here is that each layer knows only its neighbor
+
+---
+
+FViewport : public FRenderTarget
+
+a viewport is a render target
+a surface with pixels
+
+plus input-forwarding plumbing
+
+---
+
+FSceneViewport : public FViewport, public ISlateViewport
+
+---
+
+FViewportClient 
+
+FEditorViewportClient (level viewport, Blueprint preview, material preview) 
+reuse identical surface machinery
+
+---
+
+UGameViewportClient : ... public FViewportClient
+
+The UObject-ness buys config-driven class selection
+(GameViewportClientClass in DefaultEngine.ini
+
+---
+
+FViewport is the View, UGameViewportClient the Controller
+
+---
+
+UGameEngine::Tick → RedrawViewports
+
+Viewport->Draw
+
+calls back into behavior UGameViewportClient::Draw
+  builds one FSceneViewFamily, asking each ULocalPlayer for its FSceneView via CalcSceneView
+
+GetRendererModule().BeginRenderingViewFamily(...) 
+  the scene renderer is involved in this step
+
+The Canvas pass (oldest drawing system)
+
+Independently, FSlateApplication's tick paints the SWindow tree
+
+---
+
+SViewport::OnKeyDown forwards return ViewportInterface.Pin()->OnKeyDown(...) 
+across the ISlateViewport bridge into FSceneViewport, which calls UGameViewportClient::InputKey
+
+There the event is demultiplexed: 
+input device → platform user → ULocalPlayer → PlayerController → PlayerInput
+
+---
+
+subclass UGameViewportClient (set via config) 
+  intercept InputKey/InputAxis globally (input recording, demo playback, accessibility remapping), 
+  add persistent UI layers
+    a debug overlay visible in every map, including during map transitions.
+
+---
+
+UGameViewportClient, with viewports wrapping platform windows directly. 
+
+When Slate arrived in UE4, Epic didn't rewrite the pipeline; 
+they inserted one adapter (FSceneViewport) at the existing seam and re-parented the surface into a widget
+
+---
+---
+---
+
+class UEngine 
+  TIndirectArray<FWorldContext>  WorldList
+
+CreateNewWorldContext 
+
+---
+
+Unreal Engine 4.4 Released!
+August 15, 2014
+
+Major New Features
+New: Unreal Motion Graphics (UI Editor Preview)
+
+new interactive UI design and scripting tool
+
+The new Widget Editor tool
+you can easily wire up events to trigger gameplay changes
+UMG is built on top of the Slate UI system
+
+---
+---
+---
+
+SGameLayerManager 
+UI compositor that lives inside the viewport hole
+
+class SGameLayerManager : public SCompoundWidget, public IGameLayerManager
+
+to Slate it's just a widget in the tree; 
+to game code it's a service interface (IGameLayerManager)
+
+게임 viewport 안에서 “플레이어별 UI 영역”을 관리
+
+전체 게임 viewport
+├─ Player 0 화면: 왼쪽
+│  └─ Player 0 HUD
+└─ Player 1 화면: 오른쪽
+   └─ Player 1 HUD
+  
+one container per local player; one whole-viewport overlay
+
+When you hand it a widget ("this is player 2's health bar"), it files it into player 2's container
+player I (100) below screen-wide UI (200) below title bar (300)
+
+
+---
+
+AddToViewport
+= 전체 게임 viewport에 추가
+
+AddToPlayerScreen
+= 특정 player의 화면 영역에 추가
+
+---
+
+SOverlay
+├─ Slot 0: 3D viewport
+├─ Slot 1: HUD
+└─ Slot 2: Menu
+
+---
+---
+---
+
+Why the context owns them, not the world
+
+when you open 192.168.1.5, the engine creates a UPendingNetGame whose driver, named NAME_PendingNetDriver
+connects, handshakes, and learns which map to load before that map's world exists
+
+The net driver's lifetime spans worlds, so it lives on the track (context)
+
+---
+
+NAME_DemoNetDriver 
+
+pointing the existing replication machinery at a file instead of a socket
+
+Record a replay while playing online and your world is being replicated through two drivers simultaneously
+one serializing to the server, one to disk
+
+a replay file became just another kind of remote peer
+
+---
+---
+---
+
+SGameLayerManager
+
+SViewport의 child widget으로 붙어서 Slate widget tree 안에서 살아갑니다
+
+SWindow
+└─ SViewport                         
+   └─ SGameLayerManager              
+      └─ SOverlay                    
+
+먼저 SOverlay를 만들고, 그 SOverlay를 child로 가진 SGameLayerManager를 만든 뒤, 
+다시 그 SGameLayerManager를 child로 가진 SViewport를 만듭니다
+
+---
+---
+---
+
+TWeakPtr::Pin()
+
+살아 있으면 잠깐 강한 참조로 붙잡아서 쓰겠다.
+이미 죽었으면 invalid shared pointer를 돌려주겠다.
+
+“확인”과 “사용” 사이에 수명 문제
+
+C++ std::weak_ptr::lock 에 대응
+
+---
+---
+---
+
+LaunchEngineLoop.cpp
+
+...
+GEngine->Tick();          // line 5619
+...
+FSlateApplication::Get().Tick(ESlateTickType::PlatformAndInput);   // 5680
+...
+FSlateApplication::Get().Tick(ESlateTickType::TimeAndWidgets); // 5750
+...
+
+
+Slate's tick is even split
+OS message/input pumping is a separate phase from widget layout+paint phase
+
+---
+
+recursively calls OnPaint across the widget tree
+each widget appends records to an FSlateWindowElementList
+
+The element lists go to the Slate renderer
+FSlateRHIRenderer::DrawWindows (SlateRHIRenderer.cpp)
+
+ENQUEUE_RENDER_COMMAND(SlateDrawWindowsCommand)
+
+the element batcher merges thousands of elements into a handful of draw calls 
+(UI is mostly textured quads sharing a few shaders)
+
+and each window renders via DrawWindow_RenderThread
+
+modern Slate runs through the same Render Dependency Graph framework as the scene renderer
+
+the render thread executes widget drawing too, just through Slate's own batched 2D pipeline rather than the scene renderer.
+
+---
+---
+---
+
+Everything the game thread and render thread produce is commands
+
+The pixels themselves are born in GPU memory and stay in GPU memory
+
+The one exception: explicit ReadPixels for screenshots — 
+which is why screenshots stall the pipeline; it's the only path where pixels swim upstream
+
+---
+
+At the end of the Slate window pass on the render thread
+
+RHICmdList.EndDrawingViewport
+which reaches the platform RHI, where the engine talks to the OS — WindowsD3D12Viewport
+
+PresentHR = SwapChain1->Present(SyncInterval, Flags);
+
+Present schedules a flip
+rotate it to be the front buffer
+
+---
+ 
+On Windows, desktop compositor composites your front buffer with every other window
+
+---
+
+while the display shows frame N−1, the GPU renders N, and the CPU records N+1.
+
+---
+---
+---
+
+Platform Entry Point
+└─ GuardedMain
+   └─ FEngineLoop
+      ├─ PreInit
+      ├─ Init
+      ├─ Tick
+      └─ Exit
+
+---
+
+GEngine은 전역 포인터예요. 하지만 실제 객체의 클래스는 고정되어 있지 않아요
+설정에서 읽습니다.
+
+[/Script/Engine.Engine]
+GameEngine=...
+UnrealEdEngine=...
+
+---
+
+Process
+└─ FEngineLoop
+   └─ GEngine
+      └─ UGameEngine
+
+---
+
+UGameEngine::Init()
+
+GameUserSettings를 로드하고 적용
+UGameInstance를 하나 만든다
+GameInstance->InitializeStandalone()을 호출한다
+  EWorldType::Game FWorldContext를 만든다
+  dummy world를 만든다
+  이것이 UEngine WorldList 에 추가된다
+client라면 UGameViewportClient를 만든다
+
+---
+
+GameViewportClient
+GameViewportWindow
+GameViewportWidget
+SceneViewport
+
+---
+---
+---
+
+Who: the Slate renderer. Where: the render thread, not the game thread
+
+the last command at the end of Slate's window pass (EndDrawingViewport)
+
+What the OS does: it doesn't "draw" the buffer — it flips it
+
+---
+
+CreateSwapChainForHwnd
+
+The OS assigned the buffer before the first frame existed
+When the game window is created, FSlateRHIRenderer::CreateViewport
+the engine asks DXGI — an OS component — to create a swap chain bound to that specific HWND
+
+DXGI and the Windows graphics kernel (WDDM) allocate the 2–3 buffers in GPU memory as kernel-tracked objects
+registered against that window
+
+---
+
+WM_SIZE  arrives in the middle of the OS message pump, 
+and the engine queues it to be processed at a controlled point in the frame 
+rather than entering rendering code mid-pump
+
+The application explicitly asks DXGI to reallocate
+SwapChain1->ResizeBuffers(NumBackBuffers, SizeX, SizeY)
+
+---
+
+UCanvasPanel 
+
+allows widgets to be laid out at arbitrary locations
+
+Each slot carries Anchors (normalized attachment points to the parent's rect)
+
+A designer-friendly panel useful for laying out top-level widgets. 
+Use sparingly.
+
+---
+
+UOverlay (backed by SOverlay)
+
+Every child gets the entire overlay rect as its slot, and positions itself within it 
+no coordinates anywhere. 
+Z-order is simply child order
+it sizes to content
+
+---
+---
+---
+
+FWorldContext track
+├─ 처음에는 dummy world가 올라와 있음
+└─ LoadMap 이후 real map world가 올라옴
+
+LoadMap()은 track 위의 world를 교체합니다.
+
+---
+
+Dedicated server에는 화면이 없어요. 
+Dedicated server에는 local player가 없고, game viewport가 필요 없습니다
+
+이게 UGameInstance가 viewport를 소유하지 않는 이유가 될 수 있다
+
+---
+
+UGameInstance
+
+LocalPlayers, session state, cross-map state를 담는 곳
+
+
+FWorldContext 의 프로퍼티로 등록된다
+
+---
+
+UGameViewportSubsystem : public UEngineSubsystem
+
+
+engine scope commits to statelessness
+instance scope commits to N lifecycles and per-instance discovery
+
+
+
+---
+
+the widget containers sitting above the scene inside the SViewport subtree
+
+---
+
+FViewport는 surface이고, FViewportClient는 그 surface의 behavior입니다.
+
+Editor viewport
+├─ FViewport
+└─ FEditorViewportClient
+
+Game viewport
+├─ FViewport
+└─ UGameViewportClient
+
+
+UGameViewportClient가 U인 이유: 게임은 config-driven class selection이 필요하다
+
+---
+---
+---
+
+CreateWidgetInstance has three owner overloads — APlayerController&, UWorld&, and UGameInstance&
+
+A widget outered to the GameInstance survives travel
+
+---
+
+the application's widget tree
+The owner is FSlateApplication
+
+during PreInit
+FSlateApplication::Create()
+before GEngine exists
+
+(UEngine appears at Init)
+
+what it owns
+"All the top-level windows owned by this application
+TArray<TSharedRef<SWindow>> SlateWindows
+
+each window owns its subtree by shared-pointer composition
+
+
+the level editor's toolbar, details panel, and docking tabs are not owned by UEngine either
+
+---
+
+UGameEngine created the game window but holds mere references into the tree
+
+---
+
+the viewport clients are outered to the editor engine
+
+---
+
+AddToScreen
+
+take a UMG widget (a UObject description), 
+build its real Slate incarnation, wrap it, 
+install it into the window's widget tree, 
+and write down enough bookkeeping to find, move, and remove it later
+
+
+---
+
+bouncer checks 
+
+the widget already has a parent panel
+(a widget can live in exactly one place — if it's already inside some Canvas/Overlay, it can't also be on the viewport)
+
+---
+
+FullScreenCanvas = SNew(SConstraintCanvas)        // create an invisible canvas widget
+    + SConstraintCanvas::Slot()                   // give it ONE parking space
+    .Offset(...).AutoSize(...)                    // position/size of that space
+    .Anchors(Slot.Anchors)                        // from YOUR FGameViewportWidgetSlot
+    .Alignment(Slot.Alignment)
+    .Expose(RawSlot);                             // "also hand me a raw pointer to the slot"
+
+---
+---
+---
+---
+---
+---
+---
