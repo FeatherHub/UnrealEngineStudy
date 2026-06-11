@@ -1,0 +1,757 @@
+물리스레드가 시점 0,3,6,9 에 돌았고 지금은 시점 10이라고 하자.
+시점 10 에서의 physics simulated Actor 의 Transform 은 
+물리스레드 시점 3과 6의 결과를 보간한 값을 사용하고 있다
+
+게임스레드가 보는 건 최신 물리 상태(9)가 아니라 6만큼 과거(4)입니다. 
+multiplier가 2인 이유는 안전 마진입니다
+1이면 렌더 시간이 최신 결과 직전에 붙어서, 물리스레드가 한 스텝이라도 늦으면 보간할 "다음 결과"가 없어 끊기기 때문에, 
+항상 완료가 보장된 두 결과 사이에 머물도록 한 스텝 더 뒤로 물러나 있는 겁니다
+
+---
+
+게임스레드는 렌더스레드보다 1프레임 이상 앞서지 못한다 (r.OneFrameThreadLag, FFrameEndSync)
+
+---
+
+스왑체인의 "최대 프레임 레이턴시"
+
+CPU(렌더/RHI 스레드)는 GPU보다 앞서 달리면서 커맨드를 계속 제출할 수 있는데, 
+무한정 앞서가게 두면 GPU 큐에 미실행 프레임이 쌓이고 
+입력→화면 지연이 계속 늘어납니다
+
+GPU가 아직 소화 못 한 프레임이 한도만큼 쌓여 있으면, 다음 Present() 호출이 블록됩니다
+
+RHI 스레드가 멈추면 렌더스레드가 밀리고, 
+렌더스레드가 밀리면 게임스레드도 (1프레임 lag 규칙 때문에) 멈춥니다
+
+---
+---
+---
+
+Slate에는 단일 루트가 없습니다. 
+FSlateApplication이 톱레벨 SWindow 배열을 평평하게 들고 있고
+위젯 트리는 각 SWindow에서 시작합니다
+부팅 직후엔 메인 프레임 SWindow 하나입니다
+(AddWindow로 등록)
+
+---
+
+모든 SWindow는 콘텐츠를 받기 전에 자기 구조를 먼저 짭니다
+
+SWindow
+└─ SOverlay (WindowOverlay)
+   ├─ [0] SImage  WindowBackgroundImage   ← 창 배경
+   ├─ [1] SImage  WindowBorder            ← 테두리
+   ├─ [2] SImage  WindowOutline
+   ├─ [3] SVerticalBox (ContentAreaVBox)
+   │      └─ MainWindowArea (SVerticalBox)
+   │         ├─ TitleBarWidget            ← 타이틀바 (메인프레임은 여기에 메뉴 임베드)
+   │         └─ ContentSlot               ← 진짜 콘텐츠가 들어갈 자리
+   └─ [4] SPopupLayer                     ← 메뉴/콤보박스 팝업용 최상위 레이어
+
+---
+
+메뉴·툴팁·드래그 중인 탭은 이 트리의 자식이 아니라 SlateWindows에 추가되는 별도의 SWindow입니다. 
+그래서 메뉴가 창 밖으로 삐져나갈 수 있는 거죠.
+
+---
+
+FTabManager::NewLayout("UnrealEd_Layout_v1.5")
+  ->AddArea( NewPrimaryArea()->Split( NewStack()->AddTab("LevelEditor", OpenedTab) ) )
+
+EditorLayout.ini
+
+사용자가 탭을 드래그해 재배치하면 코드가 아니라 이 데이터가 바뀝니다.
+
+인터프리터
+
+어떤 레이아웃 데이터가 들어오든 그걸 읽어서 
+Area→SDockingArea, Split→SDockingSplitter, Stack→SDockingTabStack으로 번역
+
+---
+
+SViewport (ViewportWidget)
+  └─ SOverlay (ViewportOverlay) ← 툴바, 통계 텍스트 등 2D 오버레이만
+
+---
+
+SGlobalPlayWorldActions
+시각적으로 아무것도 안 그리는 위젯인데, 키 이벤트가 버블링될 때 PIE 단축키(FPlayWorldCommands::GlobalPlayWorldActions->ProcessCommandBindings)를 가로채는 역할만 한다
+
+위젯 트리는 레이아웃 구조인 동시에 입력 라우팅 경로라는 것
+트리에서의 위치가 곧 "이벤트를 누가 먼저 볼 기회를 갖는가"를 결정하므로, 
+행동만 하는 투명 래퍼를 끼워 넣는 패턴
+
+---
+
+SGameLayerManager
+
+게임 화면의 UI 스택
+
+---
+
+SGameLayerManager → SDPIScaler → SVerticalBox → SOverlay
+                                                └─ SCanvas
+
+PlayerCanvas — ULocalPlayer마다 레이어 슬롯이 하나씩 들어가는 곳
+UMG에서 AddToViewport 한 위젯이 최종적으로 도착하는 곳이 이 밑입니다
+
+---
+
+분류: 자식의 수
+
+SLeafWidget (자식 0개)
+트리의 모든 경로는 결국 leaf의 OnPaint에서 끝납니다
+STextBlock, SImage
+
+SCompoundWidget (자식 정확히 1개, ChildSlot)
+내부에 자기만의 위젯 구조를 합성해 두고, 밖으로는 콘텐츠 슬롯 하나만 여는 위젯
+SBorder, SWindow, SViewport
+
+SPanel (자식 N개)
+SOverlay, SCanvas, SConstraintCanvas, SHorizontalBox
+
+---
+
+슬롯: 부모-자식 계약
+
+SOverlay::FSlot
+SCanvas::FSlot
+SConstraintCanvas::FSlot
+SHorizontalBox::FSlot
+
+---
+
+SListView/STreeView는 "아이템 1만 개 = 위젯 1만 개"를 거부합니다. 
+화면에 보이는 행만큼만 위젯을 만들어 재활용(가상화)
+
+---
+
+SViewport → FSceneViewport → FViewportClient* — 에서 
+그 포인터 소켓에 꽂히는 게 
+에디터에선 FLevelEditorViewportClient, 
+게임에선 UGameViewportClient입니다
+
+
+SViewport -> (ISlateViewport)-> FSceneViewport -> FViewportClient* (UGameViewportClient)
+
+---
+
+UGameEngine::CreateGameViewportWidget
+
+SNew(SViewport) 
+[ 
+  SNew(SGameLayerManager) 
+  [ 
+    SNew(SOverlay) 
+  ] 
+]
+
+게임에서는 SWindow 바로 밑이 이 세 줄이고
+
+---
+
+[플랫폼]   FWindowsApplication / FWindowsWindow        
+            ↓  FGenericApplicationMessageHandler 인터페이스
+[Slate]   FSlateApplication                            
+            ↓  히트테스트 → FWidgetPath 따라 tunnel/bubble
+          SWindow → … → SGameLayerManager → … 
+            ↓  
+          SViewport                                    ← Slate 세계의 끝
+            ↓  ISlateViewport 인터페이스
+[어댑터]   FSceneViewport  (FViewport + ISlateViewport)  ← 두 세계의 이중국적자
+            ↓  FViewportClient* 소켓
+[게임]     UGameViewportClient                          ← "화면" 정책: 콘솔 먼저? 어느 플레이어?
+            ↓
+          ULocalPlayer → APlayerController::InputKey
+            ↓
+          UPlayerInput → EnhancedInput → InputComponent
+            ↓
+          Pawn / 게임 코드
+
+---
+
+UWorld (액터·컴포넌트)                       
+  ↓ 프록시 사본 제공
+FScene (렌더스레드에 있는 스냅샷)
+  ↑ 
+UGameViewportClient::Draw
+  — ULocalPlayer마다 PlayerCameraManager에서 카메라를 얻어
+    FSceneView 계산
+  - 스플릿스크린 영역 분할
+  ↓ BeginRenderingViewFamily
+FSceneRenderer (렌더스레드) → FSceneViewport의 렌더타깃 텍스처에 그린다
+  ↓ ISlateViewport::GetViewportRenderTargetTexture
+SViewport::OnPaint — "이 텍스처로 사각형 하나" 를 드로우 리스트에 추가
+  ↓
+Slate 렌더러가 창 전체의 드로우 엘리먼트를 배칭
+  ↓
+RHI, 스왑체인 Present
+
+---
+
+"어떤 키가 눌렸나"(플랫폼)
+"어느 위젯이 먹나"(Slate)
+"게임이 먹나 콘솔이 먹나"(ViewportClient)
+"어느 플레이어의 어떤 액션인가"(PlayerInput)
+
+---
+
+게임스레드:   ① UGameViewportClient::Draw
+                 → BeginRenderingViewFamily = "씬을 RT에 그려라" 명령을 렌더스레드 큐에 push
+              ② Slate 페인트 (SViewport::OnPaint)
+                 → "그 RT로 사각형" 포함된 드로우 리스트를 렌더스레드 큐에 push
+
+렌더스레드:   ①' 씬 렌더링 실행 → RT에 쓰기 완료
+              ②' Slate 렌더 패스 실행 → 이때 비로소 RT를 샘플링
+
+---
+
+Slate Widget Tree 어딘가에 SViewport 가 있다
+SViewort는 멤버로 ISlateViewport* 를 가지고 있다
+여기에 FSceneViewport가 꽂힌다
+FSceneViewport 가 ISlateViewport 를 상속하기 때문이다
+
+FSceneViewport 는  멤버로 FViewportClient* 를 가지고 있다.
+게임 Viewport 의 경우 여기에 UGameViewportClient 가 꽂힌다.
+에디터 Viewport 의 경우 여기에 FEditorViewportClient 가 꽂힌다.
+
+게임 경우를 보면,
+UGameViewportClient 는 ULocalPlayer 를 순회하여 SceneViewFamily 를 구성해서 이것을 렌더스레드에 제출한다.
+렌더스레드는 그 UGameViewportClient의 Viewport 의 Render Target에 렌더한다.
+
+
+RT는 FSceneViewport의 소유물입니다
+
+---
+
+엔진에서 Scene은 "렌더링 가능한 3D 세계"의 일반 개념입니다.
+게임 월드의 3D Scene에 국한되지 않는다
+
+
+머티리얼 에디터나 블루프린트 뷰포트의 프리뷰는 FPreviewScene
+FPreviewScene  ──소유──▶  UWorld(미니)  ──소유──▶  FScene
+(에디터 유틸리티)          (게임스레드 세계)        (렌더스레드 미러)
+
+---
+---
+---
+
+UEngine 
+  FWorldContext List 소유
+
+FWorldContext 가 Hold 하고 있는 것들
+  UGameInstance // 레벨 에디터의 Editor 월드에서는 Null
+  UGameViewportClient // 레벨 에디터의 Editor 월드에서는 Null
+  UWorld
+
+UGameInstance 
+  LocalPlayers 소유
+
+ULocalPlayer
+  각자의 LocalPlayerSubsystem 소유
+    (예시: EnhancedInputLocalPlayerSubsystem)
+  APlayerController 참조
+
+UWorld/ULevel (PersistentLevel)
+  APlayerController 소유
+
+APlayerController
+  UPlayerInput 소유
+  UInputComponent 소유
+  Pawn 참조 
+  UPlayer 참조 (ULocalPlayer or UNetConnection)
+
+---
+
+Preview World 는 FWorldContext 가 없다
+즉 UEngine 의 WorldList 에 등록되지 않는다
+
+---
+---
+---
+---
+---
+---
+
+UGameEngine 의 경우
+
+TWeakPtr<SWindow>          GameViewportWindow;   
+TSharedPtr<FSceneViewport> SceneViewport;        
+TSharedPtr<SViewport>      GameViewportWidget;   
+
+
+
+UEditorEngine 의 경우
+
+TArray<FEditorViewportClient*> AllViewportClients
+
+SEditorViewport
+
+TSharedPtr<FSceneViewport> SceneViewport;    
+TSharedPtr<SViewport>      ViewportWidget;   
+TSharedPtr<FEditorViewportClient> Client;
+
+SWindow는  MainFrame 모듈이 만들어 FSlateApplication::AddWindow로 등록, FSlateApplication::SlateWindows에서 소유
+MainFrame은 Editor/MainFrame에 있는 작은 기능 모듈입니다
+
+UnrealEd는 단일 거인이 아니라
+MainFrame, LevelEditor, ContentBrowser, PropertyEditor 같은 기능 모듈 수십 개의 연합입니다
+
+---
+
+UGameViewportClient
+
+SGameLayerManager/Overlay 위젯 참조
+
+Viewport에 픽셀을 그리는 것이 아니라
+위젯을 꽂으려면 트리 안의 꽂아야 하
+ViewportOverlayWidget과 GameLayerManager — 를 알아야 합니다
+
+---
+
+SGameLayerManager::Construct
+
+SNew(SDPIScaler)                                                // 게임 UI 스케일을 여기서 일괄 적용
+[
+  SOverlay (WindowOverlay)
+    + Slot(EGameLayerOrder::Player)   [ PlayerCanvas ]          // 플레이어별 칸
+    + Slot(EGameLayerOrder::Viewport) [ InArgs._Content ]       // ← ViewportOverlayWidget이 여기 꽂힘
+    + Slot(EGameLayerOrder::TitleBar) [ ... ]
+    + Slot(EGameLayerOrder::Tooltip)  [ ... ]
+    + Slot(EGameLayerOrder::Debug)    [ SDebugCanvas ]          // stat fps — 항상 최상단
+]
+
+---
+
+참조는 동사에서 나옵니다
+컬렉션의 원소 타입을 보면 그 관리자가 원소들에게 무엇을 시키는지 읽을 수 있다
+
+FSlateApplication::SlateWindows가 SWindow 목록인 건 창들에게 "배치해라, 그려라"를 시키기 때문이고, 
+UEngine::WorldList가 FWorldContext 목록인 건 "여행 진행시켜라, 틱해라"를 시키기 때문이고, 
+AllViewportClients가 에디터 클라이언트 목록인 건 위의 다섯 동사 때문입니다
+
+---
+
+ULocalPlayer
+
+ViewportClient 참조
+
+---
+
+UWorld
+
+Scene(FScene) — 렌더스레드 미러
+PhysicsScene(FPhysScene)
+AuthorityGameMode(AGameModeBase, 서버에만 존재)
+GameState(AGameStateBase, 모두에게 복제)
+NetDriver(UNetDriver)
+  UNetConnection들의 거주지
+
+---
+
+APlayerController
+
+PlayerState
+PlayerCameraManager 
+  UGameViewportClient::Draw의 CalcSceneView가 카메라를 얻어오는 출처
+MyHUD
+CheatManager 
+  콘솔 명령의 수신처
+
+---
+
+FSceneViewport는 Engine 모듈 소속이고, FSlateApplication은 그보다 아래층인 Slate 모듈 소속입니다. 
+
+Slate는 Engine 없이도 도는 범용 UI 라이브러리입니다
+(UnrealInsights, ShaderCompileWorker 같은 독립 프로그램들이 Engine 없이 Slate만 씁니다)
+
+---
+---
+---
+
+SViewport 
+
+페인트 때 자기 ISlateViewport가 내주는 텍스처를 그 사각형에 그리고, 
+자기에게 도달한 입력을 그 인터페이스로 넘깁니다
+
+
+FSceneViewport 
+
+FViewport(엔진/렌더러가 그릴 수 있는 렌더 표면 — RT 소유)
+ISlateViewport(SViewport가 표시·입력전달할 수 있는 대상)
+
+SViewport는 트리가 소유해주지만,
+FSceneViewport는 아무도 소유해주지 않습니다
+FSceneViewport를 가리키는 SViewport의 포인터는 약참조
+
+누군가 FSceneViewport를 강하게 들지 않으면 GC에 노출됩니다
+
+그 "누군가"가 호스트고, 에디터에서 호스트가 SEditorViewport입니다
+
+TSharedPtr<FSceneViewport> SceneViewport;   // 소유 
+TSharedPtr<SViewport>      ViewportWidget;  // 접근용 핸들
+                                            // 배선을 만지려면 직접 잡고 있어야 함
+
+---
+---
+---
+
+SlateCore/Slate Module     ── SViewport, ISlateViewport
+Engine Module              ── FSceneViewport, FViewportClient
+UnrealEd Module            ── SEditorViewport, FEditorViewportClient
+
+---
+---
+---
+
+클래스
+
+모듈
+상속
+무엇을 소유하는가
+누가 소유하는가
+어떤 동사를 주고 누가 사용하는가
+누가 언제 만드는가
+언제 파괴되는가
+
+---
+
+최소 대조 집합
+클래스는 혼자 있지 않다
+
+형제
+대립쌍
+
+---
+
+사건 하나를 통과시켜라
+정적으로 안 잡히는 정체는 동적으로 잡힌다
+클릭 하나를 클래스들 사이로 흘려보내면 각자가 동선에서 드러납니다
+
+---
+---
+---
+---
+---
+---
+
+도시의 입구
+
+창문들의 명부를 쥔 문지기 — FSlateApplication
+
+국경이란 건너는 자는 같은데 언어가 바뀐다.
+
+위젯의 나라에서 클릭은 트리를 따라 내려갔다
+
+실제 순서는 가라앉는 게 아니라 반대입니다. 
+히트테스트는 단번에 가장 깊은 위젯까지 잠수해서 FWidgetPath를 만들고, 이벤트는 거기서부터 위로 버블링합니다
+뷰포트 위에 게임 UI(UMG 버튼)가 떠 있으면 경로는 버튼까지 내려가고, 버튼이 먼저 먹습니다
+SViewport는 버튼의 조상이라 버튼이 안 먹은 것만 받죠
+
+포커스: 
+키보드 이벤트는 히트테스트가 아니라 포커스 경로를 탑니다.
+SetInputModeGameOnly가 하는 일이 SViewport에 포커스를 주는 것
+그래서 게임 모드에선 키가 위젯들을 들르지 않고 곧장 뷰포트로 갑니다.
+
+마우스 캡처: 
+캡처 중엔 히트테스트 자체를 건너뛰고 캡처자에게 직송됩니다. 
+FPS의 마우스 룩이 UI 위를 지나가도 안 끊기는 이유
+
+클릭은 가장 깊은 곳에 먼저 떨어지고, 위로 떠오르며 주인을 찾는다
+
+---
+
+SViewport. Slate 세계의 끝 (Leaf)
+
+액자에는 다리가 있었다
+ISlateViewport
+FSceneViewport 
+UGameViewportClient
+
+---
+
+세관원이 카메라를 빌려 와 시점을 계산하면,
+렌더러가 World의 미러(FScene)를 찍어
+렌더타깃에 인화한다
+
+---
+
+FWorldContext
+	TArray<FNamedNetDriver> ActiveNetDrivers;
+
+왜 월드가 아니라 컨텍스트인가
+
+접속 중: 서버에 연결할 때, 목적지 월드가 아직 존재하지 않는 시점에
+연결(과 그 드라이버)이 살아 있어야 합니다.
+
+심리스 트래블: 맵 전환 때 월드는 파괴되고 재생성되지만 서버와의 연결은 끊기면 안 됩니다
+
+---
+
+UWorld
+  NetDriver
+  DemoNetDriver
+
+월드 것은 바깥에서 꽂아주는 캐시
+
+---
+
+경로 1
+서버: 월드 자신이, 청취를 시작할 때
+
+GEngine->CreateNamedNetDriver(this, NAME_GameNetDriver, ...);   // 엔진에 생성 위탁 → 컨텍스트 명부에 등록
+NetDriver = GEngine->FindNamedNetDriver(this, NAME_GameNetDriver); // 명부에서 찾아 자기 캐시에 꽂음
+
+
+경로 2
+클라이언트: 엔진이, 맵 로드가 끝난 직후    
+
+Context.World()->SetNetDriver(Context.PendingNetGame->NetDriver);
+
+---
+---
+---
+---
+---
+---
+
+UE4 초기엔 UGameInstance가 없었고, 게임 전역 상태는 UGameEngine 서브클래스나 전역에 뒀습니다. 
+이게 PIE에서 깨졌습니다.
+멀티플레이어 PIE는 한 프로세스에 게임 세션 N개인데, 
+엔진은 하나뿐이니 세션 상태가 인스턴스끼리 섞였죠. 
+그래서 4.4에 UGameInstance가 발명됩니다
+
+---
+
+① 에디터·커맨드릿처럼 GameInstance가 0개인 구성에서도 필요한가?
+② 그 상태를 변경하는 동사는 누구의 코드인가(엔진 기계 vs 게임 코드)?
+③ 게임 개발자에게 노출할 공개 표면인가, 엔진의 내부 장부인가?
+④ 상태가 정말 세션에 귀속되는가, 아니면 키로 유도 가능한 무상태 서비스인가?
+
+---
+
+UGameInstance는 게임마다 서브클래스하고 BP에 노출되는 공개 객체입니다. 
+전송 계층의 내부 장부를 거기 두면 엔진의 기계장치가 게임 코드의 손 닿는 곳에 놓입니다
+
+---
+
+GameViewportSubsystem이 엔진급인 이유: 세션 고유의 상태가 없습니다
+AddWidget의 장부는 위젯을 키로 하고, 대상 뷰포트는 위젯→월드→뷰포트로 매번 유도됩니다. 
+이런 무상태성 서비스를 GameInstance마다 N개 복제하면 얻는 게 없습니다
+
+
+ReplaySubsystem이 인스턴스급인 이유
+"지금 이 판을 녹화 중인가"는 PIE 인스턴스 A는 녹화하고 B는 안 할 수 있어야 하는, 
+인스턴스 별 상태입니다
+
+---
+---
+---
+---
+---
+---
+
+UAnimBlueprintGeneratedClass 는 UBlueprintGeneratedClass → UClass → UStruct → UField → UObject 계층에 속한다.
+
+
+UAnimBlueprintGeneratedClass 의 어느 한 인스턴스의 SuperStruct 필드가 URogueCharacterAnimInstance의 UCLASS 를 가리킨다
+
+C++ 코드 상에서 URogueCharacterAnimInstance 는 UAnimInstance 를 상속한다.
+
+UClass 는 reificated 된 타입
+UClass 객체들은 런타임 데이터
+
+
+컴파일 없이 클래스를 만들고 고칠 수 있다. 
+디자이너가 에디터에서 새 타입(BP)을 만들고, 부모를 갈아끼우는 것(Reparent = SuperStruct 포인터 교체)
+
+---
+
+Mobility
+
+Static Light
+= 런타임에 움직이지도, 바뀌지도 않는다고 엔진에게 약속함
+- Lightmass 빌드 때 lightmap에 baked됨
+- dynamic shadow를 직접 만들지 않음
+
+Stationary Light
+= 런타임에 위치는 안 바뀌지만, 일부 속성은 바뀔 수 있다고 엔진에게 약속함
+- static geometry에는 baked lighting 기여 가능
+- movable object에는 dynamic shadow 가능
+
+
+Static Mesh Actor / Static
+- 런타임에 이동/회전/스케일 변경하지 않을 오브젝트
+- precomputed lightmap/shadow에 참여 가능
+
+Static Mesh Actor / Stationary
+- Movable Light와 함께 쓸 때 cached shadow map을 재사용할 수 있음
+
+---
+---
+---
+---
+---
+---
+
+
+Renderer scene which is private to the renderer module.
+Ordinarily this is the renderer version of a UWorld, 
+but an FScene can be created for previewing in editors which don't have a UWorld as well.
+
+The scene stores renderer state that is independent of any view or frame,
+
+with the primary actions being adding and removing of primitives and lights.
+추가/제거 명령으로 증분 갱신되는 리테인드 구조
+
+---
+
+FScene
+
+내용물: 등록된 프리미티브마다 하나씩의 FPrimitiveSceneInfo(프록시 연결),
+공간 분할 옥트리, 
+GPUScene(GPU 상주 프리미티브 데이터)
+
+---
+
+"프레임 N의 갱신이 전부 반영된 뒤에 프레임 N을 그려야 한다"는 보장
+그릴 것을 명령하는 편지(BeginRenderingViewFamily)가 그 프레임의 갱신 편지들 뒤에 부쳐질 뿐입니다
+
+---
+
+Renderer/Private/ScenePrivate.h 에 정의
+class FScene : public FSceneInterface
+
+
+의존 방향이 Renderer → Engine
+저수준 계층 모듈들은 RHI와 RenderCore
+
+Engine이 "그려질 수 있는 것들의 어휘"(프록시, 머티리얼 인터페이스, 뷰)를 정의하고, 
+Renderer가 그 위에서 구현합니다
+
+---
+
+편지들의 실제 내용은 이런 것들입니다
+순서 있는 부수효과들의 나열
+
+"이 FPrimitiveSceneInfo를 옥트리와 배열에 링크해라"(컴포넌트 등록), 
+"이 프리미티브의 트랜스폼을 갱신해라"(움직인 액터), 
+"이 라이트를 제거해라",
+"스트리밍으로 도착한 이 메시의 RHI 버텍스 버퍼를 생성해라"
+"이 머티리얼 파라미터를 유니폼 버퍼에 반영해라"
+
+---
+
+"순서가 필요한 것은 스트림으로 즉시, 합산 가능한 것은 더티 마킹 후 일괄로" 
+
+물리 마샬링이 틱 단위로 push 데이터를 묶던 것, 
+Slate가 위젯별로 그리지 않고 창 전체 드로우 리스트를 만들어 한 번에 배칭하던 것
+
+---
+---
+---
+
+렌더스레드는 프로세스당 하나 
+에디터 뷰포트 다섯 개, PIE 인스턴스 두 개, 프리뷰 씬 세 개가 전부 같은 렌더스레드 하나를 공유
+
+---
+
+PreInitPostStartupScreen()
+  InitRenderingThread() // Runtime/RenderCore/public/RenderingThread
+    StartRenderingThread()
+      GRenderingThread = FRunnableThread::Create(GRenderingThreadRunnable, ...);
+      
+GRenderingThreadRunnable 에 RenderingThreadMain 가 등록
+  FTaskGraphInterface::Get().AttachToThread(ENamedThreads::RenderThread);
+
+---
+
+엔진 도처의 IsInRenderingThread() 체크가 어떻게 동작하는지 — 자기 TLS의 이 도장을 읽는 겁니다
+
+---
+
+Get()은 전역 싱글턴 객체의 참조를 돌려줄 뿐이고,
+그 객체는 공유 힙 메모리에 삽니다. 
+
+객체는 스레드 위에 있지 않습니다
+스레드들이 객체 안으로 호출해 들어올 뿐이죠
+
+---
+
+FTaskGraph 의 Task 들은 누가 기동시키나
+
+1
+익명 워커들 — 태스크그래프가 직접 고용
+이들은 "AnyThread" 주소가 적힌 일감을 처리
+
+FEngineLoop::PreInitPreStartupScreen
+  FTaskGraphInterface::Startup(NumThreads)
+
+2
+명명 좌석들 — 외부에서 기증
+게임·렌더·RHI 스레드
+
+AttachToThread + ProcessThreadUntil
+
+---
+
+do
+{
+    ProcessTasksNamedThread(QueueIndex, bAllowStall);   // 꺼내서 실행
+} while (...)
+
+펌프가 이 태스크를 꺼내 실행하는 순간 람다 본문이 FScene을 만지는 거고, 
+펌프 자신은 자기가 씬을 만졌다는 사실조차 모릅니다
+
+---
+
+TaskGraph 에서 Task 는 큐에 들어가는 편지 한 통 (람다 포장물)
+
+Queue Data 와 Pump logic 을 가진 객체는 별도 개념인 FNamedTaskThread 
+
+TaskGraph
+  Seats["GameThread"]   = { Queue, PumpLoop() }     // FNamedTaskThread
+  Seats["RenderThread"] = { Queue, PumpLoop() }     // FNamedTaskThread
+
+Task = { 람다, 목적지 좌석 }
+
+---
+
+ENQUEUE_RENDER_COMMAND(...)( [](){...} );
+  → 람다를 Task 객체로 포장
+  → TaskGraph.Seats["RenderThread"].Queue.Push(task)
+  → 좌석 스레드가 자고 있으면 깨움
+
+---
+
+FNamedTaskThread : public FTaskThreadBase
+virtual void ProcessTasksUntilQuit(int32 QueueIndex) override
+{
+  do
+  {
+    ProcessTasksNamedThread(QueueIndex, bAllowStall);
+  } while (...); 
+}
+
+uint64 ProcessTasksNamedThread(int32 QueueIndex, bool bAllowStall)
+{
+    Task->Execute(NewTasks, ENamedThreads::Type(ThreadId | (QueueIndex << ENamedThreads::QueueIndexShift)), true);
+}
+
+bool TryExecuteTask()
+{
+    ExecuteTask();
+}
+
+virtual void FTaskBase::ExecuteTask() = 0;
+
+TGraphTask<TTask>::ExecuteTask
+virtual void ExecuteTask() override final
+{
+  TTask* TaskObject = TaskStorage.GetTypedPtr();
+  TaskObject->DoTask(TaskObject->GetDesiredThread(), GraphEventRef);
+}
+
+---
+---

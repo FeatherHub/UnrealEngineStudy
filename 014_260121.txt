@@ -1,5 +1,0 @@
- Splitters Lumpers
-
- 반복 가능한 형태(standardization)
-   서류 처리
-   
