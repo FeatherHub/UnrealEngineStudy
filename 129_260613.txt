@@ -1,0 +1,392 @@
+Core의 hang/hitch 감지용 
+FThreadHeartBeat
+hang detector의 타임스탬프 갱신
+
+
+렌더 스레드 tickable 보장용 
+FRenderingThreadTickHeartbeat
+render tick 기회를 강제로 만들어주는 pulse
+
+
+네트워크/LiveCoding처럼 “상대가 살아있나” 확인하는 
+프로토콜성 heartbeat
+네트워크 keep-alive
+
+---
+
+감시 대상 스레드
+  "나 살아있음" timestamp 갱신
+
+별도 watchdog 스레드
+  마지막 heartbeat 시간이 너무 오래됐는지 검사
+
+---
+
+GameThread:
+  LastGameThreadBeat = Now
+  GameEngine::Tick()
+
+WatchdogThread:
+  if Now - LastGameThreadBeat > Threshold:
+      "GameThread hang" 으로 판단
+
+---
+
+Crash:
+  프로그램이 죽음
+  callstack / crash dump가 남음
+  어디서 죽었는지 비교적 추적 가능
+
+Hang:
+  프로그램이 안 죽고 멈춤
+  유저는 강제 종료함
+  증거가 거의 안 남음
+  개발자는 "가끔 얼어요"만 받음
+  ↓
+"GameThread가 25초 동안 heartbeat를 갱신하지 못했다"
+"마지막으로 X 체크포인트에 있었다"
+"그 시점의 전체 thread callstack은 이렇다"
+"Present는 멈췄지만 GameThread는 살아있었다"
+
+---
+
+감시 스레드가 할 수 있는 일
+
+모든 스레드 callstack 수집
+특정 thread id가 멈췄는지 기록
+Present hang처럼 “CPU tick은 도는데 화면 제출이 멈춘” 상황 분리
+
+---
+
+GameThread
+RenderThread
+RHIThread
+Async Loading
+Asset Registry
+Shader Compile
+Network File
+Live Coding
+GPU Present
+Editor UI
+
+GameThread는 살아있는데 RenderThread가 막힘
+RenderThread는 살아있는데 GPU Present가 막힘
+로딩은 하고 있는데 특정 패키지에서 무한 대기
+서버 연결은 유지된 것처럼 보이는데 상대가 죽음
+긴 작업이 정상인지, 데드락인지 외부에서는 구분이 안 됨
+
+---
+
+Runtime/Core/Public/Stats
+
+FThreadStats, FStatsThreadState, FStatMessage, STATGROUP_*, DECLARE_*_STAT, SCOPE_CYCLE_COUNTER
+
+각 스레드가 stat message를 냄
+    ↓
+Stats 시스템이 frame 단위로 모음
+    ↓
+group / stat id / operation 별로 정리함
+    ↓
+콘솔 stat 표시, dump, stats file, 분석 도구에서 사용
+
+---
+
+Trace
+
+순간 이벤트:
+  Bookmark, log, marker
+
+구간 이벤트:
+  CPU scope begin/end, loading scope, task 실행 구간
+
+값 변화:
+  counter update, memory alloc/free
+
+---
+
+기능 코드:
+  그림자를 렌더링한다.
+
+STAT:
+  ShadowDepth가 이번 프레임에 몇 ms 걸렸는지 집계한다.
+  "ShadowDepth: 1.4ms" 같은 숫자
+
+CSV:
+  매 프레임 ShadowDepth 값을 표의 한 칸으로 저장한다.
+  나중에 10분 플레이의 프레임별 테이블 본다.
+
+TRACE:
+  RenderThread 타임라인 위에 ShadowDepth 구간을 남긴다.
+  언제 시작했고, 언제 끝났고, 앞뒤에 뭐가 있었는지 본다.
+
+LOG:
+  "Shadow atlas resized" 같은 사람이 읽을 만한 사건을 문장으로 남긴다.
+
+Heartbeat:
+  RenderThread나 GameThread가 멈춰 있지 않은지 본다.
+
+---
+
+CSV Profiler
+
+Frame, GameThread, RenderThread, ShadowDepth, AnimUpdate, NumDrawCalls
+1001,  8.2ms,      5.1ms,        1.3ms,       0.7ms,     2140
+1002,  8.5ms,      5.4ms,        1.5ms,       0.8ms,     2190
+1003,  24.0ms,     5.2ms,        1.2ms,       12.0ms,    2150
+
+---
+
+엔진 바깥에서 열화상 카메라로 보는 것
+  = external observation
+
+엔진 내부에 온도 센서, rpm 센서, 압력 센서를 달아둔 것
+  = built-in instrumentation
+
+---
+
+Contract / Assertion 계열
+
+check(X)가 있으면 “이 함수 아래 로직은 X가 참이라고 가정한다”
+
+ensure “비정상이지만 계속 가보자”
+
+"여기까지 오면 엔진 상태가 깨진 것이다"
+"개발 중에 빨리 잡아내자"
+
+---
+
+Build / Platform Gate 계열
+
+WITH_EDITOR, WITH_EDITORONLY_DATA, UE_BUILD_SHIPPING, PLATFORM_WINDOWS, WITH_SERVER_CODE
+
+---
+
+TGuardValue
+
+원래 값 저장
+새 값 대입
+scope 종료 시 원래 값 복구
+
+---
+
+이 scope 안에서 발생한 메모리 할당은
+어느 시스템의 메모리로 볼 것인가?
+
+LLM_SCOPE(Audio)
+
+
+LLM_SCOPE(Audio) 진입
+  현재 스레드의 LLM tag stack에 Audio push
+
+그 안에서 FMemory::Malloc 발생
+  allocator hook이 호출됨
+  LLM이 현재 스레드의 top tag를 봄
+  이 allocation을 Audio로 기록
+
+scope 종료
+  Audio tag pop
+
+---
+
+FMalloc
+  실제 힙 메모리를 할당/해제하는 allocator 인터페이스
+
+LLM
+  그 할당/해제를 관찰해서
+  "몇 바이트가 어느 태그에 속하는가"를 기록하는 tracker
+
+---
+
+확장 문법
+
+__forceinline
+
+__debugbreak()
+
+#pragma는 매크로 안에 넣기 어렵기 때문에 MSVC 계열에서는 __pragma(...)를 사용
+
+__nop()
+
+__try / __except : Windows SEH, Structured Exception Handling
+
+__m128 : 128-bit SIMD float vector
+
+__in : 입력 파라미터라는 분석 힌트
+
+Apple Bridge : __bridge, __block, __kindof
+
+---
+
+Thread Local Storage
+전역 변수처럼 접근하지만, 실제 값은 스레드마다 따로 존재하는 저장 공간
+
+UE에서는 플랫폼별 TLS를 FPlatformTLS로 감싸고 있습니다
+
+FPlatformTLS::GetCurrentThreadId()
+FPlatformTLS::AllocTlsSlot()
+FPlatformTLS::SetTlsValue(Slot, Value)
+FPlatformTLS::GetTlsValue(Slot)
+FPlatformTLS::FreeTlsSlot(Slot)
+
+---
+
+FSoftObjectPath
+  = FTopLevelAssetPath + optional subobject path
+
+TSoftObjectPtr<UTexture2D>
+  = FSoftObjectPath + 현재 로드된 UObject weak cache + 타입 T
+
+---
+
+FPlatformMemory
+
+현재 물리 메모리 얼마나 남았나?
+이 프로세스가 얼마를 쓰나?
+memory pressure가 warning/critical인가?
+OOM이 났을 때 crash report를 남길 예비 메모리는?
+OS page를 reserve/commit/decommit 할 수 있나?
+shared memory를 만들 수 있나?
+이 플랫폼 기본 allocator는 Binned3인가 Mimalloc인가
+
+
+FMemory::Malloc
+new/delete
+
+
+FMemory
+  -> UE 공통 memory API
+  -> Memcpy/Memzero 같은 wrapper
+
+---
+
+/Game/Characters/BP_MyCharacter.BP_MyCharacter:SubObject
+
+Package path
+Object name inside package
+subobject는 :로 시작한다
+
+---
+
+Texture asset    = UTexture2D
+Material asset   = UMaterial
+Blueprint asset  = UBlueprint
+Map asset        = UWorld
+Sound asset      = USoundWave
+
+공통된 본질은  UObject
+
+---
+
+파일 경로:
+  Content/Characters/BP_MyCharacter.uasset
+
+Unreal package name:
+  /Game/Characters/BP_MyCharacter
+
+메모리의 UPackage name:
+  /Game/Characters/BP_MyCharacter
+
+Load request:
+  "/Game/Characters/BP_MyCharacter"
+
+CoreUObject가 이것을 디스크의 BP_MyCharacter.uasset 파일로 resolve함
+
+---
+
+Import:
+  이 패키지가 참조하는 외부 객체
+  이미 메모리에 있으면 찾아서 연결
+  없으면 그 외부 package 로드를 유발
+
+---
+
+1. UObject shell 생성
+   class, outer, name, flags를 맞춰서 객체를 만든다
+
+2. serialized data 읽기
+   파일 안의 export serial offset/size 위치로 이동한다
+
+3. UObject::Serialize 호출
+   저장되어 있던 property/state를 객체 안에 다시 채운다
+
+4. PostLoad 등 후처리
+   로드 완료 상태로 만든다
+
+---
+
+.uasset은 디스크에 있는 바이너리 파일이다.
+그 바이너리는 대략 이런 정보를 들고 있다.
+
+1. Package summary
+   이 파일이 Unreal package file이 맞는지 확인하는 magic tag
+   파일 버전, package flags, package name, 각 테이블의 위치/개수
+
+2. Name table
+   파일 안에서 반복해서 쓰는 이름들
+   "BP_MyCharacter", "UBlueprint", "GeneratedClass" 등
+
+3. Import table
+   이 파일 안의 객체들이 참조하지만, 이 파일이 소유하지 않는 외부 객체들
+   SkeletalMesh: /Game/Characters/SK_Mannequin.SK_Mannequin
+   부모 클래스: /Script/Engine.Character
+
+4. Export table
+   이 파일이 실제로 소유하고 저장하는 UObject 목록 
+   실제 데이터 자체라기보다 “이 파일 안에 어떤 객체들이 있고, 어디에 저장 데이터가 있는지”
+   Export 0:
+     Class      = UBlueprint
+     ObjectName = BP_MyCharacter
+     Outer      = package root
+     SerialOffset = 120000
+     SerialSize   = 34000
+   Export 1:
+     Class      = UEdGraph
+     ObjectName = EventGraph
+     Outer      = BP_MyCharacter
+     SerialOffset = 120000
+     SerialSize   = 34000
+
+5. Serialized export data
+   Export table에 적힌 각 UObject의 실제 저장 데이터
+   property 값, object reference, 배열, 구조체 값 등
+
+6. 기타 데이터
+   soft object path
+   dependency/preload 정보
+   asset registry tag
+   editor metadata
+   bulk data 위치/참조 (너무 크거나 별도 취급이 필요한 원시 데이터 덩어리)
+   
+---
+
+.uasset을 로드하면, 첫 번째로 생기거나 찾아지는 대표 객체는 UPackage야
+
+LoadPackage("/Game/Characters/BP_MyCharacter")
+
+결과:
+  UPackage "/Game/Characters/BP_MyCharacter"
+
+그 다음 그 UPackage 안에 export table을 기반으로 실제 UObject들이 생기고 복원돼
+
+---
+
+BP_MyCharacter.uasset 파일
+  -> UPackage
+     -> UBlueprint
+     -> Blueprint 관련 보조 UObject들
+
+---
+
+T_Texture.uasset
+  -> UPackage
+     -> UTexture2D
+     -> texture data / bulk data 관련 정보
+
+---
+
+MyMap.umap
+  -> UPackage
+     -> UWorld
+     -> level / actor / component 관련 객체들
+
+---
