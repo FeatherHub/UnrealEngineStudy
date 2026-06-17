@@ -1,0 +1,319 @@
+ALyraCharacter::ALyraCharacter(const FObjectInitializer& ObjectInitializer)
+	: Super(
+      ObjectInitializer
+        .SetDefaultSubobjectClass<ULyraCharacterMovementComponent>(ACharacter::CharacterMovementComponentName)
+        .SetDefaultSubobjectClass<...>(...)
+        ...
+    )
+
+---
+
+FObjectInitializer
+UObject 생성 중 잠깐 살아 있는 “생성 트랜잭션 컨텍스트”
+
+subobject override 목록
+property init callback / post-init callback
+
+---
+
+UClass UMyTestClass
+├─ Properties
+│  └─ FArrayProperty "MyStringArray"
+│     └─ inner FStrProperty
+└─ Functions
+   └─ UFunction "MyUFUNCFoo"
+      └─ Parms 프레임  struct MyTestClass_eventMyUFUNCFoo_Parms
+         ├─ FBoolProperty  "bIsAlive"     flags 0x…80  (Parm)
+         └─ FFloatProperty "ReturnValue"  flags 0x…580 (Parm|OutParm|ReturnParm)
+
+
+UClass UMyTestClass
+  Super: UObject
+  Package: /Script/LyraGame
+
+
+UFunction MyUFUNCFoo
+  Native thunk: execMyUFUNCFoo
+
+---
+
+UFunction의 시그니처는 작은 UStruct로 리플렉션된다
+
+struct MyTestClass_eventMyUFUNCFoo_Parms { bool bIsAlive; float ReturnValue; }
+
+---
+
+bool은 비트필드일 수 있어, 
+리플렉션이 비트 위치/마스크를 계산하도록 SetBit 함수를 제공합니다
+
+---
+
+이름은 RpcFunction이지만 실제 의미는 “UHT가 exec thunk를 생성해야 하는 native function”입니다.
+
+---
+
+BlueprintNativeEvent 패턴
+
+부모는 Native _Implementation
+자식은 BP Event Override + Parent Call
+
+---
+
+ProcessEvent → Invoke → (*Func)
+
+void UFunction::Invoke(UObject* Obj, FFrame& Stack, RESULT_DECL)
+{
+    return (*Func)(Obj, Stack, RESULT_PARAM);
+}
+
+---
+
+UFunction::Bind
+
+---
+
+네이티브 C++ vs 블루프린트 바이트코드"의 다형성
+
+---
+
+다이나믹 델리게이트는 "이름으로" UFUNCTION을 부른다
+
+OnComponentBeginOverlap(sparse dynamic multicast delegate)
+
+TScriptDelegate는 함수를 (UObject, FName) 쌍으로만 들고 있어
+디스패치할 때 그 이름으로 ProcessEvent를 호출합니다
+
+---
+
+UFUNCTION(BlueprintNativeEvent) 래퍼
+
+void ALyraWeaponSpawner::PlayPickupEffects()
+{
+    UFunction* Func = FindFunctionChecked(NAME_..._PlayPickupEffects);
+
+    if (!Func->GetOwnerClass()->HasAnyClassFlags(CLASS_Native))
+        ProcessEvent(Func, NULL);           
+    else
+        PlayPickupEffects_Implementation();  
+}
+
+---
+
+바인드타임 
+누가 누구를 가리킬지 전선을 연결하는 단계
+
+콜타임 (매 호출)
+그 전선으로 전기를 흘리는 단계
+
+---
+
+execMyFunc 
+UHT가 만든 썽크
+균일 시그니처 void(UObject*, FFrame&, void*)
+MyFunc() 호출을 ProcessEvent로 우회시키는 얇은 함수
+
+---
+
+ProcessEvent(UFunction*, Parms)
+UFunction::Invoke
+(*Func)(Obj, Stack, Result)
+
+Func=execMyFunc(네이티브) / Func=ProcessInternal(BP)
+execMyFunc
+MyFunc(...)
+
+이 배선은 이름/리플렉션으로 부를 때, BlueprintNativeEvent/ImplementableEvent일 때 돕니다
+
+---
+
+execMyFunc()
+
+reflection / Blueprint VM 쪽에서 native C++로 들어올 때 쓰는 adapter
+FFrame에서 파라미터를 꺼내고 실제 C++ 구현을 호출합니다
+
+---
+---
+---
+
+UBlueprintGeneratedClass : UClass : UStruct : UField : UObject
+
+Blueprint 그래프 실행에 필요한 추가 데이터를 품은 UClass
+
+---
+
+UBlueprint는 에디터에서 보는 Blueprint asset 객체입니다
+  ParentClass = AMyCharacter
+  GeneratedClass = BP_MyCharacter_C
+
+CDO는 Default__Name_C 형식
+
+---
+
+UBlueprintGeneratedClass "BP_MyCharacter_C"
+  SuperClass
+
+  FProperty들
+    Blueprint 변수들
+ 
+  UFunction들
+    Blueprint 함수들
+
+  Script bytecode
+    UFunction::Script 으로
+
+  CDO
+    Default__BP_MyCharacter_C
+    BP default value 저장
+
+---
+
+Blueprint에 구현된 함수는 UFunction 객체와 bytecode로 표현
+
+UFunction "SomeBPFunction"
+  Func = UObject::ProcessInternal
+  Script = Blueprint bytecode
+
+---
+
+native 함수면 UFunction::Bind()가 execFoo를 Func에 붙입니다
+Blueprint script 함수면 Func가 UObject::ProcessInternal 쪽으로 갑니다
+
+---
+
+BP_MyCharacter.uasset
+├─ UBlueprint  "BP_MyCharacter"          ← 에디터 전용 자산
+│
+└─ UBlueprintGeneratedClass "BP_MyCharacter_C"   ← 런타임 "클래스"
+      ├─ Super → ALyraCharacter(네이티브) → ACharacter → … → UObject
+      ├─ Properties: BP 변수들 
+      ├─ Functions:  BP 그래프들
+      └─ CDO
+
+---
+
+UBlueprintGeneratedClass : UClass : UStruct : UField : UObject
+UFunction : UStruct : UField : UObject
+
+FunctionFlags
+FUNC_Native, FUNC_Event, FUNC_BlueprintCallable, FUNC_BlueprintEvent, FUNC_Net
+
+NumParms
+
+ParmsSize
+  parameter frame 전체 크기
+
+ReturnValueOffset
+  return value property가 parameter frame 안에서 어디에 있는지
+  return이 없으면 MAX_uint16
+
+RPCId, RPCResponseId
+  모든 UFunction에 필드는 있지만, 의미는 FUNC_Net 계열일 때 생깁니다
+
+FNativeFuncPtr
+  native UFUNCTION이면 UHT가 만든 execMyFunc thunk를 가리킵니다
+  BP bytecode 함수면 UObject::ProcessInternal을 가리킵니다
+
+---
+
+Bind()
+
+FUNC_Native가 없으면 Func = &UObject::ProcessInternal.
+FUNC_Native면 owning class의 NativeFunctionLookupTable에서 이름으로 찾아 Func에 native thunk를 연결합니다
+
+
+Invoke()
+
+함수 실행 버튼에 가깝고, 실제 실행 경로는 Func가 무엇을 가리키느냐에 따라 갈립니다.
+(*Func)(Obj, Stack, RESULT_PARAM)을 호출
+
+---
+
+SuperFunction 개념
+
+부모 함수의 flags/metadata 상속
+override signature 검증
+flag 일관성 유지
+“Call Parent Function” 노드
+
+---
+
+UClass
+
+ClassConstructor 
+ClassVTableHelperCtorCaller 
+
+
+EClassFlags
+ClassCastFlags 
+ClassWithin: 어떤 Outer 타입 안에 존재할 수 있는지
+ClassConfigName 
+Interfaces
+
+FuncMap : 이 클래스의 이름 → UFunction 맵.
+AllFunctionsCache : 부모·인터페이스까지 포함
+NativeFunctionLookupTable : native UFUNCTION 이름 -> execFoo
+FindFunctionByName
+  FuncMap에서 먼저 찾고, 
+  없으면 interface와 superclass를 탐색하고, 결과를 AllFunctionsCache에 저장합니다
+
+ClassDefaultObject 
+CreateDefaultObject
+GetDefaultObject
+
+---
+
+UStruct
+
+SuperStruct 
+
+Children, UField*
+  UFunction ─Next─► UEnum ─Next─► …
+
+ChildProperties, FField*
+  FProperty ─Next─► FProperty ─> ...
+
+Script 바이트코드 배열, BP 함수의 몸통
+
+---
+
+UStruct = "프로퍼티 집합 + 레이아웃"
+
+UFunction = 그 그릇에 호출 의미를 부여
+프로퍼티 집합을 파라미터 프레임으로 쓴다
+
+UClass = 그 그릇에 타입 의미를 부여
+프로퍼티 집합을 "인스턴스 레이아웃"으로 쓴다
+
+---
+
+UField
+
+UObject
+  └─ UField
+      ├─ UEnum
+      ├─ UProperty   // legacy UObject property 계층
+      └─ UStruct
+          ├─ UClass
+          │  └─ UBlueprintGeneratedClass
+          ├─ UScriptStruct
+          └─ UFunction
+---
+
+TFieldIterator<FProperty>는 이 FProperty chain을 걷습니다
+
+URogueAttributeSet::StaticClass()
+  ChildProperties
+    → FStructProperty "Health"
+    → FStructProperty "Mana"
+    → ...
+
+기본 iteration flag는 IncludeSuper | IncludeDeprecated
+
+---
+
+ContainerPtrToValuePtr
+
+여기서 container는 “property를 포함하고 있는 메모리 덩어리”
+FProperty는 자기 값이 container 시작점에서 몇 바이트 떨어져 있는지 알고 있습니다
+
+---
