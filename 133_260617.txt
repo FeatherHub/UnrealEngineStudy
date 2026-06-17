@@ -1,0 +1,1206 @@
+Texture Coordinate 노드는 모델의 UV vertex attribute를 “좌표값”으로 꺼내는 노드이고
+
+Texture Sample 노드는 그 좌표값으로 텍스처를 조회해서 색/값을 가져오는 노드입니다
+
+vertex factory가 material shader에 넘겨준 TexCoords를 사용
+
+---
+
+노드 하나 = UMaterialExpression, C++ 객체 하나
+
+class UMaterialExpression : public UObject
+노드 타입마다 서브클래스
+
+UMaterialExpressionTextureCoordinate
+UMaterialExpressionTextureSample
+
+각 노드는 입력 핀(FExpressionInput)
+virtual int32 Compile(FMaterialCompiler*, int32 OutputIndex)
+
+Compile이 "이 노드를 셰이더 코드로 바꿔라"의 진입점
+
+---
+
+FMaterialCompiler 추상 인터페이스
+FHLSLMaterialTranslator : public FMaterialCompiler
+
+---
+
+FVertexFactory
+vertex input layout, vertex declaration
+input assembler layout, mesh vertex adapter
+
+---
+
+Vertex Data에는 무엇이 담기나
+static mesh, skeletal mesh, Niagara, Landscape, Nanite마다 다릅니다
+
+Geometry: position, previous position
+
+Shading frame, 표면 방향계
+  normal, tangent, bitangent/binormal sign
+
+Parametrization, 텍스처 좌표
+  UV0..UV7 여러 채널
+
+Color: vertex color
+Skinning: bone indices, bone weights
+
+Instance/primitive data
+  instance transform, instance id
+
+Topology
+  index buffer, section/material slot
+
+특수 렌더러 데이터: particle age/size, landscape weight, spline parameter, Nanite cluster data
+
+---
+
+FStaticMeshBuildVertex
+Position, TangentX/Y/Z, UVs[8], Color
+
+FSkeletalMeshLODRenderData
+FSkinWeightVertexBuffer 추가
+
+---
+
+Face normal만 얻으면 각 삼각형이 flat shading 됩니다.
+자동 도출 결과가 아닌 custom artist normal, weighted normal, hard edge 등의 시나리오
+
+---
+
+ShaderFrequency
+
+이 shader 가 어느 shader stage에 속하는가
+
+SF_Vertex  -> per vertex frequency
+SF_Pixel   -> per pixel/fragment frequency
+
+---
+
+Add(Mul(a,b), c)
+
+#0: const a
+#1: const b
+#2: mul  #0 #1
+#3: const c
+#4: add  #2 #3
+
+각 Compile은 "값"이 아니라 **줄 번호(핸들)**를 돌려주고, 부모는 그 번호들을 조합합니다
+
+
+ConstNode.Compile(b)  =  return b.Constant(내값)
+MulNode.Compile(b)    =  L = 왼쪽.Compile(b);  R = 오른쪽.Compile(b);  return b.Mul(L, R)
+
+---
+
+트리는 아티스트가 에디터에서 노드를 선으로 이어 만든 이미 존재하는 입력입니다
+Compile이 하는 일은 그 트리를 훑으며(traversal) 평탄한 번호 목록으로 풀어내는 것
+출력은 트리가 아니라 1차원 명령 목록입니다
+트리 구조는 "몇 번이 몇 번을 참조하는가"라는 의존 관계로 그 목록 안에 녹아듭니다.
+
+번호표의 실제 내용(코드 텍스트)을 찍어내는 건 노드가 아니라 b(컴파일러)입니다. 
+노드는 "어떤 연산을, 어떤 입력/상수로 요청할지"라는 의도와 재료만 정하고, 
+b가 그걸 실제 코드 한 줄로 materialize하면서 번호를 발급합니다
+
+
+#2: mul  #0 #1     ← MulNode가 "Mul(#0,#1) 해달라" 요청, b가 실제 mul 코드 생산
+#4: add  #2 #3     ← AddNode가 요청, b가 실제 add 코드 생산
+
+---
+
+UV 채널
+
+필요한 표면 펼침 방식 하나당 하나
+
+---
+
+위치+인덱스에서 나오는 건 삼각형마다의 면 노멀(face normal) 뿐
+
+저장된 정점 노멀은 "이 표면을 매끄럽게 볼지 각지게 볼지"라는 셰이딩 의도를 담을 수 있다
+
+똑같은 정점 위치라도 인접 면 노멀을 평균 내면 둥글게(smooth), 
+면 노멀을 그대로 쓰면 각지게(flat) 보입니다.
+
+---
+---
+---
+
+각 드로우콜이 자기 지오메트리를 GPU 파이프라인에 흘려보냅니다
+
+오브젝트 B의 정점이 처리되는 동안 오브젝트 A의 픽셀이 아직 칠해지는 식으로 드로우끼리도 대량으로 겹쳐 돌아갑니다
+
+---
+
+(지오메트리 → 래스터 → 픽셀) 전체 파이프라인을 여러 번 돌리되, 매번 다른 셰이더로 다른 출력을 써서 다른 목적을 달성
+
+---
+
+(Vertex Buffers + Index Buffer + Topology + Input Layout)
+  
+Input Assembler
+  vertex shader에게 “이번 vertex 입력”을 공급함
+Vertex Shader
+
+Post-VS primitive assembly
+  index buffer를 보고 vertex 3개씩 triangle 생성
+
+Rasterizer
+
+Pixel Shader
+
+Output Merger / Render Target
+
+---
+
+topology
+  triangle list, triangle strip, line list
+
+---
+
+Base Pass:
+  Draw Call 1:
+    Mesh = cube mesh
+    Instances = 100
+    Material = cube material
+
+  Draw Call 2:
+    Mesh = statue mesh
+    Instances = 1
+    Material = statue material
+
+하나의 draw call이 제출된다.
+그 draw call 안에서
+  cube vertex shader는 cube vertices * 100 instances 만큼 실행되고
+  primitive assembly/rasterizer/pixel shader도 100개 instance가 만든 삼각형/픽셀에 대해 실행된다
+
+---
+
+로컬 → 월드 → 뷰(눈) → [× 프로젝션 행렬] → 클립 → [÷ w, 원근분할] → NDC → 스크린
+
+Clipping: clip space에서 primitive를 잘라내는 단계. 아직 x/w, y/w 나누기 전이다
+
+projection matrix가 원근법을 “준비”하고, 실제 원근 나눗셈은 perspective divide 단계에서 일어난다.
+  가까운 점: w 작음 -> x/w, y/w 큼
+  먼 점:     w 큼   -> x/w, y/w 작음
+
+projection matrix를 거친 clip space에서는 frustum 판정이 표준 부등식으로 바뀐다
+  -w <= x <= w
+  -w <= y <= w
+  0 <= z <= w  
+
+---
+
+Output Merger
+
+pixel shader가 낸 색/깊이 값을 현재 render target, depth/stencil buffer와 합치는 고정 기능 단계
+여기서 depth test, stencil test, blending, color write, depth write
+
+Post processing은 “이미 만들어진 render target을 texture로 읽어서 다시 그리는 별도의 render pass
+
+---
+
+광원의 섀도 절두체
+bCastShadow
+
+섀도 패스
+  광원마다, 포인트 라이트는 큐브 6면마다 (OnePassPointLightShadowDepth도 있음)
+
+---
+
+패스 = 렌더 타깃 하나를 바인딩 + 렌더 상태 설정 → 그 안으로 드로콜 다수를 흘려보냄.
+
+---
+
+Clip Space    : (x, y, z, w)
+NDC           : (x/w, y/w, z/w)
+Screen Space  : (screenX, screenY, depthZ)
+Rasterization
+Render Target : shader가 써 넣은 값만 남음
+Depth Buffer  : depthZ만 남음
+
+x, y: 삼각형이 화면의 어떤 픽셀을 덮는지 결정
+z: depth test, depth buffer write에 사용
+w 또는 1/w: perspective-correct interpolation에 사용
+
+필요하면 pixel shader가 screen xy + depth + inverse projection으로 view/world position을 재구성
+
+Deferred renderer에서는 GBuffer에 normal, roughness, base color 같은 의미 있는 조각들을 따로 저장
+
+---
+
+Base Pass
+  output: SceneColor, SceneDepth, GBufferA, GBufferB
+
+Lighting Pass
+  input: SceneDepth, GBufferA, GBufferB
+  output: SceneColor
+
+Bloom Pass
+  input: SceneColor
+  output: BloomTexture
+
+Tonemap Pass
+  input: SceneColor, BloomTexture
+  output: BackBuffer
+
+---
+
+VRAM 리소스는 언제 할당/해제되나
+CPU/엔진/드라이버가 명시적으로 생성과 해제를 관리한다
+
+GPU는 CPU보다 늦게 명령을 실행할 수 있어서, 
+CPU가 참조를 놓아도 GPU가 아직 쓰는 중이면 바로 파괴하면 안 된다.
+
+GPU-safe deferred release/reuse
+fences, frames-in-flight
+
+---
+
+PSO
+패스 단위 불변 부분집합
+그 패스 드로콜들의 공통 기본값
+
+렌더 타깃 구성(바인딩된 RT와 그 포맷)
+(그 minimal state는 RT 포맷을 PF_Unknown으로 비워두고, 제출 시 패스의 RT 바인딩에서 채웁니다)
+
+섀도패스의 블렌드 CW_NONE, 깊이 상태
+머티리얼이 요구하면 컬 모드·깊이 쓰기 같은 일부도 드로콜마다 달라질 수 있습니다
+
+드로콜마다 자기만의 완성된 PSO가 따로 있습니다.
+
+FMeshPassProcessorRenderState
+
+패스는 공통 입력(바인딩된 RT와 그 포맷) + 기본 렌더 상태를 제공하고, 
+각 드로콜은 자기 셰이더 + 머티리얼별 상태(양면→컬모드, 마스크드→깊이 등)를 더해 
+완성된 자기 PSO를 조립합니다
+
+---
+
+Vertex Shader
+
+머티리얼의 World Position Offset을 더해 절차적 변형 (바람·물결 등)
+
+스켈레탈 메시는 본 행렬 × 가중치로 스키닝
+
+노멀·탄젠트를 월드 기저로 변환
+
+---
+
+객체 하나에 material section 3개
+=> 그 객체만 3 draw calls 가능
+
+---
+
+draw call 수 ~= visible object 수
+             * mesh section 수
+             - batching/instancing로 줄어든 양
+
+---
+
+System Value
+하드웨어 파이프라인이 직접 해석하거나 생성하는 특별 시맨틱
+
+SV_Position은 VS 출력일 땐 "래스터화에 쓸 클립 위치", PS 입력일 땐 "픽셀의 스크린 좌표 + 깊이"
+
+---
+
+모프 타깃(블렌드 셰이프)
+
+같은 메시의 다른 형태를 정점별 위치 델타로 저장
+각 모프는 "각 정점이 기본 형태에서 이 표정까지 얼마나 움직이나"
+여러 모프를 동시에 섞을 수도 있습니다 (미소 0.6 + 깜빡임 0.3)
+
+스키닝은 골격(행렬)으로 변형(팔다리 관절에 적합), 
+모프는 미리 정의한 정점 오프셋을 직접 더해 변형
+골격이 없어 본으로 표현하기 힘든 변형에 씁니다
+
+---
+
+같은 draw command로 묶을 수 있느냐
+객체별 차이가 draw state 변경이 아니라 per-instance data로 표현 가능해야 한다
+
+---
+
+Vertex Shader
+
+각 vertex를 독립적으로 처리
+이웃 vertex나 triangle 전체를 모른다
+
+rasterizer가 사용할 "가공된 vertex record"를 만드는 함수
+
+---
+
+Pixel Shader
+
+rasterizer가 만든 fragment/sample 하나에 대해
+"이 지점에 어떤 값을 render target에 쓸지" 계산하는 함수
+
+---
+
+정점 하나가 픽셀 하나가 되는 게 아니다 — 3 정점 → 삼각형 → 많은 픽셀 후보 -> 많은 픽셀 
+
+래스터라이저: 삼각형 → 픽셀 조각
+
+---
+
+이 한 여정이 모든 모델의 모든 삼각형에 대해 *동시에* 수천 개씩 흐른다.
+
+---
+
+좌표 깔때기
+내 방 안 위치 → 집 기준 → 도시 기준 → GPS → 지도 위 픽셀
+
+정점 셋이 모여 삼각형을 이루고, 
+래스터라이저가 그 삼각형을 Rasterize해서 
+그 안에 든 픽셀들을 한꺼번에 만들어냅니다
+
+가까우면 수천 픽셀, 화면 밖이면 0개. 
+듬성한 모서리 셋이 → 빽빽한 면으로 부풀어 오르는 단계
+
+---
+
+Geometry 세계 (정점·삼각형 단위, 듬성듬성 — 버텍스 셰이더가 사는 곳)
+연속
+
+Screen 세계(픽셀 단위, 빽빽 — 픽셀 셰이더가 사는 곳).
+조각, 이산
+
+연속(삼각형)을 이산(중심)에서 표본화
+
+---
+
+오브젝트들은 서로를 모릅니다. 
+각자 공유 캔버스(렌더 타깃)에 자기를 찍고, 
+깊이 버퍼가 픽셀마다 "가장 가까운 게 이긴다"를 판정해 가림을 정리합니다
+
+그림자·반사 같은 상호작용은 한 패스가 버퍼에 쓰고 다음 패스가 읽어서 일어나죠
+
+전체 그림은 한 번에 그리는 게 아니라, 
+단순한 스탬프들이 여러 겹의 캔버스 위에 쌓이며 떠오릅니다
+
+---
+
+RenderDoc 플러그인(Engine/Plugins/Developer/RenderDocPlugin)이 들어 있어요. 
+한 프레임을 캡처하면 드로콜을 하나씩 스크럽하며 렌더 타깃이 채워지는 걸 천천히 볼 수 있고, 
+삼각형 하나를 찍어 그 정점 입력/출력, 깊이 버퍼, 각 GBuffer 타깃까지 들여다볼 수 있습니다
+
+---
+
+정점은 표면을 정의하는 말뚝에
+픽셀은 그 말뚝들 사이에 펼쳐진 삼각형 면적에서 생긴다
+
+---
+
+Vertex shader는 각 vertex에 대해 이렇게 묻는다
+
+이 vertex는 화면 어디에 놓일 것인가?
+이 vertex가 가진 UV, normal, color 등은 다음 단계에 어떻게 넘길 것인가?
+
+---
+
+이후 rasterizer가 삼각형 내부의 픽셀마다 이 값들을 섞는다.
+
+각 픽셀은 삼각형의 세 꼭짓점 중 어디쯤에 있는가?
+그 위치에서 UV, normal, color는 얼마인가?
+
+삼각형 내부 어떤 pixel의 uv = (0.34, 0.27)
+
+이 보간된 uv를 pixel shader가 받아서 texture를 샘플링한다.
+
+---
+
+Pixel shader
+
+여기 UV가 (0.34, 0.27)이네.
+
+BaseColor texture에서 이 위치 색을 Sample 하자.
+Normal map도 Sample 하자.
+
+---
+
+Draw Cube
+  -> cube가 덮는 픽셀들 갱신
+
+Draw Statue
+  -> statue가 덮는 픽셀들 갱신
+
+Draw Floor
+  -> floor가 덮는 픽셀들 갱신
+
+아무 픽셀이나 무조건 덮어쓰는 건 아니고, depth test가 있다
+
+---
+
+Depth Pass
+  -> SceneDepth
+
+Base Pass
+  -> GBufferA, GBufferB, GBufferC, SceneDepth
+
+Lighting Pass
+  -> SceneColor
+
+Bloom
+  -> BloomTexture
+
+Tonemap
+  -> BackBuffer
+
+촬영 원본들: GBuffer, SceneDepth, Velocity
+조명 합성: SceneColor
+렌즈 효과: Bloom
+최종 색보정: Tonemap
+상영용 필름: BackBuffer
+
+---
+
+fragment
+
+깊이 테스트 실패로 버려질 수 있습니다
+한 픽셀 주소에 프래그먼트가 여러 개 생길 수 있어요
+그 픽셀 위에 삼각형 셋이 겹치면, 같은 주소 (245,12)에 프래그먼트 3개가 만들어집니다 (이게 오버드로)
+깊이 테스트가 그중 가장 가까운 하나를 골라 그 픽셀의 확정 색이 됩니다
+
+셰이더는 픽셀당이 아니라 프래그먼트당 실행됩니다
+
+프래그먼트는 이미 이산이에요
+픽셀 중심에서 뽑은 표본이라 그것도 (245,12) 같은 주소를 가집니다
+
+---
+
+Output Merger
+configurable fixed-function stage
+상태를 켜거나 꺼서 설정한다
+
+Depth state:
+  depth test 켤까?
+  depth write 할까?
+  Less / LessEqual 중 뭘 쓸까?
+
+Stencil state:
+  stencil test 할까?
+
+Blend state:
+  기존 render target 색과 새 pixel 색을 어떻게 섞을까?
+
+---
+
+Early-Z
+
+pixel shader 전에 depth test를 먼저
+어차피 가려질 pixel shader 실행을 아예 생략
+
+Early Depth Test -> Pixel Shader -> Depth Test
+
+---
+
+render target
+픽셀마다 정렬된 데이터베이스
+
+Pixel (231, 440)
+  depth      = 0.38
+  normal     = (0.1, 0.8, 0.6)
+  baseColor  = (0.7, 0.2, 0.1)
+  roughness  = 0.45
+  velocity   = (-2.1, 0.3)
+
+---
+
+Mesh
+  "나는 정점 3개짜리 삼각형이다"
+
+Vertex Shader
+  "너희 세 꼭짓점은 화면 여기, 여기, 여기에 있다"
+
+Rasterizer
+  "이 삼각형은 이 픽셀들을 덮는다"
+
+Pixel Shader
+  "각 픽셀 위치에서 재질 값을 계산한다"
+
+Output Merger
+  "앞에 있으면 쓰고, 뒤에 있으면 버린다"
+
+Render Target
+  "살아남은 결과를 저장한다"
+
+---
+
+Mesh Asset
+  Vertex 0: position, normal, uv0=(0,0), uv1=(...)
+  Vertex 1: position, normal, uv0=(1,0), uv1=(...)
+  Vertex 2: position, normal, uv0=(0,1), uv1=(...)
+
+
+FStaticMeshBuildVertex
+  Position
+  UVs[MAX_STATIC_TEXCOORDS]
+
+
+Material Pixel Parameters
+  Parameters.TexCoords[n]
+
+
+Texture Coordinate Node
+  Parameters.TexCoords[n].xy 를 읽음
+
+
+Texture Sample Node
+  그 UV로 Texture를 샘플링함
+ 
+
+BaseColor / Normal / Roughness 등으로 사용
+
+---
+
+Vertex Factory
+
+이 mesh의 vertex buffer에서 position은 어디 있고, UV는 어디 있고, tangent는 어디 있는지를 아는 다리 역할
+
+
+정점이 vertex shader로 들어갈 때 UV도 같이 들어간다. 
+그리고 vertex shader는 삼각형 꼭짓점마다 UV를 output으로 넘긴다.
+
+---
+
+메시의 정점은 UV, 즉 [0,1]×[0,1] 단위 정사각형 위의 주소를 들고 있습니다.
+이건 해상도·내용과 무관한 추상 좌표 공간이에요
+텍스처는 그저 "그 [0,1]² 정사각형을 채우는 이미지"이고요
+
+텍스처 샘플은 tex.Sample(sampler, uv) — uv ∈ [0,1]²이면 어떤 이미지든 색을 돌려줍니다
+텍스처는 "어느 메시를 위한 것"이 아니라 그냥 UV → 색 함수이고
+메시는 그냥 UV를 공급할 뿐
+
+---
+
+메시의 펼침(UV 레이아웃)
+
+---
+
+메시에 고유 UV 언랩을 만들고, 그 언랩에 맞춰 텍스처 세트(알베도·노멀·러프니스·AO…)를 칠합니다
+Substance Painter 같은 툴이 모델의 UV 위에 직접 칠하니까 눈 텍스처가 눈에 정확히 가죠
+
+---
+
+구를 종이로 감싼 뒤 다시 평평하게 펴야 한다고 생각해봐. 
+자르지 않고는 제대로 펼칠 수 없어.
+
+---
+
+옷 만드는 패턴
+
+재봉선을 따라 자름
+종이 패턴으로 펼침
+천에 그림/무늬를 넣음
+다시 봉합하면 3D 옷이 됨
+
+---
+
+vertex = position + normal + tangent + uv + color + ...
+같은 3D 위치라도 UV가 다르면, 렌더링 데이터에서는 사실상 다른 vertex로 취급될 수 있어
+
+3D 위치는 같음:
+  P = (1, 2, 3)
+
+하지만 seam 양쪽에서 UV가 다름:
+  P_left  uv = (0.98, 0.4)
+  P_right uv = (0.02, 0.4)
+
+같은 위치에 겹쳐 있는 두 vertex/vertex instance가 저장 
+
+normal hard edge도 비슷해. 
+같은 위치라도 normal이 다르면 vertex가 분리되는 경우가 많아
+
+---
+
+UV 복제 때문에 렌더용 정점 수 > 고유 위치 수가 됩니다(같은 위치가 UV 때문에 여러 개로 쪼개짐).
+
+---
+
+각 정점 UV는 어떻게 계산되나
+
+누군가가 부여해야 해요
+
+UV0 없이 임포트하면 텍스처 매핑이 정의되지 않습니다
+
+---
+
+UV seam에서는 같은 3D 위치라도 UV가 다를 수 있어서, 렌더링 데이터상 분리될 수 있다
+
+픽셀 셰이더는 “정점”을 입력으로 받는 게 아니라, 
+rasterizer가 만든 “fragment/pixel 후보”를 입력으로 받고, 
+그 fragment에 대해 보간된 UV를 사용해서 texture를 sample한다.
+
+삼각형 세 정점 UV를 무게중심 보간한 값
+
+UV_P = α·UV₀ + β·UV₁ + γ·UV₂
+정점은 듬성한 앵커일 뿐이고, 삼각형 안쪽 픽셀들의 UV는 래스터라이저가 보간으로 채웁니다
+
+---
+
+Texture Coordinate Node
+
+"현재 pixel은 mesh 표면의 어느 UV 주소에 해당하지?"
+-> (u, v)
+
+---
+
+Texture Sample Node
+mesh를 직접 모른다
+입력받은 UV 주소로 texture image를 읽는다
+
+"이 texture의 (u, v) 위치 색은 뭐지?"
+-> RGBA
+
+주소로 이미지를 조회하는 노드
+
+---
+
+UV는 그냥 데이터라 무엇이든 넣을 수 있고, 의미 있는 값은 언랩에서 나오죠
+
+---
+
+저작 타임에 5만 정점에 UV가 할당됨(언랩) → 정점 버퍼에 저장. 버텍스 셰이더가 5만 번 돌며(병렬)
+
+버텍스 셰이더는 5만 번, 
+픽셀 셰이더는 (화면을 덮은 만큼) 수백만 번
+UV는 그 사이 보간으로 부풀려집니다
+
+---
+
+Vertex Shader
+
+"이 삼각형의 꼭짓점들이 화면 어디에 놓일 것인가?"
+
+local position
+world
+view
+clip
+
+---
+
+3 vertices
+1 triangle
+N fragments (0개 혹은 수백만개도 가능) 
+
+
+3개의 정점 정보로부터 N 개의 프래그먼트의
+  UV, normal, depth 가 보간되어 derive 된다
+  vertex shader가 넘긴 interpolatable attributes들이 보간된다
+  VS가 내보낸 페이로드 전부
+
+무게중심 보간(barycentric blend)
+
+---
+
+어트리뷰트(UV·노멀·컬러)는 원근보정 보간(÷w, 하이퍼볼릭)이라야 원근에서 안 일그러집니다
+반면 depth(z/w)는 화면 공간에서 선형 보간돼요
+그리고 ID류(PrimitiveId, 인스턴스 데이터)는 아예 flat(nointerpolation)
+
+"보간되어 derive"는 연속 어트리뷰트에 맞고, 보간 방식(원근/화면선형/flat)은 값마다 다릅니다
+
+---
+
+단위 노멀 셋을 보간하면 결과 벡터의 길이가 1이 아니게 됩니다(짧아짐).
+그래서 픽셀 셰이더가 보간된 노멀을 보통 **다시 정규화(normalize)**해서 씁니다
+
+정점 노멀을 보간해 픽셀마다 라이팅하는 게 Phong 셰이딩이고요
+
+---
+
+공통 입력 · 유니폼 (uniform)
+모든 프래그먼트에 공통
+
+텍스처 + 샘플러 ·
+머티리얼 파라미터 · View/행렬 · time
+
+---
+
+고유 입력 · 인터폴런트 (varying)
+
+프래그먼트마다 다름 · 보간됨
+보간 UV · 노멀 · 월드위치 ·
+버텍스컬러 · SV_Position(화면좌표)
+
+---
+
+Texture Coordinate 노드는 고유 입력(이 픽셀의 보간 UV)을 읽고, 
+Sample Texture 노드는 공통 입력(공유 텍스처)을 그 고유 UV에서 샘플합니다
+
+한 노드는 "varying 줄기", 다른 노드는 "uniform 줄기"를 당겨서, 둘을 합쳐 픽셀 색을 만드는 거예요
+
+---
+
+uniform/varying
+
+공통 입력은 공장 벽에 붙은 게시판(텍스처·파라미터·행렬 — 모든 작업자가 같은 걸 봄)
+고유 입력은 컨베이어 위 각 조각이 단 꼬리표(내 UV, 내 노멀).
+
+셰이더는 "벽의 설정 + 이 조각의 꼬리표"를 합쳐 결과를 내는 작업자
+
+---
+
+모서리에만 찍은 값 사이를 GPU가 그라데이션으로 채우기
+
+---
+
+Vertex shader 쪽으로
+- World Position Offset
+- Customized UV 0~7
+- World Displacement / Tessellation 계열, UE5에서는 대체로 deprecated
+
+Pixel shader 쪽으로
+- Base Color
+- Metallic
+- Specular
+- Roughness
+- Emissive Color
+- Opacity
+- Opacity Mask
+- Normal
+- Ambient Occlusion
+- Refraction
+- Pixel Depth Offset
+- Shading Model
+
+Material Property 마다 shader frequency 가 붙어 있다
+예를 들어 WorldPositionOffset 은 SF_Vertex
+
+노드 자체가 Vertex Shader 노드 / Pixel Shader 노드로 고정되는 게 아니라,
+그 노드의 결과가 어느 Material Output 으로 흘러가느냐가 중요하다.
+
+---
+
+한 머티리얼 → 수많은 셰이더
+Shader 는 그 Material 로부터 생성된 실행 코드.
+
+---
+
+LinearGradient
+Material Function
+
+UV 자체를 숫자 값으로 사용함
+UV 좌표의 한 축을 그대로 0~1 값으로 해석해서 그라데이션 값으로 쓰는 것.
+수학적으로 좌표에서 값을 만들어내는 procedural mask 에 가깝다.
+
+임의 방향 그라데이션은 좌표(또는 월드 위치)를 방향 벡터에 내적(dot) 한 뒤 스케일·바이어스·saturate로 다듬으면 되고요
+
+---
+
+메인 노드의 입력 핀마다 셰이더 주파수가 고정돼 있습니다
+
+MaterialAttributeDefinitionMap
+
+각 머티리얼 프로퍼티가 주파수와 함께 등록
+
+BaseColor·Metallic·Specular·Roughness·Normal·Emissive·Opacity 등은 SF_Pixel
+World Position Offset(+ 디스플레이스먼트/테셀레이션)은 SF_Vertex
+
+위치/지오메트리를 바꾸는 입력 = VS
+표면 외형을 정하는 입력 = PS가 규칙이에요.
+
+---
+
+A ----\
+       Lerp ---- Result
+B ----/
+Mask -/
+
+Result = A * (1 - Mask) + B * Mask
+
+---
+
+LinearGradient -> 현재 픽셀이 막대의 몇 퍼센트 위치인가?
+ProgressAlpha  -> 체력이 몇 퍼센트인가?
+If             -> 이 픽셀이 ProgressAlpha 안쪽인가 바깥쪽인가?
+Color A/B      -> 안쪽이면 주황, 바깥쪽이면 흰색
+
+---
+
+Material Graph 에서 접근 가능한 정보들
+
+1. Mesh / Vertex 에서 온 정보
+- UV / TextureCoordinate
+- Normal / Tangent 
+- World Position
+- PerInstanceCustomData
+- Object Position / Object Bounds
+
+2. View / Camera 에서 온 정보
+- Camera Position
+- View Direction
+- Screen Position
+- View Size / View Property
+- Pixel Depth(이 프래그먼트 자신의 깊이)
+
+3. Material / Parameter 에서 온 정보
+- Scalar Parameter
+- Vector Parameter
+- Texture Parameter
+- Static Switch Parameter
+- Material Function Input
+
+4. Engine / Frame 에서 온 정보
+- Time
+
+5. Scene rendering 결과에서 온 정보
+- SceneColor
+- SceneDepth (깊이 버퍼를 읽음)
+- GBuffer/SceneTexture 계열, 단 domain/pass 제한 있음
+
+---
+
+CPU / Engine 이 ViewUniformShaderParameters 에 시간을 넣음
+GPU shader 는 View.GameTime 또는 View.RealTime 을 읽음
+
+노드의 **"Ignore Pause"**를 켜면 View.RealTime으로 바뀝니다(정지·딜레이션 무시)
+bIgnorePause ? Compiler->RealTime(...) : Compiler->GameTime(...)
+
+View.DeltaTime
+
+---
+
+Material Graph 는 픽셀마다 작은 함수를 실행하는 것처럼 볼 수 있다.
+
+MaterialFunction(
+    UV,
+    VertexColor,
+    WorldPosition,
+    CameraPosition,
+    Time,
+    TextureParameters,
+    ScalarParameters,
+    SceneDepth,
+    ...
+) -> BaseColor / Roughness / Opacity / Emissive / WPO ...
+
+---
+
+Vertex Color = mesh 표면에 붙어 있는 RGBA 데이터 채널 4개
+꼭 “색”이 아니다. R/G/B/A 네 개의 마스크 저장 공간이라고 보는 편이 훨씬 좋다.
+
+Vertex Color R = 먼지 마스크
+Vertex Color G = 젖음 마스크
+Vertex Color B = 이끼 마스크
+Vertex Color A = 손상 마스크
+
+Material 이 표면을 다르게 반응하게 만드는 로컬 데이터야.
+텍스처를 새로 만들지 않고도, 같은 Material 로 부분별 변화를 줄 수 있다
+
+
+텍스처 없이도 메시 표면에 값 저장 가능
+vertex shader / pixel shader 에서 보간된 값으로 접근 가능
+아티스트가 DCC나 UE Mesh Paint 로 직접 칠할 수 있음
+
+“표면 위에 칠한 제어 신호”
+"내가 가진 가장 싼 텍스처"
+
+---
+
+매 픽셀마다 이런 질문
+
+"너는 어디에 있니?"
+"어느 방향을 보고 있니?"
+"카메라는 어디 있니?"
+"지금 시간이 얼마니?"
+"이미 그려진 장면에는 뭐가 있니?"
+
+---
+
+1. Mesh / Vertex 에서 온 정보
+
+이건 “내 몸에 원래 새겨진 정보”야.
+
+UV / TextureCoordinate
+= 내 표면의 2D 주소
+= 텍스처를 어디서 읽을지 알려주는 지도 좌표
+
+
+Normal / Tangent
+= 내 표면이 어느 방향을 향하는지
+
+
+World Position
+= 이 픽셀/정점이 월드 어디에 있는지
+
+
+PerInstanceCustomData
+= 같은 메시/머티리얼 인스턴스마다 다른 숫자
+
+---
+
+2. View / Camera 에서 온 정보
+
+“관객의 눈에서 본 나”에 대한 정보야.
+
+Camera Position
+= 카메라가 월드 어디에 있는가
+
+
+View Direction / Camera Vector
+= 이 픽셀에서 카메라를 향하는 방향
+= Fresnel, rim light, 유리/물 가장자리 강조
+
+
+Screen Position
+= 화면 위에서 이 픽셀이 어디인가
+
+
+Pixel Depth
+= 이 픽셀 자신의 깊이
+= 카메라에서 얼마나 떨어져 있는가
+
+---
+
+3. Material / Parameter 에서 온 정보
+
+게임플레이가 건네준 조절 손잡이
+
+Scalar Parameter
+Vector Parameter
+Texture Parameter
+
+---
+
+4. Engine / Frame 에서 온 정보
+이건 “이번 프레임의 공통 상태”야.
+
+Time
+
+---
+
+5. Scene Rendering 결과에서 온 정보
+이건 “이미 그려진 화면”을 읽는 거야.
+
+SceneColor
+= 지금까지 그려진 장면 색
+
+SceneDepth
+= 지금까지 그려진 장면 깊이
+
+GBuffer / SceneTexture 계열
+= normal, roughness, base color 등 렌더링 중간 결과
+
+---
+
+픽셀마다 (varying)
+인터폴런트 / 정점 스트림
+
+오브젝트마다
+Primitive 유니폼
+
+뷰/프레임마다
+View 유니폼
+
+머티리얼마다
+Material 유니폼
+
+다른 패스에서
+Scene Textures (읽기)
+
+---
+
+나 어디 있지?(월드 위치) 
+어느 쪽 보지?(노멀) 
+카메라 어디?(카메라 위치) 
+지금 몇 시?(Time) 
+내 뒤엔 뭐가?(SceneDepth)
+
+---
+
+일반 Texture Sample:
+  "내 UV 미분값 기준으로 mip 골라."
+
+Apply View MipBias:
+  "거기에 현재 View 가 원하는 전역 mip 보정도 적용해."
+
+temporal upscaling, dynamic resolution, view-specific texture sampling 보정
+
+---
+
+Custom Primitive Data 는 “Material Instance 를 새로 만들지 않고,
+Primitive/Component 단위로 Material 에 숫자들을 먹이는 통로”
+
+Actor / Component
+  |
+  | SetCustomPrimitiveDataFloat / Vector ...
+  v
+UPrimitiveComponent.CustomPrimitiveData
+
+
+Master Material 을 100명의 적에게 쓰는데, 각각 피격 flash 색/강도/진행률만 다르게 하고 싶다
+그러면 Material Instance 를 100개 만들지 않아도 component 단위로 다른 값을 줄 수 있다
+
+---
+
+같은 mesh geometry 를 overlay material 로 한 번 더 그리는 구조
+
+DrawMesh(BaseMeshBatch)
+
+OverlayMeshBatch = BaseMeshBatch copy
+OverlayMeshBatch.MaterialRenderProxy = OverlayMaterial
+DrawMesh(OverlayMeshBatch)
+
+
+- 피격 flash
+- 선택/하이라이트
+- 상호작용 가능 표시
+- 은은한 외곽/glow
+- 일시적 dissolve/scan effect
+
+---
+
+Anisotropy — 비등방성 스페큘러
+하이라이트 방향성을 제어
+Tangent와 함께 그 늘어나는 방향을 정합니다
+
+
+Displacement 
+실제 표면을 노멀 방향으로 변위시켜 미세 지오메트리를 만듭니다
+
+
+WPO(기존 정점을 옮김)와 달리 테셀레이션된 미세면을 더하는 개념
+(WorldDisplacement는 deprecated)
+
+---
+
+실제 geometry 는 평평함
+정점에서 보간된 노멀/탄젠트는 **매끈한 기본 프레임(TBN)**
+
+메인 노드의 Normal 입력은 그 프레임 위에 픽셀마다 얹는 "셰이딩 노멀" 오버라이드 — 거의 항상 노멀맵
+
+기본 보간 normal/tangent basis 를 기준으로
+픽셀 단위 최종 shading normal 을 계산하는 입력
+
+"TBN"은 "Tangent, Bitangent, Normal"
+
+---
+
+공기
+ |
+ |  얇고 투명한 코팅층  <- Clear Coat
+ |
+ |  아래쪽 실제 재질    <- 페인트, 플라스틱, 금속성 도장 등
+ |
+오브젝트
+
+---
+
+메시의 정점은 수학 교과서의 점 하나가 아니라, 작은 기록 카드다
+
+---
+
+Vertex Shader 가 묻는 질문:
+  이 vertex는 화면 어디로 가야 하지?
+  이 vertex의 UV/normal/color 같은 정보는 다음 단계에 어떻게 넘기지?
+
+듬성한 말뚝들을 화면 위에 세우고, 각 말뚝에 꼬리표를 달아 다음 단계로 넘긴다
+
+---
+
+표면은 연속이지만, 그 표면을 정의하는 건 띄엄띄엄한 앵커들이죠
+버텍스는 그 앵커 하나
+
+표면 한 점에 저작된 속성 다발
+
+---
+
+Shader Model = SM5 / SM6 같은 GPU shader capability
+Shading Model = Default Lit / Clear Coat / Hair / Cloth 같은 표면 조명 모델
+
+---
+
+Material Domain
+
+접근 가능한 입력, 출력 핀, 들어가는 pass, 사용되는 shader family 가 달라진다
+
+Surface, User Interface, Post Process, Deferred Decal, Light Function
+
+---
+
+Blend Mode
+이 픽셀이 render target에 어떻게 합쳐지는가
+
+BlendMode 에 따라 material compile environment define 이 갈라진다
+
+---
+
+Shading Model
+Material 이 낸 표면 값을 어떤 빛 공식으로 해석할 것인가
+
+DefaultLit 으로 볼지, ClearCoat 로 볼지, Hair 로 볼지에 따라 
+하이라이트/산란/투과/커스텀 데이터 의미가 바뀐다.
+
+---
+
+Deferred 기준으로 Base Pass 는 Material 값을 꺼내서 GBuffer 를 채운다.
+
+BaseColor  = GetMaterialBaseColor(...)
+Metallic   = GetMaterialMetallic(...)
+Roughness  = GetMaterialRoughness(...)
+Anisotropy = GetMaterialAnisotropy(...)
+
+---
+
+Material Graph:
+  표면 속성을 계산한다.
+  BaseColor, Roughness, Metallic, Normal, Opacity, ShadingModel
+
+Renderer:
+  그 표면 속성에 빛, 그림자, 반사, fog 등을 적용한다
+
+
+Roughness, Specular, Metallic, Normal, Shading Model 을 제공했기 때문에 
+엔진의 lighting shader 가 하이라이트를 만든다
+
+---
+
+그림자·하이라이트는 엔진 라이팅 셰이더가 계산
+
+엔진 내장 라이팅 패스 (디퍼드)
+Diffuse_Lambert (디퓨즈) + SpecularGGX (하이라이트) × 섀도맵 감쇠 (그림자)
+→ 최종 조명된 색 (Scene Color)
+
+---
+
+DeferredLightingCommon.ush
+GBuffer + 광원 + 섀도맵을 읽어 실제 빛을 계산
+
+당신이 준 Roughness·Metallic·Normal로 엔진이 각 광원 방향에 GGX BRDF를 평가
+
+---
+
+"씬의 모든 메시에 전역 기본 적용되는 엔진 셰이더 집합이 있나?"
+그렇다
+
+렌더러가 제공하는 셰이더들이 모든 lit 표면에 같은 코드로 적용됩니다
+당신 머티리얼은 그 조리에 들어갈 재료를 GBuffer에 낼 뿐이고요
+
+---
+
+Depth / Shadow Passes
+Base Pass
+Lighting Pass
+
+---
+
+Engine/Shaders/Private/
+
+BasePassPixelShader.usf
+DeferredLightPixelShaders.usf
+DeferredLightingCommon.ush
+
+---
+
+ShadingModels.ush
+
+  DefaultLitBxDF
+  ClearCoatBxDF
+  SubsurfaceBxDF
+  HairBxDF
+  ClothBxDF
+  EyeBxDF
+  IntegrateBxDF
+
+---
