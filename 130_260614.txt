@@ -1,0 +1,1147 @@
+UCLASS(Abstract)
+class UNetConnection : public UPlayer
+
+UIpConnection 
+
+---
+
+UPlayer 
+  APlayerController* PlayerController
+
+---
+
+PlayerController 를 안 갖는 NetConnection 
+
+Beacon connection
+UDemoNetConnection 
+
+---
+
+ULocalPlayer   → 이 머신에 물리적으로 앉아있는 로컬 플레이어
+UNetConnection → 네트워크 너머의 원격 플레이어
+
+---
+
+NetConnection 
+  TArray<TObjectPtr<UChannel>> Channels
+
+Connection
+  유지되는 것,
+  시간 상태머신,
+  나 ↔ 특정 원격 peer 1명
+  서비스(신뢰성, GUID 변환)
+
+---
+
+UControlChannel
+  연결 직후 가장 먼저 열려서 핸드셰이크·로그인 메시지를 협상
+
+UActorChannel
+  액터별로 하나씩
+  TMap<AActor*, UActorChannel*> 로 빠른 조회
+
+---
+
+UNetDriver
+  ServerConnection
+  ClientConnections
+
+“이번 tick에 어떤 connection에게 어떤 actor를 보내야 하나?”
+
+UNetDriver 는 전송(transport) 에 대해 추상적
+
+---
+
+Socket 추상화 계층
+Runtime/Sockets
+SOCKETS_API 모듈
+
+FSocket 
+Send / Recv / Connect / Bind / Listen / Accept / SetNonBlocking
+
+ISocketSubsystem 
+팩토리/레지스트리
+CreateSocket
+
+플랫폼별 구현은 Runtime/Sockets/Private/
+
+---
+
+HAL은 스레드·메모리·파일·시간 같은 CPU/OS 원시 기능 추상화고,
+네트워킹은 덩치가 커서 별도 모듈로 뺐어
+
+---
+
+UPROPERTY(Replicated) float Health
+
+UHT 가 Health 의 FProperty에 CPF_Net 플래그를 켠다
+FProperty 자체는 UClass 의 리플렉션 데이터(FField 리스트) 안에
+
+클래스별 복제 테이블 — UClass::ClassReps 와 RepIndex
+
+UClass::SetUpRuntimeReplicationData()
+모든 FProperty 를 순회
+CPF_Net 인 것만 모으고, 메모리 offset 순으로 정렬
+
+---
+
+복제 시스템은 클래스/스트럭트/함수마다 FRepLayout 하나를 만들어
+
+---
+
+UNetConnection: UPlayer
+
+“엔진 네트워크 계층에서 한 remote endpoint를 나타내는 UObject”
+
+---
+
+APlayerController::SetPlayer(UPlayer*)는 
+로컬이면 ULocalPlayer, 네트워크면 UNetConnection으로 다룬다
+
+---
+
+NMT_JoinNoPawn
+  pawn/login 흐름을 타지 않는 연결
+  AGameModeBase::Login()을 호출하지 않고 
+  ANoPawnPlayerController를 쓴다
+
+---
+
+Actor / 프로퍼티 시스템 = "무엇을(WHAT)"
+
+NetDriver = "언제·누구에게·어떤 순서로(WHEN/WHO/ORDER)"
+매 프레임 
+모든 액터를 끌어와서(pull) 
+relevancy·priority·대역폭을 계산하고 
+직렬화를 돌려
+
+엔진이 pull, 액터는 declare
+
+---
+
+생성: UEngine::CreateNamedNetDriver(NetDriverName, NetDriverDefinition)
+
+보관(authoritative): FWorldContext::ActiveNetDrivers
+
+---
+
+채널은 connection 을 통해 흐르고, 
+
+connection 자신은 그 흐름에 여러 서비스를 제공한다
+
+여러 채널의 bunch 를 하나의 패킷으로 묶어 보냄
+적절한 채널로 분배
+신뢰성·순서·ack
+대역폭/포화 측정
+오브젝트 참조를 NetGUID 비트로 인코딩 (PackageMap)
+저수준으로의 위임 지점
+
+---
+
+UNetDriver::TickFlush()
+  서버이면 ServerReplicateActors()를 호출
+
+---
+
+수가 1:N 으로 바뀌거나, 관심사가 질적으로 바뀌는 자리마다 클래스 하나가 놓여서 
+"그 위는 아래의 복잡성을 모른다" 를 보장해
+
+---
+
+Bunch (DataBunch.h)
+
+채널이 생산
+채널 1개에 속함
+
+
+Packet
+
+connection 이 여러 채널의 bunch 를 하나로 멀티플렉싱
+헤더(ack 정보)를 붙여 소켓으로 내보냄.
+
+---
+
+PackageMap
+PackageMapClient.h
+
+복제 UObject 에 NetGUID 를 부여
+"클라가 그 액터를 아직 모름"(unmapped reference, 비동기 로딩) 처리까지 담당
+connection 이 소유
+객체 복제를 가능하게 만드는 핵심
+
+---
+
+A 클라이언트는 어떤 actor를 이미 받았고, B 클라이언트는 아직 못 받았을 수 있다. 
+그 차이가 UNetConnection의 존재 이유다
+
+replication은 전역 상태가 아니라 상대마다 상태가 다르다
+
+---
+
+UChannel은 “한 connection 안에서 multiplexing되는 논리 스트림”
+
+UDP packet 하나에 control, actor replication, voice 를 섞어 보내려면
+각 논리 스트림 마다 상태가 필요하다
+
+---
+
+클래스마다 FRepLayout 1개 빌드
+NetDriver 에 캐시
+
+RepLayoutMap = TMap<UObject*, TSharedPtr<FRepLayout>>
+
+GetObjectClassRepLayout(UClass*)로 lazy 생성
+
+그 클래스의 모든 인스턴스 × 모든 connection 하나를 공유
+
+인스턴스별·연결별로 달라지는 가변 상태(shadow, changelist, ack)는
+FRepState/ChangelistMgr 에 
+
+---
+
+UWorld::Tick
+  BroadcastTickFlush
+    UNetDriver::TickFlush
+      ServerReplicateActors
+
+ServerReplicateActors 
+  FNetworkObjectList 빌드
+  ServerReplicateActors_BuildConsiderList
+  ServerReplicateActors_PrioritizeActors, FNetViewer
+  ServerReplicateActors_ProcessPrioritizedActorsRange 
+
+---
+
+UIpNetDriver::TickDispatch
+
+데이터그램 수신 → 주소로 connection 찾음 
+
+UNetConnection → PacketHandler
+
+UNetConnection::ReceivedRawPacket
+Handler->Incoming(PacketView)
+
+DispatchPacket이 패킷 안의 bunch 들을 하나씩 떼어 ChIndex 로 대상 채널을 찾음
+
+UChannel::ReceivedRawBunch
+reliable 이면 시퀀스대로 정렬(빠진 게 있으면 큐잉해 대기)
+
+FObjectReplicator::ReceivedBunch
+FRepLayout::ReceiveProperties
+
+Replicator->CallRepNotifies
+PostNetReceive
+
+---
+
+MyActor 가 Relevant 하다
+
+NetDriver -> Connection -> ActorChannel
+
+UActorChannel::ReplicateActor (DataChannel.cpp)
+  FOutBunch Bunch(this,0)
+  Actor->PreReplication
+  ActorReplicator->ReplicateProperties(Bunch, RepFlags)
+
+---
+
+Server MyActor.Health
+  -> UClass / FProperty / RepIndex
+  -> FRepLayout
+
+  -> FReplicationChangelistMgr / Shadow State
+
+  -> FObjectReplicator
+  -> UActorChannel
+  -> FOutBunch
+
+  -> UNetConnection SendBuffer (Packet)
+  -> PacketHandler
+  -> UIpConnection / UIpNetDriver
+
+  -> FSocket
+  -> network
+
+  -> client reverse path
+  -> Client MyActor.Health
+
+---
+
+FOutBunch
+  = channel-level message
+  = "ActorChannel 12번에 Health 변경 payload를 보낸다"
+
+SendBuffer
+  = connection-level packet assembly buffer
+  = packet header + ack info + bunch header + bunch payload들을 bit 단위로 쌓는 곳
+
+Packet
+  = FlushNet 때 SendBuffer.GetData() 로 LowLevelSend 되는 결과
+
+---
+
+런타임에서 UClass::SetUpRuntimeReplicationData()가 CPF_Net property를 모아서 ClassReps에 넣고 RepIndex를 부여한다
+여기서 Health는 FRepRecord { FProperty* Property, int32 ArrayIndex } 가 된다
+
+FProperty*는
+  이 property의 이름은 무엇인가
+  타입은 무엇인가
+  객체 메모리 안에서 offset이 어디인가
+
+---
+
+FRepLayout::CreateFromClass()
+FRepLayout::InitFromClass()
+
+class의 ClassReps를 읽는다
+
+FRepParentCmd/FRepLayoutCmd 구조
+
+FRepLayout
+  Parents:
+    FRepParentCmd(Health)
+
+  Cmds:
+    FRepLayoutCmd(Health leaf serialization command)
+
+---
+
+FNetworkObjectList
+
+이번 frame에 고려할 actor들
+
+---
+
+이 client connection에 아직 actor channel이 없으면 
+  Connection->CreateChannelByName(NAME_Actor)
+  SetChannelActor(MyActor)
+  Channel->ReplicateActor()
+
+---
+
+FRepChangelistState
+
+Shadow 
+복제 프로퍼티 값들의 전체 사본
+지난번 값이 뭐였나
+
+Changelist 
+FRepChangedHistory ChangeHistory[MAX_CHANGE_HISTORY]
+바뀐 프로퍼티들의 handle 목록 + 그게 실린 패킷 범위
+
+---
+
+현재값 ↔ Shadow 비교(CompareProperties)
+다른 handle 들을 모아 Changelist 엔트리 1개 생성
+Shadow 를 현재값으로 갱신
+
+Changelist 히스토리 없으면
+connection 마다 ack 진척이 달라서, 각자에게 못 받은 변경만 골라 보낼 수가 없어
+
+---
+
+핸드셰이크가 same-build 를 강제한다
+클라가 접속할 때 control 채널에서
+IsNetworkCompatible(Local, Remote) 검사
+불일치면 → NMT_Upgrade 보내고 즉시 연결 끊음
+
+버전이 다른 클라는 애초에 게임에 못 들어와.
+"게임을 업데이트해야 합니다"
+
+---
+
+리플레이(데모)는 v1.0 에 녹화하고 v1.1 에 재생할 수 있으니
+InternalAck(=데모/리플레이) 연결에서만 backwards-compatible 경로가 켜져
+
+SendProperties_BackwardsCompatible
+
+---
+
+Stateless 핸드셰이크 (connection 이 아직 없음, 순수 패킷 레벨)
+
+클라는 InitConnect 로 ServerConnection 껍데기를 만들고 PacketHandler 부터 초기화
+
+[C] StatelessConnectHandlerComponent::NotifyHandshakeBegin
+  InitialPacket 전송
+
+[S] 소켓이 connectionless 패킷 수신
+  UIpNetDriver::TickDispatch
+    ProcessConnectionlessPacket 
+      SendConnectChallenge 
+        GenerateCookie
+          클라 주소 + 서버 비밀 + 타임스탬프로 쿠키 생성
+          서버는 쿠키를 저장하지 않아 — 주소에서 언제든 재계산 가능하니까.
+        Challenge 패킷 전송
+
+[C] Challenge 수신
+  SendChallengeResponse 
+    받은 쿠키를 그대로 되돌려보냄
+
+[S] Response 수신
+  쿠키 재계산해 검증
+    "네가 주장한 주소에서 실제로 패킷을 받을 수 있음" 을 증명해야 connection 을 내줘
+  NewObject<UIpConnection>
+  InitRemoteConnection 
+  SendChallengeAck
+
+---
+
+[C] SendInitialJoin
+  NMT_Hello(LocalNetworkVersion, …) 전송
+  (connection 이 생기자마자 양쪽이 사전 합의 없이 쓸 수 있는 채널이 필요 → 0번을 control 로 예약.)
+
+[S] UWorld::NotifyControlMessage 의 NMT_Hello
+  Connection->SendChallengeControlMessage()
+
+[C] NMT_Challenge 응답 구성 (온라인 플랫폼 인증 토큰, 접속 URL)
+  NMT_Login(ClientResponse, URL, PlayerId, Platform) 전송
+
+[S] NMT_Login:  GameMode->PreLoginAsync(…)
+  밴/정원/비번 판정
+  완료 콜백 PreLoginComplete
+  승인되면 WelcomePlayer(Connection)
+  "이 맵을 로드해라" 지시
+
+[C] NMT_Welcome: 맵 이름 수신 → NMT_Netspeed 전송
+  맵 로드(TickWorldTravel → LoadMapCompleted)
+  SendJoin, NMT_Join 전송 "준비됐다, 넣어줘"
+
+---
+
+[S] NMT_Join
+  Connection->PlayerController = SpawnPlayActor(Connection, ROLE_AutonomousProxy, URL, PlayerId, …)
+  내부적으로 GameMode::Login(PlayerController 스폰) → GameMode::PostLogin.
+  TickFlush → ServerReplicateActors
+
+[C] bunch 수신 → PackageMap 으로 액터들 스폰
+  PlayerController 는 HandleClientPlayer 로 ULocalPlayer 에 연결
+
+---
+
+UActorChannel 안에서 Actor 자신용 ActorReplicator 하나가 있고, 
+subobject 들은 ReplicationMap<UObject*, FObjectReplicator> 에 들어간다
+
+
+---
+
+UIpConnection
+FSocket
+OS socket
+
+---
+
+복제란
+공유 메모리가 없는 두 기계에서, 
+각 상대마다 "그 상대가 이미 아는 상태"를 내가 기억해 두고, 
+매 틱 "지금 내 상태 − 그 상대가 아는 상태" 의 차이만 바이트로 바꿔 흘려보내
+
+"각 상대마다 기억" → Connection
+
+"내 상태 − 특정 상대가 아는 것" → Shadow(상대가 아는 것의 사본) vs 나의 현재값.
+
+"차이만" → Changelist + ack (안 바뀐 건 안 보냄).
+
+"바이트로 바꿔" → RepLayout + NetGUID/PackageMap
+
+"매 틱 흘려보내" → NetDriver (스케줄러).
+
+---
+
+와이어는 바이트뿐(포인터·객체 못 보냄) → 직렬화 + 식별자가 강제됨(RepLayout, NetGUID)
+
+대역폭 유한 + 대부분 안 변함 → 차이만 보내기가 강제됨(Shadow/Changelist)
+
+"같은 상태" 가 상대마다 다름(B는 알고 C는 모름) → 상대별 상태 = Connection 이 강제됨
+
+와이어는 끊기고·뒤섞이고·하나를 여럿이 공유 → 멀티플렉싱 + 선택적 신뢰성 = Channel/Packet 이 강제됨.
+
+와이어는 적대적(위조·버전차) → 핸드셰이크가 강제됨
+
+---
+
+본질은
+"객체 동기화" 가 아니라 "상대별 차등 동기화(per-peer differential sync)" 
+
+---
+
+서버의 실제 객체 상태
+        |
+        |  현재 값과, 이 클라이언트에게 마지막으로 보낸 값을 비교
+        v
+클라이언트별 Delta
+        |
+        |  객체/프로퍼티/참조를 네트워크용 ID와 비트열로 인코딩
+        v
+Actor 단위 메시지
+        |
+        |  여러 메시지를 한 원격 상대용 패킷으로 묶음
+        v
+Socket 전송
+
+
+Connection 마다 다른 복제 기억이 있다는 것
+
+---
+
+for each remote client:
+    for each relevant actor:
+        delta = actor.current_state - client.last_known_state_for_that_actor
+        send(delta)
+        update client.last_known_state_for_that_actor
+
+actor 가 아직 클라이언트에 없으면?
+actor 참조 포인터는 어떻게 보내지?
+패킷 하나에 여러 actor 변경을 섞어야 하면?
+손실되면 다시 보내야 하면?
+클라이언트마다 관련 actor 가 다르면?
+프로퍼티 순서와 조건은 어떻게 알지?
+
+---
+
+NetDriver 안에는 사실 7개의 서로 다른 객체가 동거하고 있어
+
+Connection 레지스트리
+이 컨텍스트의 모든 원격 상대를 소유·색인
+  ServerConnection
+  ClientConnections
+  RecentlyDisconnectedClients
+  ConnectionlessHandler
+
+복제 관리자
+  FNetworkObjectList
+  Last{Prioritized,Relevant,Sent}Actors
+  ServerReplicateActors 
+
+공유 신원, 스키마 레지스트리
+  FNetGUIDCache
+  RepLayoutMap
+
+Transport 펌프
+  TickDispatch
+  TickFlush
+
+RPC 디스패처
+  ProcessRemoteFunction 
+
+---
+
+NetDriver
+
+World 를 여러 원격 Connection 에 동기화시키는 중앙 실행체
+
+Epic이 이미 개명 중
+
+UReplicationSystem 
+
+---
+
+FOutBunch : public FNetBitWriter, 
+FInBunch : public FNetBitReader
+
+Bunch 
+
+Envelope
+ChIndex, ChName. → 어느 채널(논리 스트림)로 가는가
+
+채널 자체를 열고/닫는 제어 비트
+bIsReplicationPaused, bOpen, bClose, 
+
+신뢰성·순서 단위
+bReliable, ChSequence, ReceivedAck
+패킷보다 크면 쪼개져 여러 packet 에 나눠 실리고 수신측에서 재조립
+
+프로토콜 프레임/세그먼트(PDU) 정의 
+SYN, FIN, ACK, ...
+
+Bunch 는 "packet 의 채널 버전"
+
+Bunch : Channel = Packet : Connection.
+
+---
+
+UDP 위에 채널별 선택적 TCP 를 구현
+
+---
+
+MyActor 메모리 안의 float Health 값이 50으로 바뀜
+polling 기반 replication 에서는 여기서 Bunch도 안 생기고, UNetConnection도 안 부르고, socket 도 안 건드린다
+Push Model 을 쓰는 property 라면 dirty marking
+
+replication tick 에 비교로 발견된다
+NetDriver TickFlush
+  ServerReplicateActors
+
+---
+
+후보 Actor 만들기
+
+NetworkObjectList에서 active replicated actor 들을 훑어 ConsiderList를 만든다
+Connection 별로 relevancy/priority 판단
+  각 UNetConnection에 대해 FNetViewer를 만들고, actor 후보들을 priority 순으로 정렬한다
+  ServerReplicateActors_ProcessPrioritizedActorsRange(
+channel 이 없으면 Connection->CreateChannelByName(NAME_Actor, ...)
+
+---
+
+Channel->ReplicateActor()
+FOutBunch Bunch(this, 0)를 만든다
+initial replication 이면 PackageMap->SerializeNewActor()로 spawn 정보도 넣음
+FObjectReplicator::ReplicateProperties
+
+---
+
+RepLayout/RepIndex 는 "어느 필드" 를 머신 독립적으로 만들고, 
+PackageMap/NetGUID 는 "어느 객체" 를 머신 독립적으로 만들어.
+
+상태를 머신 간에 직렬화한다는 건 결국 필드 + 참조 두 축
+
+---
+
+FObjectReplicator
+
+Per-Connection UObject Replication Session
+특정 Connection 위에서 특정 UObject의 복제 상태, 변경 감지, 참조 해결, dormancy 판단을 묶어 들고 있는 장기 실행 컨텍스트
+
+내가 맡은 UObject에 대해,
+마지막으로 본 상태와 현재 상태를 비교해보고,
+필요한 property delta 를 bunch payload 로 써줄게.
+
+---
+
+matrix[obj][conn]
+
+행 = 복제되는 UObject 하나 (동기화 대상). 액터 + 복제되는 서브오브젝트 각각이 별도의 행
+열 = UNetConnection 하나
+셀 = FObjectReplicator = "이 객체를 이 peer 에게 동기화하는 상태."
+
+---
+
+UNetDriver  
+  ReplicationChangeListMap : Object → ChangelistMgr   ◄ 행(객체)의 공유 상태, 객체당 1개
+  
+  RepLayoutMap             : Class  → RepLayout       ◄ 클래스당 1개
+
+  AllOwnedReplicators / GuidToReplicatorMap           ◄ flat 집합 / 역방향 인덱스
+
+
+
+
+---
+
+Channel[0] Control        연결 상태/로그인/close 같은 제어 대화
+Channel[n] Actor          특정 Actor에 대한 하위 대화
+  FObjectReplicator       특정 UObject 복제 세션
+
+---
+
+FObjectReplicator   
+
+ChangelistMgr 
+객체의 사실이지 연결의 사실이 아냐
+Health 가 바뀐 건 A 클라용·B 클라용이 똑같지
+
+객체당 한 번 CompareProperties 해서 ChangeHistory 에 쌓여
+
+---
+
+"이 peer가 changelist 어디까지 받았나"는 연결마다 다름(A는 5번까지 ack, B는 2번까지)
+
+---
+
+UNetConnection
+= 원격 상대와의 큰 통신방
+
+UChannel
+= 그 큰 통신방 안에 번호 붙은 서브 대화방들
+  ChIndex 0은 ControlChannel
+
+Bunch
+= 서브 대화방에서 나온 메시지 조각
+
+Packet
+= 여러 서브 대화방의 메시지 조각들을 한 번에 담아 나가는 봉투
+
+---
+
+Channel 이 Bunch 를 생산하고 소비한다
+
+ActorChannel 1: "이 Actor의 Health가 50 됐어" -> Bunch 생성
+ActorChannel 2: "저 Actor 위치가 바뀌었어"    -> Bunch 생성
+ControlChannel: "연결 상태 메시지"            -> Bunch 생성
+
+UNetConnection:
+  이 bunch들을 모아서 하나 이상의 Packet 으로 묶음
+  각 bunch header 에 ChIndex 를 적음
+  SendBuffer 에 쌓았다가 LowLevelSend 로 보냄
+
+---
+
+Multiplexing
+= 여러 논리 흐름을 하나의 물리/하위 흐름으로 합치는 것
+
+Demultiplexing
+= 하나의 물리/하위 흐름에서 여러 논리 흐름을 다시 분리하는 것
+
+many -> one  = multiplexing
+
+one -> many  = demultiplexing
+
+demux key
+ChIndex
+
+---
+
+UNetConnection packet 을 bunch 들로 분해
+bunch.ChIndex 로 UChannel 에 demux
+UActorChannel이 해석
+PostNetReceive / RepNotify 흐름
+
+---
+
+NetDriver TickFlush
+
+NetworkObjectList 에서 ConsiderList 구성
+ClientConnections 순회
+
+ActorChannel::ReplicateActor
+ActorReplicator (=FObjectReplicator) 호출
+  RepLayout + RepState + ChangelistMgr 로 delta 생성
+  writer 에 씀
+  bunch 에 붙임
+UChannel::SendBunch
+UNetConnection::SendRawBunch
+connection 단위 packet LowLevelSend
+
+---
+
+Connection A:
+  Channel bunch들 -> Packet A -> send to Client A
+
+Connection B:
+  Channel bunch들 -> Packet B -> send to Client B
+
+for (Connection : ClientConnections) 
+  Connection->FlushNet()
+
+---
+
+demux 는 2단계
+
+driver 는 데이터그램을 받아 발신 주소로 어느 connection 인지만 고름
+MappedClientConnections
+
+그 다음 connection 이 패킷을 bunch 들로 풀고, ChIndex 로 채널에 분배
+
+---
+
+ObjectReplicator 
+  RepState
+    SendingRepState
+      HistoryStart/End(공유 히스토리로의 커서),
+    ReceivingRepState
+      shadow
+      RepNotifies[]
+      GuidReferencesMap
+
+---
+
+공유 로그: FRepChangelistState.ChangeHistory[MAX_CHANGE_HISTORY]
+사적 커서: FSendingRepState.HistoryStart/End
+
+---
+
+ActorChannel Bunch 안:
+  [ContentBlock: RepObj = MyActor]
+    Health = 50
+
+  [ContentBlock: RepObj = MyInventoryComponent]
+    SlotCount = 3
+
+  [ContentBlock: RepObj = MyWeapon]
+    Ammo = 12
+
+같은 actor channel 안으로 actor 자신, component, replicated subobject의 데이터가 같이 들어올 수 있어
+
+---
+
+TArray 같은 동적 구조는? 항목이 추가/삭제/재정렬되면?
+
+custom delta: 그 struct 가 자기만의 NetDeltaSerialize 함수로 
+"지난 base state 대비 무엇이 바뀌었나" 를 의미 기반으로 직렬화
+
+대표가 FFastArraySerializer
+배열의 각 항목에 ReplicationID/ReplicationKey 를 달아서 
+추가/삭제/변경된 항목만 보내(배열 전체 X)
+
+---
+
+Retirement 
+
+이 기록은 그 packet 이 ack 될 때까지 살아있다가, 확인되면 폐기돼
+nak 이면 resend
+
+생애주기(보냄 → in-flight → ack 시 은퇴)
+
+---
+
+FReplicationChangelistMgr
+  FRepChangelistState 
+    StaticBuffer = Shadow
+    ChangeHistory[MAX_CHANGE_HISTORY] 
+
+---
+
+ChangeHistory[]
+  한 항목은 "핸들 3(Health)이 바뀌었다"
+
+Health 가 10→20→30 이면
+ChangeHistory 엔 "핸들 3 바뀜" 항목이 3개 쌓인다
+
+왜 히스토리냐
+연결마다 커서가 다르니까
+
+---
+
+Shadow(FRepStateStaticBuffer)
+
+RepLayout 의 ShadowOffset 대로 복제 프로퍼티만 따로 패킹한 별도 버퍼
+객체 메모리 레이아웃 ≠ shadow 레이아웃
+shadow 엔 비복제 멤버가 없고, 복제 프로퍼티만 RepLayout 이 정한 위치에 촘촘히
+
+---
+
+FRepChangelistState.ChangeHistory
+프레임마다 무엇이 바뀌었나
+
+FSendingRepState.ChangeHistory
+연결별
+공유 FRepChangelistState::HistoryEnd 까지 따라잡았으면 보낼 새 changelist 가 없다
+
+---
+
+Health=30 을 직렬화한 비트는 그걸 받을 모든 연결에 똑같아
+100개 연결에 100번 직렬화하면 같은 계산을 100번 
+
+SharedSerialization
+
+프레임당 한 번만 직렬화해서
+FRepSerializationSharedInfo에 저장
+
+---
+
+FRepRecord
+  FProperty* Property
+  int32 Index
+
+TArray<FRepRecord> ClassReps
+
+ClassReps[0] = Health
+ClassReps[1] = Ammo
+ClassReps[2] = Stats
+
+--- 
+
+USTRUCT() struct FStats {
+    UPROPERTY() int32 Str;
+    UPROPERTY() int32 Dex;
+};
+
+UCLASS() class AHero : public AActor {
+    UPROPERTY(Replicated) float         Health;     
+    UPROPERTY(Replicated) FStats        Stats;      
+    UPROPERTY(Replicated) int32         Mana[2];    
+    UPROPERTY(Replicated) TArray<int32> Buffs;      
+};
+
+SetUpRuntimeReplicationData 
+
+RepIndex 0 : Health        (FFloatProperty)
+RepIndex 1 : Stats         (FStructProperty)       
+RepIndex 2 : Mana[0]       (FIntProperty, ArrayIdx 0) 
+RepIndex 3 : Mana[1]       (FIntProperty, ArrayIdx 1) 
+RepIndex 4 : Buffs         (FArrayProperty)         
+
+---
+
+InitFromClass 
+
+Parents: CmdStart/CmdEnd 로 Cmds 구간을 가리킴
+
+Parent 0  Health   → Cmds[0, 1)
+Parent 1  Stats    → Cmds[1, 3)
+Parent 2  Mana[0]  → Cmds[3, 4)
+Parent 3  Mana[1]  → Cmds[4, 5)
+Parent 4  Buffs    → Cmds[5, 8)
+
+
+Cmd 0  Health     Type=PropertyFloat(4)   Handle 1   ←Parent 0
+Cmd 1  Stats.Str  Type=PropertyInt(5)     Handle 2   ←Parent 1
+Cmd 2  Stats.Dex  Type=PropertyInt(5)     Handle 3   ←Parent 1
+Cmd 3  Mana[0]    Type=PropertyInt(5)     Handle 4   ←Parent 2
+Cmd 4  Mana[1]    Type=PropertyInt(5)     Handle 5   ←Parent 3
+Cmd 5  Buffs      Type=DynamicArray(0)    Handle 6   ←Parent 4  EndCmd→8
+Cmd 6  Buffs[*]   Type=PropertyInt(5)     Handle 1*  ←Parent 4  (배열 내 *상대* 핸들)
+Cmd 7  (end)      Type=Return(1)
+
+타입 번호는 ERepLayoutCmdType 값 — 
+DynamicArray=0, Return=1, PropertyFloat=4, PropertyInt=5
+Handle 은 ++Handle 로 순차 부여
+
+---
+
+객체는 트리(struct·배열)인데 와이어는 평면 비트
+RepLayout 은 그 평면화 지도
+
+
+---
+
+FRepLayoutCmd
+  Property        = 어떤 FProperty인가
+  Type            = 일반 property인가, float인가, object인가, dynamic array인가...
+  Offset          = UObject 메모리에서 어디에 있는가
+  ShadowOffset    = shadow memory에서 어디에 있는가
+  RelativeHandle  = stream/changelist에서 쓰는 짧은 번호
+  ParentIndex     = 어느 top-level parent property에 속하는가
+  EndCmd          = array일 경우 어디까지가 내부 cmd인가
+  ElementSize     = array element 크기
+
+---
+
+HandleIterator가 CmdIndex를 찾음
+ -> Cmds[CmdIndex] 꺼냄
+ -> SourceData + Cmd.Offset 위치를 잡음
+ -> Cmd.Property->NetSerializeItem(...) 으로 bitstream에 씀
+
+---
+
+RepLayout 
+
+switch (Cmd.Type)
+
+그 클래스를 직렬화하는 "컴파일된 바이트코드"
+
+---
+
+UE 5.6 소스 기준으로 직접 replicated TMap은 일반 property replication에서 지원되지 않는다
+
+---
+
+SendProperties(...)
+진입점. 한 번만 하는 셋업
+
+SendProperties_r(...)
+자기를 호출하는 재귀 워커
+
+---
+
+같은 class replication schema를 가진 양쪽 머신이, 
+property 이름 대신 handle을 주고받으며, 
+UObject memory를 동기화하는 것
+
+---
+
+먼저 UClass가 자기 replicated property 목록을 만든다
+UClass::SetUpRuntimeReplicationData()
+
+부모 클래스의 ClassReps를 먼저 복사한다
+현재 클래스에서 CPF_Net 플래그가 있는 FProperty를 모은다
+그 임시 목록이 NetProperties다
+
+각 property에 RepIndex를 부여한다
+ClassReps에 FRepRecord(Property, ArrayIndex)로 넣는다
+
+UNetDriver가 class별 FRepLayout을 캐시한다
+GetObjectClassRepLayout()이 RepLayoutMap에서 찾고
+없으면 FRepLayout::CreateFromClass
+  여기서 UClass::SetUpRuntimeReplicationData() 호출
+
+---
+
+Cmd.Property->NetSerializeItem(Ar, Map, (Data + Cmd.Offset));
+
+Ar 이 FBitWriter 면 쓰고, FBitReader 면 읽어
+
+---
+
+HealthHandle
+
+Health의 FRepLayoutCmd를 가리키는 property command handle
+
+---
+
+tagged dispatch
+switch(Cmd.Type)
+discriminant
+
+컴파일러는 dense enum switch 를 점프테이블로 깔아
+
+미리 캐싱한 devirtualization 이야
+결정을 build 때 Cmd.Type 에 한 번 구워두고
+매 프레임엔 가상호출 대신 싼 int-switch
+
+태그 디스패치로 reflection 가상호출을 떼어냄
+
+---
+
+Property->NetSerializeItem() 
+virtual dispatch
+
+FFloatProperty·FBoolProperty... 가 타입별 동작을 override
+FProperty 객체 자체가 "그 타입의 직렬화 전략"
+
+---
+
+TFieldIterator<FProperty> 로 CPF_Net 프로퍼티를 훑어 ClassReps 구성
+
+Cmd.Offset = FProperty::GetOffset. "값이 객체 메모리 어디 있나" 를 reflection 이 안다
+
+---
+
+0-based index:
+  0, 1, 2, 3 ...
+
+1-based handle:
+  1, 2, 3 ...
+  0은 특별한 의미 (끝) 로 예약
+
+---
+
+UNetDriver::GetObjectClassRepLayout
+
+  TSharedPtr<FRepLayout>* RepLayoutPtr = RepLayoutMap.Find(Class);
+  if (!RepLayoutPtr)   // 처음 조회면
+      FRepLayout::CreateFromClass(Class, ...)
+      RepLayoutPtr = &RepLayoutMap.Add(Class, RepLayout); // 그때 굽고 캐시
+  return *RepLayoutPtr;
+
+---
+
+FRepLayoutCmd 전체 = opcode + operands 를 가진 instruction record
+
+Cmd.Type          = opcode에 가까운 것
+Cmd.Property      = 이 instruction이 다룰 reflection property
+Cmd.Offset        = object memory에서 읽고 쓸 위치
+
+이 property를
+이 offset에서
+이 명령을 수행하라
+
+---
+---
+---
+
+모든 UFunction 호출은 UObject::ProcessEvent
+
+---
+
+UObject::ProcessEvent
+이 함수가 Net 함수인지 판단
+어디서 실행할지 결정: Local / Remote / Local+Remote / Absorbed
+Remote면 UFunction 식별자 + 파라미터를 ActorChannel Bunch에 기록
+Connection/Socket을 통해 전송
+
+반대편 ActorChannel이 읽음
+FObjectReplicator가 RPC로 해석
+파라미터 버퍼 복원
+UObject::ProcessEvent(Function, Params)
+
+---
+
+Server RPC: 클라이언트에서 호출하면 서버로
+Client RPC: 서버에서 호출하면 owning client로
+NetMulticast RPC: 서버에서 호출하면 Local | Remote. 즉 서버도 실행하고 관련 클라이언트들에게 보냄
+
+---
+
+AActor::CallRemoteFunction
+UNetDriver::ProcessRemoteFunction
+
+server multicast면 ClientConnections를 순회한다
+client 쪽에서 서버로 보낼 때는 ServerConnection
+
+---
+
+FRepLayout::CreateFromFunction
+FRepLayout::CreateFromClass
+
+---
+
+FunctionCallspace
+Absorbed 
+
+"로컬 실행도 안 하고 원격 전송도 안 함". 조용한 no-op 
+
+---
+
+Server / Client / NetMulticast는 thunk 모양을 바꾸지 않는다
+UFunction::FunctionFlags를 바꿉니다
+
+---
+
+FUNC_BlueprintAuthorityOnly
+
+BP 작성자가 "Switch Has Authority → Branch" 를 매번 안 깔고도, 이벤트를 authority 전용으로 만들게 해주는 편의야
+BP 판 if (HasAuthority())
+
+authority 면 실행, 아니면 noop
+
+
+FUNC_BlueprintCosmetic
+
+authority/서버에서 Absorbed, 클라에서만 실행
+
+---
+
+아웃바운드 caller stub
+
+void AMyActor::ServerFoo(float Health, int32 ManaLevelup) {
+    AMyActor_eventServerFoo_Parms Parms; / UHT 가 만든 파라미터 구조체
+    Parms.Health = Health;
+    Parms.ManaLevelup = ManaLevelup;
+    ProcessEvent(FindFunctionChecked(NAME_ServerFoo), &Parms);  
+}
+
+---
+
+인바운드 exec thunk
+
+DEFINE_FUNCTION(AMyActor::execServerFoo) {
+    P_GET_PROPERTY(FFloatProperty, Z_Param_Health);      // 프레임에서 float 꺼냄
+    P_GET_PROPERTY(FIntProperty,   Z_Param_ManaLevelup); // 프레임에서 int32 꺼냄
+    P_FINISH;                                            // 바이트코드 포인터 전진
+    P_NATIVE_BEGIN;
+    P_THIS->ServerFoo_Implementation(Z_Param_Health, Z_Param_ManaLevelup); 
+    P_NATIVE_END;
+}
+
+---
+
+ActorChannel
+
+“내 안에는 Actor 자신만 오는 것이 아니다.
+Actor, Component, replicated subobject가 
+content block으로 나뉘어 들어온다.”
+
+---
+
+FOutBunch, Channel, ChIndex
+
+Packet, Connection
+  Many Channel Bunches -> one Connection packet
+
+---
+
+그리고 Health가 마지막으로 말한다.
+
+“나는 50이 아니다.
+나는 A에게는 100에서 50으로 바뀐 차이고,
+B에게는 아직 태어나지 않은 액터의 일부이며,
+C에게는 보낼 가치가 없는 침묵일 수도 있다.”
+
+---
+
+Replication은 World의 복사본을 보내는 시스템이 아니라, 
+각 peer가 이미 알고 있다고 가정되는 세계를 유지하고, 
+그 가정의 오차만을 tick마다 수정하는 문법이다
+
+---

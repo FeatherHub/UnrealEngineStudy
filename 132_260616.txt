@@ -1,0 +1,112 @@
+execFoo 
+DECLARE_FUNCTION
+DEFINE_FUNCTION
+
+FUNC_Native | FUNC_Event | FUNC_BlueprintEvent
+
+ProcessEvent 에서 C++ body로 넘어가기 위한 native thunk
+
+---
+
+float UMyTestClass::MyFoo(int32 ItemCount, float ItemCost, bool bSharable)
+{
+    UFunction* Func = FindFunctionChecked(NAME_UMyTestClass_MyFoo);
+
+    if (!Func->GetOwnerClass()->HasAnyClassFlags(CLASS_Native))
+    {
+        MyTestClass_eventMyUFUNCFoo_Parms Parms;
+        Parms.ItemCount = ItemCount;
+        Parms.ItemCost  = ItemCost;
+        Parms.bSharable = bSharable ? true : false;
+        ProcessEvent(Func, &Parms);
+        return Parms.ReturnValue;
+    }
+    else
+    {
+        return MyUFUNCFoo_Implementation(ItemCount, ItemCost, bSharable);  // 빠른 경로
+    }
+}
+
+---
+
+DEFINE_FUNCTION(UMyTestClass::execMyFoo)
+{
+    P_GET_PROPERTY(FIntProperty, Z_Param_ItemCount);
+    P_GET_PROPERTY(FFloatProperty, Z_Param_ItemCost);
+    P_GET_UBOOL(Z_Param_bSharable);
+
+    *(float*)Z_Param__Result = 
+      P_THIS->MyFoo_Implementation
+      (Z_Param_ItemCount, Z_Param_ItemCost, Z_Param_bSharable);
+}
+
+
+exec* 는 uniform signature
+
+void UMyTestClass::execMyFoo( UObject* Context, FFrame& Stack, void* const Z_Param__Result )
+
+---
+
+P_GET_PROPERTY(FIntProperty, Z_Param_ItemCount)
+
+FIntProperty::TCppType Z_Param_ItemCount = FIntProperty::GetDefaultPropertyValue();
+Stack.StepCompiledIn<FIntProperty>(&Z_Param_ItemCount);   
+
+
+P_GET_UBOOL(Z_Param_bSharable)
+
+uint32 Z_Param_bSharable32 = 0;
+bool Z_Param_bSharable = false;
+
+Stack.StepCompiledIn<FBoolProperty>(&Z_Param_bSharable32);
+Z_Param_bSharable = !!Z_Param_bSharable32;
+
+---
+
+P_FINISH   
+
+Stack.Code += !!Stack.Code
+!!Stack.Code 는 null 가드
+
+---
+
+네이티브 구간 프로파일링 경계
+
+P_NATIVE_BEGIN { SCOPED_SCRIPT_NATIVE_TIMER(ScopedNativeCallTimer);
+P_NATIVE_END   }
+
+---
+
+핵심은 FindFunction가 UMyTestClass 고정 lookup이 아니라 this->GetClass() 기준이라는 점
+
+BP로 만든 인스턴스라면 GetClass()는 UBlueprintGeneratedClass이고, 
+UClass::FindFunctionByName은 먼저 그 class의 FuncMap을 보게 됩니다
+
+그래서 BP override가 있으면 native parent의 MyFoo가 아니라 BP class 쪽 UFunction이 잡힙니다
+
+---
+
+Func->GetOwnerClass()->HasAnyClassFlags(CLASS_Native)
+
+BP override가 있으면 Func->GetOwnerClass()가 Blueprint generated class라서 CLASS_Native가 아니게 된다
+
+---
+
+code 상의 파라미터 의 타입 정보는
+UFunction의 FProperty 메타데이터에도 있습니다
+
+C++ code: MyFoo_Implementation(int32, float, bool)
+
+
+reflected signature
+
+UFunction
+      ChildProperties:
+        FIntProperty   ItemCount   offset N
+        FFloatProperty ItemCost    offset N
+        FBoolProperty  bSharable   offset N
+        FFloatProperty ReturnValue offset N
+
+STRUCT_OFFSET(MyTestClass_eventMyFoo_Parms, ...)
+
+---
