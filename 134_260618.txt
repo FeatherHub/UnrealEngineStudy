@@ -1,0 +1,304 @@
+연속 화면 좌표
+0.0       1.0       2.0       3.0       4.0
+ |---------|---------|---------|---------|
+ | Pixel 0 | Pixel 1 | Pixel 2 | Pixel 3 |
+ |----●----|----●----|----●----|----●----|
+     0.5       1.5       2.5       3.5
+
+Pixel 0은 정수 인덱스 0
+차지하는 영역은 [0, 1)
+중심은 (0.5)
+
+---
+
+Rasterizer
+
+이 픽셀의 sample position이 삼각형 내부에 있는가?
+
+---
+
+정규화 UV
+0.0      0.25      0.5      0.75      1.0
+ |---------|---------|---------|---------|
+ | Texel 0 | Texel 1 | Texel 2 | Texel 3 |
+ |----●----|----●----|----●----|----●----|
+    0.125     0.375     0.625     0.875
+
+
+texel 주소는 정수지만 Texture Sample이 받는 UV는 실수입니다
+fragment의 UV는 “특정 texel 주소”가 아닙니다.
+
+실제 texel 선택과 혼합은 Texture Sampler가 담당합니다
+Bilinear filtering이라면 u = 0.5에서 두 texel이 각각 50%씩 기여합니다
+
+---
+
+픽셀 (3,2)
+
+정수 주소에 "기하적 위치"를 부여
+면적(w[3,4]×h[2,3])을 차지
+
+삼각형이 픽셀을 덮는지 판정할 때 기준점은 정수 모서리가 아니라 중심
+이 중심이 삼각형 내부면 fragment를 생성
+
+---
+
+Rasterizer는 연속 공간의 일부 위치만 뽑아서 평가합니다
+
+이 sample position에서 삼각형 내부인지 여부가 평가될 수 있습니다.
+
+---
+
+                   Rendering Equation
+                 장면 전체의 빛 전달 관계
+                          │
+          ┌───────────────┴────────────────┐
+          │                                │
+ Local Illumination                 Global Illumination
+ 직접 조명 근사                   간접광까지 빛의 전달을 계산
+          │                                │
+          │                         Path Tracing, Lumen,
+          │                         Radiosity 등
+          ▼
+ Surface의 국소적 반응
+ Local Reflection Model
+          │
+          ├── Diffuse BRDF
+          ├── Specular BRDF
+          ├── BTDF
+          └── Emission 등
+       빛의 입출력 방향 관계를 표현
+
+---
+
+Rendering Equation
+
+나가는 빛 = 표면 자체가 방출한 빛 + 모든 방향에서 들어온 빛이 표면에 반사된 결과
+
+Lo(x, ωo) = Le(x, ωo) + ∫ Ω  fr(x, ωi, ωo)   Li(x, ωi)   (n · ωi)   dωi
+
+
+n·ωi 표면에 빛이 들어오는 기하학적 각도 효과
+n은 위치 x의 surface normal
+
+---
+
+BRDF = Bidirectional Reflectance Distribution Function
+
+fr(x, ωi, ωo)
+
+이미 이 지점에 도달한 빛에 표면이 국소적으로 어떻게 반응하는가?
+방향 ωi에서 빛이 들어왔을 때, 방향 ωo로 얼마나 반사되는가
+
+---
+
+Local Reflection Model
+
+BRDF는 그중 반사 부분을 방향별 함수로 표현한 것입니다
+
+---
+
+Shading Model
+표면 재질의 광학적 분류
+
+Default Lit
+Subsurface
+Clear Coat
+
+---
+
+Static Mesh에는 보통 별도의 lightmap UV channel이 있습니다.
+
+UV0 : Base Color, Normal 등의 Material Texture용
+UV1 : Lightmap용
+
+---
+
+Editor에서 Build Lighting
+          ↓
+Lightmass가 조명을 계산 (언리얼의 오프라인 전역조명(GI) 베이킹 시스템)
+          ↓
+Lightmap 생성 및 저장
+          ↓
+Cook에서 플랫폼용으로 변환·패키징
+
+---
+
+Projection Mode = Perspective
+FOV             = 옆면이 벌어지는 각도
+Aspect Ratio    = 가로와 세로의 비율
+Near Plane      = 가까운 절단면의 거리
+Far Plane       = 먼 절단면의 거리
+
+---
+
+Near Plane
+
+카메라 위치에 가까워져 depth → 0이 되면:
+x / depth → 무한대
+작은 물체도 화면 전체를 뒤덮을 만큼 확대됩니다.
+
+카메라 바로 앞의 불안정한 영역을 잘라내고, 투영이 시작되는 첫 번째 평면을 정합니다
+
+---
+
+eye 평면을 앞뒤로 가로지르는 폴리곤은 w 부호가 섞여서 ÷w 하면 일부가 뒤집혀 깨져
+near 에서 깔끔히 잘라줘야 해
+
+---
+
+depth 정밀도. view z → depth 매핑이 **1/z 형태(비선형)**라 정밀도가 near 근처에 쏠려. 
+분포를 좌우하는 건 far/near 비율이고, 
+near 를 너무 작게 잡으면 far 쪽 정밀도가 폭락해
+
+---
+
+       \           /
+        \         /
+         \       /
+          \     /
+           \   /
+            \ /
+             ● Camera
+
+카메라 위치까지 뾰족하게 이어짐
+
+
+
+Near              Far
+         |                 |
+        /+-----------------+\
+       / |                 | \
+Camera  |     visible      |
+       \ |                 | /
+        \+-----------------+/
+
+---
+
+방법 A: 카메라를 따라다니는 Skybox
+그 깊이를 **최대값(far)**으로 강제
+z_ndc = 1(far). 그러면 모든 실물 뒤에 깔린다
+---
+
+방법 B: 화면 배경으로 직접 그림
+
+아무 Geometry도 그려지지 않은 pixel 확인
+           ↓
+그 pixel의 시선 방향으로 하늘 색 계산
+
+if pixel에 물체가 없음:
+    color = EvaluateSky(viewDirection)
+
+---
+
+Perspective Divide가 일어난 순간
+
+xNDC = xc / wc
+yNDC = yc / wc
+zNDC = zc / wc
+
+멀리 있는 물체 → 화면에서 작아짐
+가까운 물체   → 화면에서 커짐
+
+---
+
+Clipping                  
+    ↓
+Perspective Divide
+    ↓
+NDC                      
+    ↓
+Viewport Transform
+    ↓
+Screen Space
+    ↓
+Rasterization
+
+---
+
+Vertex Shader의 출력은 NDC가 아니라 Clip Space
+
+이후 GPU의 fixed-function 단계가
+  Primitive를 clipping하고
+  xyz / w를 수행해 NDC를 만들고
+  Viewport transform을 수행합니다
+
+---
+
+OpenGL 스펙은 이걸 Vertex Post-Processing
+D3D 는 이 묶음을 Rasterizer Stage 안에 포함
+
+NDC 는 그중 ÷w 의 출력
+GPU 고정 단계
+
+---
+---
+---
+
+관례, OpenGL 방식
+
+
+점은 row vector: [x y z 1]
+카메라는 -Z 방향을 바라봄
+Near 위치: z = -n
+Far 위치:  z = -f
+NDC 범위: x,y,z ∈ [-1,1] 
+
+---
+
+  ┌ 2n/(r-l)        0               0              0  ┐
+  │                                                   │
+  │    0         2n/(t-b)           0              0  │
+  │                                                   │
+  │ (r+l)/(r-l)  (t+b)/(t-b)   -(f+n)/(f-n)       -1  │
+  │                                                   │
+  └    0             0          -2fn/(f-n)         0  ┘
+
+---
+
+2n/(r-l), 2n/(t-b)
+→ Frustum의 가로·세로 크기를 표준 범위에 맞춤
+
+(r+l)/(r-l), (t+b)/(t-b)
+→ 비대칭 Frustum의 중심을 NDC 중앙으로 맞춤
+
+-(f+n)/(f-n), -2fn/(f-n)
+→ Near/Far depth를 NDC [-1,+1]에 맞춤
+
+-1
+→ wc=-z를 만들어 Perspective Divide와 원근 축소를 발생시킴
+
+---
+
+대칭 frustum이라면 훨씬 단순해진다
+보통 카메라는 좌우·상하 대칭입니다.
+
+l = -r
+b = -t
+
+그러면 중심 보정 항이 사라집니다.
+
+(r+l)/(r-l) = 0
+(t+b)/(t-b) = 0
+
+┌ n/r    0         0               0 ┐
+│  0    n/t        0               0 │
+│  0     0    -(f+n)/(f-n)        -1 │
+└  0     0    -2fn/(f-n)           0 ┘
+
+---
+
+n/t = 1 / tan(FOV y/2)
+
+---
+
+Projection Matrix는 네 가지 일을 준비합니다.
+
+view space 절두체를 [−1,1]³ 큐브로 보내는 것
+
+1. Frustum의 폭을 맞춘다
+2. 비대칭 중심을 맞춘다
+3. Near/Far를 depth 범위에 맞춘다
+4. depth를 w에 넣어 원근 나눗셈을 준비한다
+
+---
