@@ -139,7 +139,6 @@ state modeling이 먼저
 
 Conceptual Framework — the mental models UE gives you to think about animation
 
-
 Operational Framework — the actual workflow loop UE provides
 
 authoring animation data through tools like AnimSequence and BlendSpace

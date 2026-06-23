@@ -676,3 +676,227 @@ void Sprint(const FInputActionValue& Value)
 }
 
 ---
+
+GEngine
+└── UGameInstance          ← 세션 전체의 영속성
+    └── UWorld             ← 시뮬레이션 컨테이너
+        └── ULevel         ← Actor들의 실제 집
+            ├── AGameMode          (서버만)
+            ├── AGameState         (모든 클라이언트)
+            ├── APlayerState       (모든 클라이언트)
+            ├── APlayerController  (서버 + 소유 클라이언트)
+            └── APawn              (모든 클라이언트)
+
+GEngine / UEngine
+└─ UGameInstance
+   ├─ UGameViewportClient
+   ├─ ULocalPlayer (또는 UPlayer)
+   │   └─ UPlayerInput
+   └─ FWorldContext
+       └─ UWorld
+           └─ ULevel
+               ├─ APlayerController
+               ├─ APawn / ACharacter
+               ├─ AGameState
+               └─ 기타 Actor
+
+GEngine
+→ UGameInstance
+→ ULocalPlayer / UPlayer
+→ UPlayerInput
+→ PlayerController
+
+GEngine
+→ FWorldContext
+→ UWorld
+→ ULevel
+→ PlayerController
+→ Possess
+→ Pawn / Character
+
+---
+
+에디터 실행
+└── GEngine (UEditorEngine)    ← 살아있다
+    ├── PIE 시작
+    │   └── UGameInstance      ← 여기서 생성
+    │       └── UWorld (PIE)
+    │
+    ├── PIE 종료
+    │   └── UGameInstance      ← 여기서 소멸
+    │
+    ├── PIE 다시 시작
+    │   └── UGameInstance      ← 새로 생성
+    │
+    └── 에디터 종료
+        GEngine 소멸
+
+---
+
+UWorld가 소유하는 것들:
+
+FPhysScene          ← 물리 시뮬레이션 실행
+UNetDriver          ← 네트워크 연결 관리
+UNavigationSystem   ← 길찾기 공간 전체
+UAISystem           ← AI 인식과 조율
+FTickTaskManager    ← 매 프레임 틱 스케줄링
+TimerManager        ← 타이머 실행
+
+---
+
+GEngine  (UEngine*)
+│  프로세스 전체 수명
+│  UEditorEngine / UGameEngine 으로 파생
+│
+├── UGameViewportClient
+│       화면 출력과 원시 입력 수신의 단일 창구
+│       OS 윈도우와 UE 사이의 경계
+│
+├── UGameInstance* (소유)
+│
+└── TArray<FWorldContext>
+        에디터: PIE 개수만큼 존재
+        런타임: 보통 하나
+        │
+        └── FWorldContext (구조체, UObject 아님)
+                UWorld* 포인터 보관
+                TArray<UNetDriver*> 활성 네트워크 드라이버들
+                UGameInstance* (참조)
+
+UGameInstance
+│  게임 플레이 세션 수명
+│  UWorld가 교체되어도 살아남는다
+│  복제되지 않는다 (서버/클라이언트 각자 독립 인스턴스)
+│
+├── TArray<ULocalPlayer*>
+│       스플릿스크린 플레이어들
+│       UWorld와 무관하게 유지
+│
+├── UOnlineSession
+│       매치메이킹, 세션 등록/해제
+│
+└── TArray<UGameInstanceSubsystem*>
+        UGameInstance 수명 동안 자동 생성/소멸
+        예) USSaveGameSubsystem
+
+
+UPackage  "/Game/Maps/MyLevel"
+│  .umap 파일 하나 = UPackage 하나
+│  직렬화 경계
+│
+└── UWorld
+    │  맵 전환 시 소멸/생성
+    │  시뮬레이션 실행 컨텍스트
+    │
+    ├── [단수 서비스들 — 시뮬레이션 실행 엔진]
+    │   ├── FPhysScene*          Chaos 물리 시뮬레이션
+    │   │                        UObject 아님, 직접 메모리 소유
+    │   ├── UNetDriver*          모든 NetConnection 관리
+    │   │                        클라이언트 연결들의 집합
+    │   ├── FTickTaskManager     틱 스케줄러
+    │   │                        TickGroup별 FTickFunction 실행
+    │   ├── FTimerManager        타이머 실행
+    │   ├── UNavigationSystem*   내비메시, 길찾기 공간 전체
+    │   └── UAISystem*           AI 전역 조율자
+    │
+    ├── [GameFramework 빠른 접근 캐시]
+    │   │   실제 Outer는 Level이지만 World가 포인터 캐시
+    │   ├── AGameMode*           (서버만 존재)
+    │   ├── AGameState*          (모든 클라이언트)
+    │   └── APlayerController*   GetFirstPlayerController()
+    │
+    ├── TArray<UWorldSubsystem*>
+    │       UWorld 수명 동안 자동 생성/소멸
+    │       예) UNavigationSystemV1, UEnvQueryManager
+    │
+    ├── ULevel* PersistentLevel  항상 로드, World와 수명 동일
+    └── TArray<ULevelStreaming*>  조건에 따라 로드/언로드
+
+
+ULevel  "PersistentLevel"
+│  Outer = UWorld
+│  World와 수명이 같다
+│  레벨 스트리밍 서브레벨은 독립적으로 로드/언로드
+│  Actor의 Outer
+│
+└── TArray<AActor*> Actors
+    │
+    ├── AGameMode          Outer=Level, 서버만 존재, 복제 안 됨
+    ├── AGameState         Outer=Level, 모든 클라이언트, 복제됨
+    │   └── TArray<APlayerState*> PlayerArray
+    │
+    ├── APlayerController  Outer=Level
+    │   │  서버 + 소유 클라이언트만 존재
+    │   │  NetConnection의 게임 세계 화신
+    │   │  인간 결정의 진입점
+    │   │
+    │   ├── APlayerState*        공개 정체성
+    │   ├── APawn*               현재 빙의 중인 몸
+    │   ├── APlayerCameraManager 지각 (무엇을 보는가)
+    │   ├── AHUD*                화면 인터페이스
+    │   └── UInputComponent*     원시 입력 수신
+    │
+    ├── APlayerState       Outer=Level, 모든 클라이언트
+    │                      PlayerController보다 잠시 더 살 수 있다
+    │                      (재접속 유예 시간)
+    │
+    └── APawn / ACharacter Outer=Level, 모든 클라이언트
+        │  물리적 실행체
+        │
+        ├── UActorComponent[]    Outer=Actor, Owner=Actor
+        │   └── URogueActionSystemComponent
+        │       USphereComponent
+        │       UCameraComponent
+        │
+        ├── AActor* Owner        게임플레이 귀속 (선택적)
+        │                        RPC 라우팅 체인
+        └── APawn* Instigator    인과 관계
+
+
+---
+
+UGameViewportClient (화면 하나)
+├── ULocalPlayer 1    → 화면 왼쪽 절반, 자신의 PlayerController 소유
+└── ULocalPlayer 2    → 화면 오른쪽 절반, 자신의 PlayerController 소유
+
+
+WorldContext에 여러 NetDriver가 공존할 수 있다
+ActiveNetDrivers
+├── GameNetDriver       플레이어 게임플레이 연결
+├── DemoNetDriver       리플레이 녹화/재생
+└── BeaconNetDriver     로비/매치메이킹 비콘
+
+UWorld::UNetDriver*
+    → 게임플레이 연결 담당 주 NetDriver 하나
+
+---
+
+직렬화되는 것과 아닌 것이 섞여 있다.
+
+UPackage에 직렬화되는 것
+├── UWorld 자체의 일부 설정값    WorldSettings 등
+├── ULevel (PersistentLevel)     배치된 Actor들, 지오메트리
+└── NavMesh 베이크 데이터        UNavigationSystem이 생성한 결과물
+                                 .umap에 구워져서 저장됨
+
+직렬화되지 않는 것 (런타임에 생성)
+├── FPhysScene      UObject 아님, 직접 메모리, 매번 새로 생성
+├── UNetDriver      Transient, 런타임 연결 상태
+├── FTickTaskManager UObject 아님
+├── FTimerManager   UObject 아님
+└── UAISystem       런타임 상태, 직렬화 안 됨
+
+---
+
+// ULocalPlayer 내부
+FSceneViewport* Viewport;   // ViewportClient가 아님
+FIntRect ViewportRect;      // 화면 안의 자신의 직사각형 영역
+
+UGameInstance
+└── ULocalPlayer[]    N명의 로컬 플레이어
+
+GEngine
+└── UGameViewportClient    화면 하나
+    └── ULocalPlayer[]을 알고 있음 (역참조)
+
+---
