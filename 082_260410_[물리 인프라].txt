@@ -1,0 +1,811 @@
+물리 시뮬레이션 충돌
+
+매 프레임 broadphase → narrowphase 순서로
+shape들의 공간적 교차를 검출
+
+접촉점의 법선 벡터와 penetration depth를 계산해 
+impulse를 적용
+
+공간 쿼리
+LineTraceSingleByChannel, SweepMultiByObjectType
+물리 시뮬레이션과 독립적으로
+3D 공간에 레이나 swept shape를 던져 교차를 검사
+
+직교
+물리 반응 없이 쿼리만 받을 수도 있고, 
+물리 반응은 하면서 쿼리는 무시할 수도 있다
+
+충돌 관련 오브젝트 모델
+
+ObjectType, 자신이 어떤 채널에 속하는가
+
+ResponseMatrix, 각 채널에 대해 자신이 어떻게 반응하는가
+
+두 오브젝트 A, B가 교차했을 때
+
+A의 B채널에 대한 응답을 가져온다
+B의 A채널에 대한 응답을 가져온다
+그리고 더 관대한(덜 제한적인) 쪽을 취한다
+  Block과 Overlap이 만나면 Overlap이 된다. 
+  Overlap과 Ignore가 만나면 Ignore가 된다. 
+  양쪽 모두 Block이어야 Block이 된다.
+
+Projectile이 Pawn을 Block하겠다고 선언해도, 
+Pawn이 Projectile을 Ignore하겠다고 선언했다면 
+결과는 Ignore다.
+
+Object Channel와 Trace Channel의 분리
+
+유리창은 WorldStatic이지만 Visibility를 막지 않을 수 있다
+"투명하지만 물리적으로 막히는 벽"을 표현
+
+Actor
+ └─ PrimitiveComponent
+     ├─ Transform
+     ├─ Collision Shape
+     └─ Collision Settings
+
+Actor 전체가 직접 충돌하는 것이 아니라, 
+그 아래의 primitive component가 충돌해요.
+
+충돌에 참여하는 정보
+  월드 공간 위치
+  회전, 스케일
+  충돌 형상: sphere, capsule, box, convex, triangle mesh
+
+Physics
+Broadphase / Narrowphase 공간 가속 시스템
+
+Broadphase
+대충 걸러내요.
+  AABB
+  spatial partition
+  acceleration structure
+
+Narrowphase
+가까운 후보들끼리만 정밀 검사해요.
+  sphere vs capsule
+  convex vs convex
+  ray vs triangle
+  contact point 계산
+
+이벤트 시스템
+
+충돌의 결과는 단지 막힘으로 끝나지 않아요
+gameplay event로 이어져요
+(양쪽 컴포넌트에서 Generate Overlap Events가 켜져 있어야함)
+  OnComponentHit
+  OnComponentBeginOverlap
+  OnComponentEndOverlap
+
+collision은 단순한 물리 하부구조가 아니라,
+게임 로직의 신호 발생기이기도 해요.
+
+각 객체
+
+나는 Pawn이다
+
+내 응답표:
+- WorldStatic  -> Block
+- WorldDynamic -> Block
+- Pawn         -> Ignore
+- Projectile   -> Overlap
+- Visibility   -> Block (for traces)
+
+두 객체가 만났을 때
+  A는 B의 타입을 보고 어떻게 반응하나?
+  B는 A의 타입을 보고 어떻게 반응하나?
+  그 둘을 합쳐서 최종 결과를 산출
+
+Trace
+객체의 종류가 아니라 질문의 종류
+
+collision을 사용하는 시스템들
+  CharacterMovement
+  ProjectileMovement
+  AI sight traces
+  weapon traces
+  Chaos rigid bodies
+  trigger volumes
+  camera obstruction
+-> 공용 어휘 체계의 필요성
+
+---
+
+PhysX는 NVIDIA의 라이브러리였고
+UE는 그 위에 얇은 래퍼(FBodyInstance, UBodySetup, FPhysScene)를 씌워 사용했다
+
+문제
+
+Destruction의 구조적 불가능
+PhysX의 rigid body는 생성 시점에 shape이 고정
+
+
+병렬화 모델의 불일치
+PhysX는 자체 thread pool을 가지고 있고, 
+UE의 TaskGraph와 독립적으로 동작한다
+
+
+물리 세계(FPBDRigidsSolver)가 게임 세계(UWorld)와 독립적으로 tick하며, 
+둘 사이를 Proxy 객체가 중재한다
+
+---
+
+물리 시뮬레이션은 고정 timestep(보통 1/60 또는 1/30)으로 돌아야 안정적
+게임 스레드의 frame rate는 가변적
+
+두 시간 축
+
+---
+
+게임 스레드의 객체(UPrimitiveComponent)와 
+물리 스레드의 객체(FGeometryCollectionPhysicsProxy 등)가 
+서로 다른 스레드에 살면서 동일한 "물리적 존재"를 표상한다
+
+---
+
+Proxy 계층
+
+FSingleParticlePhysicsProxy 
+일반 rigid body 하나
+UPrimitiveComponent가 하나씩 가진다.
+
+
+FGeometryCollectionPhysicsProxy 
+destruction 시스템의 핵심 자산
+내부에 수백 개의 particle이 있을 수 있다
+
+
+FJointConstraint  PhysicsProxy, FSuspensionConstraint PhysicsProxy
+
+--- 
+
+Position-Based Dynamics(PBD)의 rigid body
+position 공간에서 직접 constraint를 projecting한다
+position을 constraint가 만족되는 방향으로 직접 이동시킨다
+안정성(unconditionally stable)과 destruction과의 친화성
+
+rigid body physics(impulse-based)
+Impulse-based solver
+velocity 공간에서 constraint를 풀고 position을 적분으로 얻는다
+
+---
+
+Solver의 한 tick
+
+Integrate 
+Broadphase 
+Narrowphase 
+Generate contact constraint
+Constraint solve
+결과를 Proxy로 flush
+
+Chaos는 기본 4~8회 iteration
+
+---
+
+Chaos에서 물리 객체의 최소 단위는 Particle이다
+Structure-of-Arrays(SOA) 데이터 레이아웃
+position 배열, velocity 배열, mass 배열이 따로 존재하고, 같은 index가 같은 particle을 가리킨다.
+
+Broadphase에서는 AABB(position + extent)만 필요하고, 
+solver에서는 position + velocity + inverse mass만 필요하다. 
+
+각 phase가 자기에게 필요한 배열만 순차 접근하면 cache line 활용이 극대화된다. 
+
+---
+
+Fracture된 조각들이 처음에는 cluster로 묶여 하나의 rigid body처럼 행동한다
+strain threshold를 초과한 cluster가 깨지면서 자식 조각들이 독립적 particle로 활성화된다
+
+물리적으로 이것은 constraint의 동적 제거다
+constraint가 제거되면 조각이 자유도를 획득한다
+
+---
+
+Broadphase
+
+incremental update
+이동한 particle의 AABB만 tree에서 update
+<->
+매 tick마다 전체를 재구축
+
+---
+
+Narrowphase
+
+convex shape 쌍에 대해 GJK(Gilbert-Johnson-Keerthi)로 최소 거리를 구하고
+penetration이 있으면 EPA(Expanding Polytope Algorithm)로
+contact normal과 penetration depth를 구한다.
+
+Non-convex mesh에 대해서는 triangle mesh를 convex decomposition하거나, heightfield 전용 경로를 쓴다
+
+---
+
+Contact point에서 constraint가 생성되고
+이것이 PBD solver의 입력이 된다
+
+friction model은 Coulomb friction을 position-level로 근사한 것
+tangential displacement를 μ × normal displacement 이내로 clamping하는 방식
+
+---
+
+Scene Query
+Raycast, sweep, overlap
+
+물리 스레드의 broadphase 구조를 읽어야 한다
+
+Chaos는 이를 위해 scene query accelerator (broadphase의 snapshot)를 유지한다. 
+게임 스레드에서 scene query를 호출하면 이 snapshot을 읽으므로, 물리 스레드와 동기화 없이 작동한다. 
+대가는 한 프레임의 latency다 — query 결과가 이전 physics tick의 상태를 반영한다.
+
+---
+
+UPrimitiveComponent가 FBodyInstance를 가지고, 
+FBodyInstance가 FSingleParticlePhysicsProxy를 생성하여 solver에 등록한다
+
+이 구조는 PhysX 시절과 표면적으로 동일하다.
+기존 게임 코드의 호환성을 유지하면서 백엔드만 교체한다.
+
+Insight:
+클래스 뼈대 = 프론트엔드 
+<->
+파생 클래스 및 구현 = 백엔드
+
+---
+
+AGeometryCollectionActor 
+  UGeometryCollectionComponent 
+    FGeometryCollectionPhysicsProxy
+
+---
+
+Determinism
+
+PBD solver의 iteration 순서가 particle 배열 순서에 의존
+동일 입력에 대해 동일 출력을 보장하려면 배열 순서 고정
+네트워크 물리에서 이것은 아직 완전히 해결되지 않은 문제
+
+---
+---
+---
+
+물리 엔진이 매 tick마다 답해야 하는 질문
+
+이 물체들이 다음 순간에 어디에 있는가
+
+---
+
+N개의 물체가 있을 때, "누가 누구와 부딪히는가?"를 전부 확인하려면
+N(N-1)/2 쌍을 검사해야 한다
+
+broadphase가 후보를 좁힌다
+
+---
+
+narrowphase가 정밀 접촉 정보를 계산한다
+solver가 그 접촉을 고려하여 운동을 계산한다
+
+---
+
+Broadphase 
+
+각 물체를 감싸는 axis-aligned bounding box(AABB)의 겹침을 검사
+두 AABB가 겹치는지는 각 축에 대해 구간 겹침을 확인하면 되므로, 비교 6번이면 된다
+
+문제는 "N개 AABB 중 겹치는 모든 쌍을 찾아라"인데, 이것조차 naive하게 하면 O(N²)다
+이것을 sub-quadratic으로 만드는 것이 broadphase의 핵심이다
+
+Sweep-and-Prune (SAP)
+한 축(예: X)을 따라 모든 AABB의 시작점과 끝점을 정렬한다. 
+정렬된 목록을 왼쪽에서 오른쪽으로 sweep하면서, "현재 열려 있는" AABB 집합을 유지한다. 
+새 AABB가 시작되면 현재 열려 있는 모든 AABB와 잠재적 겹침이 있고, AABB가 끝나면 집합에서 제거한다. 
+이것만으로 한 축 방향의 겹침이 확인된다. 
+나머지 두 축에 대해서도 검증하면 3축 모두에서 겹치는 쌍만 남는다.
+
+물체가 매 프레임 조금씩만 움직이면, 이전 프레임의 정렬 결과가 거의 유지된다. 
+여기에 insertion sort를 쓰면 거의-정렬된 배열에 대해 O(N)에 가깝게 동작한다
+이것이 SAP가 "temporal coherence를 활용한다"는 의미다
+물체가 갑자기 텔레포트하면 정렬이 크게 깨져서 성능이 떨어진다
+
+
+AABB Tree (Dynamic Bounding Volume Hierarchy)
+
+AABB들을 이진 트리로 조직한다
+각 노드는 자식 노드들의 AABB를 합친 AABB를 가진다
+루트 노드의 AABB는 전체 scene을 감싼다
+
+특정 AABB와 겹치는 물체를 찾으려면 루트에서 시작,
+현재 노드의 AABB와 겹치지 않으면 그 서브트리 전체를 pruning한다
+
+동적 환경에서는 물체가 움직일 때 AABB가 변하고 트리를 갱신해야 한다. 
+전체 재구축은 O(N log N)인데, incremental update — 변한 leaf만 제거하고 재삽입 — 로 amortized 비용을 낮춘다
+
+
+Uniform Grid / Spatial Hashing
+
+공간을 균일한 셀로 나누고, 각 물체를 자기가 걸치는 셀에 등록한다
+물체 크기가 균일할 때 매우 효율적이지만, 크기 차이가 크면(작은 총알과 거대한 건물이 공존) 셀 크기 선택이 어려워진다.
+
+
+Broadphase의 결과는 overlap pair list — AABB가 겹치는 물체 쌍의 목록이다
+
+---
+
+Narrowphase 
+"정확히 어디서, 얼마나 깊이 닿는가"
+
+solver가 접촉을 처리하려면 정밀한 정보가 필요하다
+
+접촉점(contact point): 두 물체가 실제로 닿는 표면 위의 점. 하나일 수도 있고 여러 개(contact manifold)일 수도 있다.
+접촉 법선(contact normal): 접촉점에서 "물체를 밀어내야 할 방향". 두 표면의 공통 법선.
+관통 깊이(penetration depth): 두 물체가 얼마나 겹쳐 있는가. 이것이 양수면 관통(물체가 서로 파고들어 있다), 음수면 분리.
+
+---
+
+GJK (Gilbert-Johnson-Keerthi)
+
+A와 B의 Minkowski Difference
+C 위의 점을 iterative하게 샘플링하면서, 원점에 가장 가까운 simplex(점→선분→삼각형→사면체)를 점진적으로 구축
+현재 simplex에서 원점 방향으로 가장 먼 C의 점
+각 형상에서 주어진 방향으로 가장 먼 점을 반환하는 함수
+
+
+EPA (Expanding Polytope Algorithm)
+GJK가 "교차한다"고 판정했을 때, penetration depth와 contact normal을 구하는 후속 알고리즘이다
+
+Minkowski Difference C의 표면을 향해 polytope를 점진적으로 확장
+매 iteration에서 "원점에 가장 가까운 면(face)"을 찾고, 
+그 면의 법선 방향으로 새 support point를 추가하여 polytope를 확장
+
+polytope의 면 수가 iteration마다 증가하고, convex hull 관리가 필요하다
+
+---
+
+GJK+EPA가 반환하는 것은 단일 접촉점과 법선이다
+Contact manifold는 두 형상 사이의 접촉 영역을 대표하는 접촉점의 집합이다
+이 manifold의 품질이 시뮬레이션 안정성을 직접 결정한다
+
+---
+
+Persistent Contact
+
+대부분의 접촉은 이전 tick에서 이미 존재했고 약간만 변했다
+Contact caching은 이전 tick의 contact manifold를 저장해두고, 
+이번 tick에서 물체가 크게 이동하지 않았으면 기존 contact point를 position만 갱신하여 재활용한다
+
+---
+
+형상 조합별 특수 경로
+특정 형상 조합에는 훨씬 빠른 전용 알고리즘
+
+Sphere vs Sphere
+Sphere vs Capsule
+Capsule vs Capsule
+Box vs Box
+Convex vs Heightfield
+Convex vs Triangle Mesh
+
+---
+
+Solver
+"constraint를 만족시키면서 물체를 움직이는 기술"
+
+구속 조건(벽을 뚫지 않는다, 관절이 분리되지 않는다)
+외력에 의해 계산된 "예측 위치"가 constraint를 위반하면, solver가 그 위반을 해소해야 한다
+
+"이 두 물체는 이 점에서 이 방향으로 이만큼 이상 떨어져 있어야 한다(관통 금지)."
+"이 두 물체의 특정 점은 동일한 세계 좌표에 있어야 한다(관절 분리 금지)."
+
+---
+
+Constraint A를 만족시키려고 물체를 밀면 Constraint B가 위반되고, B를 만족시키면 A가 다시 위반된다
+선형 상보성 문제(LCP)로 정식화
+
+---
+
+Gauss-Seidel method
+모든 constraint를 동시에 풀지 않고, 하나씩 순서대로 푼다. 
+한 바퀴(iteration) 돌면 각 constraint가 한 번씩 처리되고, 
+여러 바퀴 돌면 점차 전체 constraint가 동시 만족에 수렴한다
+
+---
+
+Velocity-Based Solver (Impulse-Based)
+
+Constraint를 velocity 공간에서 풀고, 그 결과로 position을 적분한다
+
+
+Position-Based Solver (PBD)
+
+Constraint를 position 공간에서 직접 풀어 velocity를 나중에 역산한다
+
+Stiffness 제어의 어려움
+동일 iteration 횟수에서 Gauss-Seidel velocity solver보다 느리게 수렴하는 경우가 많다
+특히 긴 chain constraint(관절로 연결된 긴 사슬)
+한쪽 끝의 보정이 반대쪽 끝까지 도달하려면 chain 길이만큼의 iteration이 필요
+
+---
+
+Solver의 출력
+
+각 물체의 새 position, rotation, velocity, angular velocity
+Proxy를 통해 게임 스레드로 전달되고, 다음 렌더링 프레임의 transform이 된다
+
+---
+
+progressive refinement
+
+Broadphase    O(N log N)
+Narrowphase   O(K × convex)
+Solver        O(C × iter)
+
+culling → rasterization → shading
+
+---
+---
+---
+
+Rigid Body Dynamics
+
+형태가 변하지 않는 물체의 운동과 충돌
+
+자유 낙하, 탄도 궤적, 충돌 반응(반발, 마찰), 스택(물체를 쌓는 것), 슬라이딩, 구르기
+
+FPBDRigidsSolver가 담당
+각 물체는 TPBDRigidParticle로 표현
+mass, inertia tensor, restitution(반발계수), friction coefficient가 핵심 파라미터
+
+
+Collision shape의 종류
+sphere, capsule, box, convex hull, triangle mesh, heightfield
+
+---
+
+Destruction / Fracture (Geometry Collection)
+
+하나의 rigid body가 조건에 따라 여러 rigid body로 분열하는 것
+
+strain-based cluster breaking
+
+---
+
+Constraint / Joint System
+관절, 경첩, 연결부
+
+Ball-and-Socket (Point Constraint) — 두 물체의 특정 점을 공유. 3 자유도 제거. 어깨 관절, 밧줄 연결점.
+Hinge (Angular Constraint) — 한 축을 중심으로만 회전 허용. 문의 경첩, 팔꿈치.
+Prismatic — 한 축을 따라서만 이동 허용. 서랍, 유압 실린더.
+Cone — 회전 범위를 원뿔 형태로 제한. Ragdoll의 관절 가동 범위.
+Weld — 두 물체를 완전히 고정. Destruction에서 cluster 내부 조각을 묶는 것이 사실상 implicit weld
+Spring — 목표 거리/각도를 향해 복원력 적용. 서스펜션, 탄성 연결.
+
+이 모든 constraint가 rigid body의 contact constraint와 동일한 solver iteration 안에서 처리된다
+별도 시스템이 아니라 solver의 constraint pool에 들어간다.
+
+---
+
+Vehicle Physics
+
+rigid body + constraint + suspension의 조합
+UChaosVehicleMovementComponent이 이것을 조율
+
+각 바퀴는 suspension constraint(spring + damper)로 차체에 연결
+
+타이어-지면 상호작용은 simplified tire model로 처리
+
+종방향(가속/제동)과 횡방향(코너링) 마찰력을 slip ratio/slip angle의 함수로 근사하는 Pacejka 스타일
+
+엔진 토크 → 기어비 → 디퍼렌셜 → 바퀴 회전 → 타이어 마찰력이라는 구동 체인
+
+---
+
+Ragdoll Physics
+
+rigid body + joint constraint의 특수한 사용 사례
+
+스켈레탈 메시의 각 bone이 하나의 rigid body가 되고, 부모-자식 bone 사이에 cone/hinge constraint가 걸린다
+
+UPhysicsAsset이 각 bone의 collision shape(보통 capsule이나 sphere)과 constraint 설정(각도 제한, stiffness)을 정의한다.
+
+---
+
+Cloth Simulation
+
+Rigid body가 아니라 deformable body
+
+천을 particle의 격자(mesh)로 모델링
+
+인접 vertex 사이에 distance constraint(늘어나지 않으려는 제약)와 bending constraint(접히지 않으려는 제약)가 걸린다
+이 constraint들을 PBD로 풀면 천의 거동이 나온다
+
+mass per vertex, structural stiffness(가로세로 늘어남 저항), bend stiffness(접힘 저항)
+
+---
+
+Field System
+
+radial force(폭발), directional force(바람), noise field(난류), falloff 설정(linear, squared, logarithmic)
+
+수천 개의 debris particle 각각에 Blueprint에서 AddForce를 호출하는 것은 비현실적
+Field는 공간 함수로 정의되어 solver가 각 particle의 위치에서 값을 evaluate
+
+---
+
+UPhysicalMaterial
+
+friction(정적/동적), restitution(반발계수), density(mass 자동 계산에 사용)
+
+---
+---
+---
+
+Contact constraint "두 점 사이 거리가 0 이상이어야 한다" (부등식)
+
+Distance constraint는 "두 점 사이 거리가 d여야 한다" (등식)
+
+Hinge constraint는 "이 축 방향 이외의 상대 회전이 0이어야 한다" (등식)
+
+Cone constraint는 "상대 회전 각도가 θ_max 이하여야 한다" (부등식)
+
+형식적으로 쓰면 모든 constraint는 다음 중 하나다
+C(x₁, x₂) = 0  (등식)
+C(x₁, x₂) > 0  (부등식)
+
+---
+
+위반 시, C의 gradient ∇C 방향으로 position을 보정하여 C를 만족시킨다
+보정량을 두 물체의 역질량 비로 배분한다
+
+Solver는 C의 물리적 의미를 모른다
+"관통 금지"인지 "관절 분리 금지"인지 "천이 늘어나지 않음"인지 관심 없다. 
+그저 C를 0으로 (또는 0 이상으로) 만들 뿐이다.
+
+모든 물리적 구속은 궁극적으로 configuration space에서의 허용 영역의 경계를 정의한다
+Contact은 "관통 영역 밖에 있어라", joint는 "이 부분공간 위에 있어라", limit는 "이 범위 안에 있어라".
+
+---
+
+Water Body
+실제 유체역학이 아니라 다음의 조합
+Navier-Stokes, SPH(Smoothed Particle Hydrodynamics)
+
+UBuoyancyComponent
+수면 아래 체적을 근사적으로 계산하고, 
+아르키메데스 원리(F_buoy = ρ_water × V_submerged × g)에 따른 힘을 rigid body에 외력으로 가한다
+게임 스레드에서 매 tick AddForce로 주입하는 것
+"잠긴 만큼 위로 밀린다"의 단순 모델
+
+
+Water Surface
+수면 자체는 Gerstner wave의 합으로 표현되는 해석적(analytic) 함수
+특정 (x, y, t)에서 수면 높이를 O(1)에 구할 수 있으므로, buoyancy 계산이나 수면 위/아래 판정이 싸다.
+
+
+Drag/Resistance
+수중 물체에 속도 반대 방향의 저항력을 가한다
+F_drag = −c × v × |v|
+
+
+CharacterMovementComponent의 Swimming 모드
+중력 감소, 이동 속도 변경, 부력 효과 적용
+
+---
+---
+---
+---
+---
+---
+---
+
+
+물리 엔진을 사용한다는 것은 파라미터 공간에서의 모델링이다
+
+물체 고유 파라미터(per-body)
+mass, inertia tensor, linear/angular damping, gravity scale, collision shape
+
+
+재질 파라미터(per-material)
+friction(static, dynamic), restitution, density
+"이 표면이 무엇인가"
+
+
+Constraint 파라미터(per-constraint)
+stiffness, damping, limit angle/distance, motor target, break threshold
+"이 관계가 무엇인가"
+
+
+전역 파라미터(per-scene)
+gravity vector, solver iteration count, substep count, broadphase type
+"이 세계가 무엇인가"
+
+---
+
+각 파라미터가 시뮬레이션의 어떤 측면에 영향을 미치는지
+
+---
+
+물리 시뮬레이션의 "Rendering Equation"
+
+F = ma
+
+L = T − V
+δ ∫ L dt = 0
+L' = T − V + Σ λᵢ Cᵢ(q)
+운동 방정식과 constraint 방정식이 동시에 나온다
+
+contact, joint, motor, spring, distance, hinge — 모든 constraint가 Cᵢ(q)라는 동일한 형식으로 표현
+Lagrange multiplier λ가 각각의 구속력을 결정
+
+Constraint의 물리적 의미가 무엇이든, 수학적으로는 configuration space에서의 허용 영역의 방정식일 뿐이다
+
+---
+
+M (v[n+1] − v[n]) = Δt · F_ext + Δt · Σ λ_i ∇C_i
+C_i(q[n+1]) = 0   (또는 ≥ 0)
+
+M은 질량 행렬
+∇Cᵢ는 constraint gradient
+
+혼합 선형 상보성 문제(Mixed LCP) 로 정식화
+
+이것을 직접 풀면 O(N³)이므로, iterative Gauss-Seidel이 각 constraint를 하나씩 풀면서 λᵢ를 갱신한다
+이것이 Sequential Impulse (SI) solver — Box2D, Bullet, PhysX의 알고리즘
+
+모든 impulse-based solver(PhysX 포함)의 이론적 기반
+
+---
+
+2016년 Macklin, Müller, Chentanez의 논문 
+Position-Based Simulation of Compliant Constrained Dynamics
+
+PBD의 constraint projection을 implicit Euler 적분의 position-level 등가물로 재해석할 수 있다
+
+min_x  (1/2)(x − x̃)ᵀ M (x − x̃)  +  (1/2) Σ λᵢ² / αᵢ
+subject to  Cᵢ(x) = 0
+
+x̃ = x^n + Δt·v^n + Δt²·M⁻¹·F_ext는 "외력만 적용한 예측 위치"
+αᵢ = compliance = 1/(stiffness·Δt²)는 constraint의 유연도
+
+---
+
+이산화 자체의 통합 원리
+Variational Integrator
+
+연속 시간의 최소 작용 원리를 이산 시간에서 적용
+
+δ Σ L_d(q[n], q[n+1]) = 0
+이 원리에서 유도된 적분기는 에너지 보존, 운동량 보존 같은 물리적 대칭을 이산 수준에서도 보존한다
+
+Symplectic Euler가 가장 단순한 예이고, Verlet 적분이 그 다음이다.
+
+---
+
+Configuration space에서 C(x) = 0을 만족하는 점들의 집합
+외력과 관성에 의해 예측된 위치 x̃는 이 manifold 위에 있지 않을 수 있다
+PBD가 하는 일은 x̃에서 가장 가까운 manifold 위의 점을 찾는 것이다.
+
+"고차원 공간의 한 점에서 manifold 위의 가장 가까운 점을 찾는 연산"의 수학적 이름이 정확히 projection(사영, 투영) 이다.
+
+Δx = −(C(x) / |∇C|²) · ∇C
+
+이 식은 "현재 위치 x에서 constraint manifold C = 0까지, ∇C 방향(manifold의 법선 방향)으로 이동하라"는 뜻이다
+
+---
+
+Mass (kg)
+힘에 대한 가속도의 역수.
+다른 모든 파라미터의 효과를 스케일링하는 기본 축
+
+
+Inertia Tensor (kg·m²)
+회전 관성
+같은 mass라도 질량 분포에 따라 회전 특성이 달라진다
+"물체가 회전할 때 이상하다"의 원인은 대부분 여기 있다
+
+
+Linear Damping (s⁻¹)
+속도에 비례하는 감속력
+F_damp = −c·v
+공기 저항의 1차 근사
+높으면 물속
+
+v̇ = −c·v의 해가 v(t) = v₀·e^(−ct)
+
+
+Angular Damping (s⁻¹)
+각속도에 비례하는 감속 토크
+
+
+Gravity Scale
+
+게임에서 "무거워 보이는 느낌"은 실제 mass보다 gravity scale과 damping의 조합으로 만드는 경우가 많다
+
+
+Max Linear/Angular Velocity
+
+극단적 impulse가 물체를 광속으로 날려보내는 것을 방지
+
+
+Collision Shape
+
+물체의 물리적 윤곽
+렌더링 메시와 별개
+
+Convex Hull(렌더 메시의 볼록 껍질)
+
+
+CCD (Continuous Collision Detection)
+
+빠른 물체의 tunneling 방지
+켜면 매 tick에서 sweep test를 추가로 수행
+
+---
+
+Static Friction (μ_s)
+정지 상태에서 미끄러지기 시작하는 데 필요한 접선력 / 수직력의 비
+
+높으면 잘 안 미끄러짐(고무 위의 고무 ≈ 0.9)
+낮으면 잘 미끄러짐(얼음 위의 금속 ≈ 0.03)
+
+
+Dynamic Friction (μ_d)
+이미 미끄러지고 있을 때의 마찰 계수
+항상 μ_d ≤ μ_s
+
+차이가 크면 "움직이기 시작하면 갑자기 미끄러지는" 느낌(stick-slip).
+
+
+Restitution (e, 0~1)
+반발 계수
+
+충돌 후 상대 속도 / 충돌 전 상대 속도
+
+0이면 완전 비탄성(찰흙), 1이면 완전 탄성(이상적 당구공). 0.3 정도가 "일반적인 물체"의 느낌
+
+
+Density (kg/m³)
+collision shape의 체적과 곱하여 mass를 자동 계산
+Mass를 직접 지정하면 무시된다
+
+물 = 1000, 강철 ≈ 7800, 나무 ≈ 500
+
+---
+
+Stiffness / Compliance
+compliance α = 0이면 완전 constraint (절대 위반 불가)
+α > 0이면 약간의 위반을 허용하는 soft constraint
+
+Compliance가 높을수록 "고무줄" 느낌, 낮을수록 "강철봉" 느낌.
+
+
+Damping
+constraint 내부의 에너지 소산
+스프링의 감쇠. 없으면 constraint가 영원히 진동
+
+
+Motor Target Position/Velocity
+능동 constraint의 목표
+Physical animation에서 각 관절이 "애니메이션 포즈를 향해" 회전하게 만드는 것이 motor target
+
+---
+
+Gravity Vector (m/s²)
+기본 (0, 0, −980)
+방향을 바꾸면 "벽이 바닥인 세계", 크기를 바꾸면 달 표면이나 목성 표면.
+
+
+Substep Count
+한 게임 tick을 여러 물리 tick으로 나누는 것
+Substep 2이면 게임이 60fps일 때 물리는 120Hz로 돈다
+
+
+Fixed Timestep (s)
+물리 tick 하나의 시간 간격
+Substep과 결합: effective dt = fixed_dt / substep_count
+
+
+Broadphase Algorithm
+극단적 상황(물체가 매우 균일한 크기, 매우 많음)에서 grid가 유리
+
+---
