@@ -15,6 +15,7 @@ UWorld의 구역
 
 
 ALevelScriptActor
+  레벨 블루프린트의 런타임 표현이다
   각 ULevel은 ALevelScriptActor 인스턴스를 하나 갖는다
   스크립팅 로직(트리거 시퀀스, 시네마틱 시작 등)
 

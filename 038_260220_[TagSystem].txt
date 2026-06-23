@@ -251,10 +251,6 @@ ALTERNATIVES
 Relational Identity: 당신은 누구와 어떻게 연결되어 있는가
 if (MyActor->HasRelation("Enemy", target))
 
-Actor enemy;
-  그러나 아무도 미워하지 않으면 "적"이 아니다
-  관계 없이는 Enenmy는 존재 불가능
-
 1-2 
 Contextual/Situational Identity (상황적 정체성)
 "당신은 어디에/어떤 조건에 있느냐에 따라 다르다"

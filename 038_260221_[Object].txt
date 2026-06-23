@@ -333,7 +333,7 @@ actor->TakeDamage(10);
 
 ---
 
-Object = 存 × 在
+Object
 
 存만 있으면: Class 정의만 있고 인스턴스가 없다.
 UClass* 는 있지만 아무 Character도 없다.
@@ -343,7 +343,7 @@ UClass* 는 있지만 아무 Character도 없다.
 void* ptr = malloc(100);
 → 존재하지만 무엇인지 모른다
 
-存在 (Object) : ACharacter* c = new ACharacter();
+Object : ACharacter* c = new ACharacter();
 
 new는 存을 在로 실체화하는 행위
 delete는 在를 제거하지만 存은 남기는 행위 (ACharacter::StaticClass()는 모든 인스턴스가 소멸해도 살아있음)
@@ -486,22 +486,13 @@ Narrative System   → 이 캐릭터가 이야기 속 어디에 있는지
 
 ---
 
-제3연: 역사가 없는 배우의 영원한 현재
 너는 Tick이라는 박동 속에 갇힌 기억상실증 환자,
-어제의 영광도, 내일의 소멸도 모른 채 오직 Health라는 숫자의 단면만 움켜쥐고
-TakeDamage라는 대사가 오면 반사적으로 비명을 지르는 현재의 노예여.
+어제도, 내일도 모른 채 오직 Health라는 숫자만 움켜쥐고
+TakeDamage라는 대사가 오면 반사적으로 반응하는 현재.
 너에게 맥락은 사치이며, 역사는 너를 비추는 타자(System)의 시선 속에만 머문다.
 
 제1연: 사유지의 선포와 동일성의 법전
-비트의 폭포는 인과를 비웃으며 거대한 엔트로피로 스며들 제,
-그 풍요는 계산을 허락하지 않았다.
-프로그래머라 불리는 도살자가 전역(Global)의 목을 치고
-
-제4연: 약속의 파기
-하나의 자율적인 섬으로 굳어지나니
-그러나 Object는 바다 위의 섬이 아니었다.
-섬처럼 보이도록 합의된 파도였다.
-바이트의 바다 위에 띄운 가장 정교한 作爲
+프로그래머가 전역(Global)의 목을 치고
 
 ---
 
@@ -629,14 +620,3 @@ Object의 Horismos가 이것이다:
 자신을 제외한 온 우주를 **'망각의 잉크'**로 지워버리기 위해 타오른다
 
 무엇을 보지 않을 것인가를 결정함으로써 비로소 사물의 형체를 빚어내는 조각가의 망치질이라
-
----
-
-
-
----
-
-Unreal Engine은 왜 Gameplay Tag System이 있는데 굳이 또 Collision System  을 도입한 걸까?
-Gameplay Tag System VS Collision System 
-
-Chaos의 Broad Phase / Narrow Phase

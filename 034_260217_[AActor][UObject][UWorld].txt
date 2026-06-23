@@ -40,7 +40,7 @@ AActor - Grand Crossing
 
 ---
 
-UObject - System-Infra Atom
+UObject
 
 1 Reflection / Property System 
   1-1 Object-Oriented Middleware
@@ -106,6 +106,7 @@ UWorld  - API Entry Point / System Integration Hub
   5
     하나의 프로세스 안에 여러 월드가 공존
     전역 상태 대신 월드 인스턴스 => 격리를 보장
+
 ULevel
 UMap
 
@@ -117,6 +118,7 @@ World Partition 시스템
 
 
 ---
+
 UWorldSubsystem
 UWorldSettings 글로벌 옵션
 UActorComponent
