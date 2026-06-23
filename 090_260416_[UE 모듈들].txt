@@ -1,0 +1,226 @@
+Engine/Engine.h
+
+extern ENGINE_API UEngine* GEngine;
+
+GEngine을 통해 접근하는 것들
+
+---
+
+UE_LOG, UE_LOGFMT
+
+내부적으로 GLog를 호출
+
+DECLARE_LOG_CATEGORY_EXTERN, 
+DEFINE_LOG_CATEGORY
+
+LogDef.h가 기본 로그 카테고리들을 정의하고,
+각 서브시스템이 자신의 카테고리를 추가한다.
+
+---
+
+Misc/AssertionMacros.h
+
+check, ensure, verify 매크로
+
+---
+
+Core 모듈의 정체성
+Source/Runtime/Core/
+
+게임 엔진이 아니어도 필요한 것
+
+HAL (Hardware Abstraction Layer): FPlatformProcess, FPlatformTime, FPlatformMisc, FPlatformMemory..
+플랫폼별로 Windows/Linux/Mac/Android/iOS 구현이 있다
+
+Containers: TArray, TMap, TSet, TLinkedList, TCircularBuffer
+
+Math: FVector, FMatrix, FQuat, FTransform, FBox, FBoxSphereBounds...
+
+Types: FString, FName, FText, FDateTime, FParse, FConfig, FPaths...
+
+Templates: TFunction, TSharedPtr, TWeakPtr, TOptional, TVariant, TTuple...
+
+Async: FEvent, FRunnable, FQueuedThreadPool, FAsyncTask...
+
+로깅, 어서션
+설정 파일 파싱 (GConfig)
+시간 측정
+
+
+이것들은 엔진 외에도 쓸모가 있다
+
+UnrealBuildTool
+UnrealHeaderTool
+ShaderCompileWorker
+CrashReporter
+DatasmithExporter
+
+이 도구들은 "엔진을 실행"하지 않는다. 윈도우도 없고, 월드도 없고, 렌더링도 없다.
+그래서 Core를 엔진 없이도 링크 가능한 하위 계층으로 분리해 둔 것이다
+
+---
+
+CoreUObject 모듈
+Source/Runtime/CoreUObject/
+
+UObject, UObjectBase, UObjectBaseUtility
+
+UClass, UFunction, UScriptStruct, UEnum: 타입 기술자
+
+FField, FProperty 및 모든 서브클래스: 프로퍼티 기술자
+
+GC: IncrementalReachabilityAnalysis, FReferenceCollector, GUObjectArray
+
+직렬화 인프라: FArchive, 패키지 시스템, UPackage, FLinker
+
+UObjectGlobals: NewObject, FindObject, CollectGarbage 같은 전역 함수들
+
+블루프린트 VM의 런타임 부분: FFrame, ProcessEvent, 바이트코드 인터프리터
+
+
+에셋 변환 도구, 빌드 도구 중 UObject 에셋을 읽는 것들 등이 CoreUObject까지만 링크해서 사용할 수 있다.
+
+---
+
+
+Engine 모듈
+Source/Runtime/Engine/
+
+Engine의 역할 "각 전문 시스템을 액터/컴포넌트라는 통일된 언어로 묶는 것"
+렌더링, 물리 별도 모듈
+
+게임플레이 프레임워크   : GameMode, GameState, PlayerController
+월드 시스템             : UWorld, ULevel, UWorldPartition
+렌더링 통합             : UPrimitiveComponent, UMaterialInterface, UMeshComponent, UStaticMeshComponent
+애니메이션 통합         : USkeletalMeshComponent, UAnimInstance
+물리 통합               : UPhysicalMaterial, FBodyInstance
+오디오 통합             : USoundBase, UAudioComponent
+입력 통합               : UInputComponent, UInputSettings
+네트워킹 통합           : UNetDriver, UNetConnection, FRepLayout
+엔진 서브시스템         : UEngine, UGameEngine, UEditorEngine
+Kismet 라이브러리       : BP에 노출되는 수많은 유틸리티
+
+---
+
+Source/Runtime/RHI/
+그래픽 API 추상화 계층
+
+D3D11, D3D12, Vulkan, Metal, OpenGL ES를 동일한 인터페이스로 다룰 수 있게 한다
+
+빌드 시점에 또는 런타임에 적절한 RHI가 선택되어 GDynamicRHI에 연결된다.
+
+---
+
+Source/Runtime/RenderCore/
+렌더링 스레드 인프라와 셰이더 시스템
+
+렌더 커맨드 큐, 셰이더 컴파일러 인터페이스, 셰이더 파라미터 바인딩, 글로벌 셰이더 타입
+게임 스레드와 렌더 스레드를 연결하는 ENQUEUE_RENDER_COMMAND 매크로
+
+---
+
+Source/Runtime/Renderer/
+실제 렌더링 파이프라인
+
+디퍼드 렌더링 패스, 포워드 렌더링 패스, 섀도우 맵 생성, 포스트 프로세스, 
+Lumen, Nanite
+
+
+Renderer는 Engine에서 직접 참조되지 않는다. 
+Engine은 USceneComponent가 Scene에 등록되어 있다는 사실만 알고, 실제 렌더링은 Renderer가 독립적으로 처리한다
+이 분리가 "렌더링 스레드"라는 비동기 경계를 구현 가능하게 한다.
+
+---
+
+Source/Runtime/Experimental/Chaos/
+
+Source/Runtime/Slate/
+Source/Runtime/UMG/
+
+Source/Runtime/Networking/ 
+Source/Runtime/Sockets/
+
+---
+---
+---
+
+게임플레이 프레임워크
+
+이 질문들에 대한 표준 답안
+"이런 것들은 이런 클래스로 표현하고, 이런 관계로 연결하라."
+
+의미론적 어휘 체계
+**"어떤 생각을 프레임워크의 어휘로 표현하는 것"**
+
+
+세계가 있어야 한다
+세계에 뭔가 놓여 있어야 한다 (풍경, 적, 아이템, 플레이어)
+플레이어의 입력을 받아야 한다
+플레이어가 화면으로 세계를 봐야 한다 (카메라)
+게임에는 규칙이 있어야 한다 (승리/패배 조건, 스폰 규칙, 팀 구성)
+여러 플레이어가 있을 수 있다 (로컬, 네트워크)
+게임이 저장되고 로드될 수 있어야 한다
+
+---
+
+UWorld
+  1 Persistent ULevel 
+      AActor[]
+        UActorComponent[]
+  2 AGameMode
+  3 AGameState
+
+UWorldContext
+  World
+  OwningGameInstance
+    LocalPlayer[]
+      APlayerController
+      APlayerState
+
+UGameInstance
+  UWorld
+
+---
+
+각 AActor는 RootComponent를 가진다
+USceneComponent 타입
+이 루트에 다른 SceneComponent들이 자식으로 붙는다.
+
+---
+
+UPrimitiveComponent
+
+FPrimitiveSceneProxy로 렌더 씬에 등록
+FBodyInstance로 물리 씬에 등록
+트레이스/오버랩 질의의 대상
+
+
+충돌 전용 컴포넌트 (충돌형상)은 렌더링 가능한 컴포넌트의 "렌더링 꺼짐" 케이스로 본다
+
+SetVisibility(bool)
+SetCollisionEnabled(ECollisionEnabled::Type)
+SetGenerateOverlapEvents(bool)
+SetHiddenInGame(bool)
+
+---
+
+USceneComponent
+
+한 점의 Transform
+계층 구조
+
+---
+
+UWorld
+  ULevel - .umap
+
+---
+
+사용자 친화성: "맵"은 일반 게임 문화의 표준 용어. (.umap)
+"레벨"도 통용되지만 플랫포머 장르의 뉘앙스가 강함. FPS/RPG/샌드박스에서는 "맵"이 더 자연스러움.
+
+내부 클래스명은 왜 ULevel인가
+엔진 내부에서 "map"이라고 부르면 해시 맵 자료구조와 혼동된다
+
+확장자는 사용자가 보는 개념을 반영한다
+.uasset vs .umap
