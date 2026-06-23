@@ -383,19 +383,3 @@ The final image on screen is the game world render composited with the Slate UI 
 │  [Meanwhile on RHI thread:   submitting FRAME-2's D3D12 calls]     │
 │  [Meanwhile on GPU:          executing FRAME-3's draw calls]       │
 │─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ │
-
----
-
-Tick 시스템 전체는 Task Graph / tick group / prerequisite 같은 스케줄링 구조를 사용
-하지만 일반적인 Actor Tick / gameplay Tick은 보통 Game Thread 기준
-일부 TickFunction만 명시적으로 bRunOnAnyThread 같은 조건을 통해 async tick 으로 worker thread 에서 돌 수 있어요.
-
-일반 Actor Tick 은 보통 다음을 많이 건드려요
-  UWorld 상태
-  다른 Actor / Component 참조
-  overlap / collision 결과
-  delegate broadcast
-
-이런 것들은 대체로 UObject 계층이에요
-
----
