@@ -1,0 +1,977 @@
+메모리에 있는 숫자 배열을 화면의 픽셀로 변환하라
+이 변환의 각 단계에 UE가 어떤 추상화를 씌웠는지를 추적
+
+1. 버텍스: 3D 세계의 원자
+
+3D 공간의 모든 시각적 표현은 **점(vertex)**에서 시작
+버텍스는 위치만 가진 것이 아닙니다
+위치에 덧붙여진 여러 속성(attribute)의 묶음입니다.
+
+// UE의 FStaticMeshBuildVertex (개념적 구조)
+struct FFullVertex {
+    FVector3f Position;       // 어디에 있는가
+
+    FVector3f Normal;         // 이 점이 어느 방향을 향하는가
+    FVector3f Tangent;        // 이 점의 수평 방향 (노멀맵에 필요)
+    FColor Color;             // 버텍스 자체의 컬러
+    FVector2f UV0;            // 텍스처 좌표 — 2D 이미지의 어디를 붙일 것인가
+    FVector2f UV1;            // 두 번째 UV (라이트맵 등)
+};
+
+Normal
+한 버텍스가 여러 삼각형에 공유될 때, 각 삼각형의 법선을 가중 평균하면 **부드러운 표면(smooth shading)**이 됩니다. 
+반대로 삼각형마다 별도의 법선을 주면 **각진 표면(flat shading)**이 됩니다. 
+
+즉 Normal은 셰이딩 의도를 인코딩합니다.
+
+Tangent
+
+노멀맵(bump map)은 표면의 미세한 요철을 텍스처로 표현하는데, 
+이 텍스처의 RGB 값이 "표면 기준 좌표계"에서의 법선 편향입니다
+
+이 좌표계를 Tangent Space라 하며, Normal + Tangent + Bitangent(이 둘의 외적)가 그 좌표계의 세 축입니다
+
+UV
+
+3D 표면에 2D 이미지를 붙이려면, "이 버텍스가 이미지의 어느 위치에 대응하는가"를 알아야 합니다. 
+UV 좌표 (0,0)은 텍스처의 좌하단, (1,1)은 우상단입니다. 
+"UV 전개(unwrap)"란 3D 표면을 2D 평면에 펼치는 작업이며, 이것이 잘못되면 텍스처가 늘어나거나 이음새가 보입니다.
+
+---
+
+2. 인덱스 버퍼: 중복 제거
+
+정육면체 하나는 삼각형 12개(면 6 × 삼각형 2)
+삼각형 12개 × 버텍스 3 = 36개 버텍스
+
+그런데 정육면체의 꼭짓점은 8개뿐입니다. 나머지 28개는 중복입니다
+
+// 인덱스 없이 (낭비)
+TArray<FVector> Vertices;  // 36개
+Vertices.Add(A); Vertices.Add(B); Vertices.Add(C);  // 삼각형 1
+Vertices.Add(A); Vertices.Add(C); Vertices.Add(D);  // 삼각형 2 — A, C 중복
+
+// 인덱스 사용 (효율적)
+TArray<FVector> Vertices;  // 8개만
+Vertices.Add(A); Vertices.Add(B); /* ... */ Vertices.Add(H);
+
+메모리 절약과 GPU 캐시 효율
+
+---
+
+3. GPU 버퍼
+
+CPU의 TArray에 있는 데이터를 GPU가 읽을 수 있는 메모리(VRAM)에 올리는 것. 
+이것이 GPU 버퍼의 역할
+
+RHICreateVertexBuffer
+RHILockBuffer
+FMemory::Memcpy
+RHIUnlockBuffer
+
+BUF_Static vs BUF_Dynamic 용도 힌트
+Static이면 GPU가 가장 빠른 메모리 영역에 배치하고, 
+Dynamic이면 CPU가 자주 쓸 수 있는 영역에 배치합니다
+
+---
+
+4. Vertex Factory
+
+GPU 버퍼에 바이트가 올라갔지만, GPU는 그 바이트를 어떻게 해석해야 하는지 모릅니다. 
+"처음 12바이트가 Position이고, 다음 12바이트가 Normal이고..."
+이 레이아웃을 GPU에게 알려주는 것이 Vertex Declaration (D3D의 Input Layout)이며,
+UE에서는 FVertexFactory가 이 역할을 합니다
+
+class FLocalVertexFactory : public FVertexFactory
+
+void InitRHI()
+
+FVertexDeclarationElementList Elements
+
+Elements.Add(FVertexElement(
+    PositionStreamIndex,    // 어느 버퍼(스트림)에서
+    0,                      // 오프셋
+    VET_Float3,             // 데이터 타입
+    0,                      // 셰이더에서의 바인딩 위치
+    sizeof(FPositionVertex) // 스트라이드
+));
+
+Elements.Add(FVertexElement(
+    TangentBasisStreamIndex,
+    0,
+    VET_PackedNormal,
+    1,
+    sizeof(FPackedNormal)
+));
+
+// UV, Color 등도 동일 패턴
+
+
+같은 셰이더가 서로 다른 버텍스 레이아웃의 메시를 그릴 수 있어야 하기 때문
+
+FLocal     VertexFactory  — 일반 Static/Skeletal Mesh용.
+FGPUSkin   VertexFactory  — 스켈레탈 메시에서 본 트랜스폼이 GPU에서 적용되는 경우
+FLandscape VertexFactory  — 랜드스케이프용. 높이맵에서 버텍스 위치를 생성
+
+커스텀 SceneProxy를 만들 때, 어떤 Vertex Factory를 쓸지가 첫 번째 결정입니다
+대부분 FLocalVertexFactory를 재사용합니다
+복셀 메시의 버텍스 레이아웃이 일반 Static Mesh와 동일하므로
+
+---
+
+5. Material
+
+버텍스가 "어디에 무엇이 있는가"를 정의한다면, 
+머티리얼은 **"그것이 어떻게 보이는가"**를 정의
+
+// 셰이더의 관점에서 머티리얼이란:
+// 각 픽셀에 대해 다음 값을 출력하는 함수
+
+struct FMaterialOutput {
+    FVector3f BaseColor;        // 표면의 고유 색상 (반사율)
+    float Metallic;             // 금속성 (0=비금속, 1=금속)
+    float Roughness;            // 거칠기 (0=거울, 1=완전 확산)
+    FVector3f Normal;           // 표면 법선 (노멀맵으로 수정된)
+    FVector3f EmissiveColor;    // 자체 발광
+};
+
+**PBR()**의 핵심 파라미터
+
+빛이 표면에 닿으면 일부는 반사(specular)되고 일부는 흡수 후 재방출(diffuse)됩니다. 
+Metallic이 이 비율을 결정하고, 
+Roughness가 반사의 선명도를 결정하고, 
+BaseColor가 각 채널의 에너지를 결정합니다
+
+---
+
+UE에서 머티리얼은 UMaterialInterface 계층으로 표현됩니다
+
+UMaterialInterface          (추상 인터페이스)
+├── UMaterial               (마스터 머티리얼 — 셰이더 그래프 정의)
+└── UMaterialInstance       (파라미터만 다른 변형)
+    └── UMaterialInstanceDynamic  (런타임에 파라미터 변경 가능)
+
+---
+
+// 런타임에 머티리얼 파라미터를 변경하는 예
+
+UMaterialInstanceDynamic::Create
+SetVectorParameterValue("BaseColor", FLinearColor::Red)
+SetScalarParameterValue("Roughness", 0.8f)
+MeshComponent->SetMaterial
+
+---
+
+블록 종류마다 다른 머티리얼
+하나의 머티리얼 + Texture Atlas
+셰이더 안에서 블록 타입에 따라 Atlas의 다른 영역을 샘플링
+
+// 복셀 전용 머티리얼의 셰이더 로직 (개념적 HLSL)
+GetAtlasUV(float2 localUV, int blockType) => float2
+
+---
+
+6. FMeshBatch
+
+렌더링의 최소 실행 단위가 **드로콜(draw call)**입니다
+
+"이 버텍스 버퍼의 이 범위를, 
+이 인덱스 버퍼로, 
+이 셰이더와 이 텍스처를 바인딩하여,
+이 렌더 타겟에 그려라." 
+
+GPU에 대한 이 하나의 명령을 UE에서는 FMeshBatch가 표현합니다.
+
+Batch = AllocateMesh()
+
+Batch.VertexFactory = &VertexFactory_TypeA
+Batch.MaterialRenderProxy = Material->GetRenderProxy()
+
+// 어떤 범위의 인덱스를 그릴 것인가
+
+FMeshBatchElement& Element = Batch.Elements[0]
+
+Element.IndexBuffer = &MyIndexBuffer;
+Element.FirstIndex = 0;
+Element.NumPrimitives = TriangleCount;
+Element.MinVertexIndex = 0;
+Element.MaxVertexIndex = VertexCount - 1;
+
+드로콜 자체는 GPU 명령 하나지만, 그 전후에 CPU가 수행해야 하는 **상태 전환(state change)**이 비쌉니다. 
+셰이더 교체, 텍스처 바인딩 교체, 블렌드 모드 교체 등. 
+GPU는 파이프라인이 길어서 상태가 바뀌면 파이프라인을 비우고(flush) 다시 채워야 합니다. 
+
+그래서 "드로콜 수를 줄여라"가 렌더링 최적화의 첫 번째 격언이고, 복셀에서 Texture Atlas를 쓰는 이유입니다
+
+머티리얼(셰이더+텍스처)이 하나이면 청크 전체가 하나의 드로콜입니다.
+
+---
+
+7. SceneProxy: 두 세계의 접점
+
+// 게임 스레드에서 — UPrimitiveComponent
+class UVoxelChunkComponent : public UPrimitiveComponent
+
+  // "렌더 스레드용 나의 분신을 만들어라"
+  FPrimitiveSceneProxy* CreateSceneProxy() override
+
+  // 바운딩 박스 — 컬링에 사용
+  FBoxSphereBounds CalcBounds() const override
+
+// 렌더 스레드에서 — FPrimitiveSceneProxy
+class FVoxelChunkSceneProxy : public FPrimitiveSceneProxy
+    // 생성자에서 게임 스레드 데이터를 복사
+    FVoxelChunkSceneProxy(const UVoxelChunkComponent* Component): FPrimitiveSceneProxy(Component)
+    {
+        // 이 시점에서 Component의 데이터를 읽는 것은 안전
+        // (CreateSceneProxy는 게임 스레드에서 호출되므로)
+    }
+
+"복사를 통한 격리"
+SceneProxy는 자기만의 복사본을 갖고 렌더 스레드에서 자유롭게 읽습니다
+
+---
+
+// 렌더러가 매 프레임 호출하는 핵심 함수
+void FVoxelChunkSceneProxy::GetDynamicMeshElements(...)
+
+---
+
+8. 렌더링 파이프라인: 버텍스에서 픽셀까지
+
+CPU 측 (게임/렌더 스레드)
+가시성 판정
+각 프리미티브의 SceneProxy에서 FMeshBatch 수집
+머티리얼별·깊이별로 정렬
+GPU 커맨드 제출
+
+GPU 측
+Vertex Shader (버텍스 변환: Local → World → View → Clip Space)
+Rasterization (삼각형을 픽셀로 분해)
+Pixel/Fragment Shader (각 픽셀의 색상 계산: 머티리얼 + 라이팅)
+Output Merger (깊이 테스트, 블렌딩, 최종 프레임버퍼 기록)
+
+---
+
+// Vertex Shader가 하는 일 (개념적 HLSL)
+
+VertexShader(FVertexInput In) => float4
+
+  float4 worldPos = In.Position x LocalToWorld
+  float4 viewPos  = worldPos x WorldToView
+  float4 clipPos  = viewPos x ViewToClip
+  
+  return clipPos;
+  // clipPos.xy / clipPos.w = 화면 좌표 (-1~1)
+  // clipPos.z / clipPos.w = 깊이 (0~1)
+
+MVP 변환 (Model-View-Projection)
+
+LocalToWorld: Actor의 Transform에서 온다
+Component->GetComponentTransform().ToMatrixWithScale()
+
+ViewToClip: 카메라의 Projection에서 온다
+FSceneView::ViewMatrices가 관리
+View.ViewMatrices.GetViewProjectionMatrix()
+
+---
+
+Pixel Shader에서 머티리얼의 BaseColor, Roughness 사용
+머티리얼 에디터에서 노드를 연결하면, 그것이 HLSL 코드로 컴파일되어 Pixel Shader에 삽입
+
+---
+
+9. UProceduralMeshComponent
+
+버텍스 데이터를 FProceduralMeshSection에 저장
+MarkRenderStateDirty() 호출
+프레임 끝에 CreateSceneProxy() 호출
+FProceduralMeshSceneProxy 생성
+GPU 버퍼 할당 및 데이터 업로드
+Vertex Factory 설정
+GetDynamicMeshElements에서 매 프레임 FMeshBatch 제출
+
+---
+
+1. 화면에 삼각형 하나를 그리기까지
+
+3D 프로그래밍의 최소 단위는 "삼각형 하나를 화면에 그리는 것"입니다
+OpenGL에서 이를 위해 필요한 것은 다섯 가지입니다
+버텍스 데이터, GPU 버퍼, 버텍스 레이아웃 선언, 셰이더 프로그램, 드로콜
+
+---
+
+2. 버텍스 데이터: CPU 메모리의 숫자 배열
+
+CPU 측 데이터. 
+CPU의 스택 또는 힙에 있는 순수한 숫자
+
+float vertices[] = {
+     x      y     z
+    -0.5f, -0.5f, 0.0f,
+     0.5f, -0.5f, 0.0f,
+     0.0f,  0.5f, 0.0f
+};
+
+---
+
+CPU 측에서는 대규모 월드의 정밀도를 위해 double이 필요하지만, GPU는 float 연산에 최적화
+
+UE — TArray에 담긴 버텍스
+FVector는 내부적으로 double 3개
+
+TArray<FVector> Vertices;
+Vertices.Add(FVector(-50, -50, 0));
+Vertices.Add(FVector( 50, -50, 0));
+Vertices.Add(FVector(  0,  50, 0));
+
+---
+
+VRAM 전송
+CPU의 배열을 GPU가 읽을 수 있는 메모리로 복사하는 것
+
+OpenGL — Vertex Buffer Object 생성
+GLuint VBO;
+glGenBuffers(1, &VBO);
+
+GPU 측에 버퍼 하나를 예약
+"번호표"(정수 ID)만 받은 상태
+
+OpenGL — 버퍼를 "바인딩"하고 데이터 전송
+
+glBindBuffer(VBO);
+glBufferData(vertices, GL_STATIC_DRAW);
+
+glBindBuffer는 "이후의 버퍼 관련 명령은 이 VBO에 대한 것이다"라고 선언
+OpenGL의 상태 머신 모델입니다
+먼저 대상을 "현재 활성"으로 설정하고, 그 다음 명령이 그 대상에 적용
+
+glBufferData가 실제 전송
+CPU 메모리(vertices)에서 GPU 메모리로 바이트를 복사
+GL_STATIC_DRAW는 "이 데이터는 한 번 쓰고 여러 번 읽힌다"는 용도 힌트입니다.
+
+UE 
+
+VertexBufferRHI = RHICreateVertexBuffer(BUF_Static)
+
+RHILockBuffer(VertexBufferRHI, RLM_WriteOnly)
+FMemory::Memcpy(Data, Size)
+RHIUnlockBuffer(VertexBufferRHI)
+
+glBufferData가 이 세 단계를 한 줄에 합친 것이고, UE의 RHI는 그것을 다시 분리한 것입니다
+Lock/Unlock 패턴이면 기존 버퍼의 일부만 갱신하는 부분 업데이트가 가능합니다
+
+---
+
+버텍스 레이아웃 선언
+
+GPU 버퍼에는 이제 36바이트가 있습니다(float 9개 × 4바이트)
+GPU는 이것이 "3개씩 끊어서 xyz 좌표"라는 것을 모릅니다
+
+OpenGL — Vertex Array Object
+
+GLuint VAO;
+glGenVertexArrays(1, &VAO);
+glBindVertexArray(VAO);
+
+OpenGL — "0번 속성은 float 3개, 스트라이드 12바이트, 오프셋 0"
+glVertexAttribPointer(
+    0,                  // 속성 인덱스 (셰이더의 layout location)
+    3,                  // 요소 개수 (vec3 = 3)
+    GL_FLOAT,           // 데이터 타입
+    GL_FALSE,           // 정규화 여부
+    3 * sizeof(float),  // 스트라이드 (다음 버텍스까지의 거리)
+    (void*)0            // 오프셋 (이 속성이 버텍스 시작점에서 몇 바이트 떨어져 있는가)
+)
+glEnableVertexAttribArray(0)
+
+VBO의 바이트 스트림을 12바이트씩 끊어서, 각 12바이트 안의 0번째부터 float 3개를 읽어서, 
+셰이더의 location=0 입력에 넣어라
+
+Position(float3) + Color(float3)가 인터리브된 경우
+
+float vertices[] = {
+     Position            Color
+     x      y     z      x     y     z
+    -0.5f, -0.5f, 0.0f,  1.0f, 0.0f, 0.0f,
+     0.5f, -0.5f, 0.0f,  0.0f, 1.0f, 0.0f,
+     0.0f,  0.5f, 0.0f,  0.0f, 0.0f, 1.0f
+};
+
+**스트라이드(stride)**는 "한 버텍스의 전체 크기"이고, 
+**오프셋(offset)**은 "이 특정 속성이 버텍스 시작점에서 얼마나 떨어져 있는가"
+
+이 두 숫자가 GPU에게 바이트 스트림의 구조를 완전히 설명
+
+UE — FVertexFactory 안의 FVertexDeclarationElementList
+FVertexElement(
+    StreamIndex,        
+    Offset,             
+    VET_Float3,        
+    AttributeIndex,
+    Stride              
+)
+
+---
+
+5. 셰이더
+
+여기까지가 "데이터"입니다. 
+이제 그 데이터를 처리하는 프로그램이 필요합니다
+
+버텍스 셰이더와 프래그먼트(픽셀) 셰이더
+
+5.1 버텍스 셰이더: 점의 위치를 결정
+
+layout (location = 0) in vec3 aPos;   // VBO에서 읽은 Position
+layout (location = 1) in vec3 aColor; // VBO에서 읽은 Color
+
+out vec3 vertexColor;  // 프래그먼트 셰이더로 전달
+
+uniform mat4 model;      // Local → World
+uniform mat4 view;       // World → Camera
+uniform mat4 projection; // Camera → Clip
+
+gl_Position = projection * view * model * vec4(aPos, 1.0);
+vertexColor = aColor;
+
+layout (location = 0)이 glVertexAttribPointer의 첫 번째 인자(속성 인덱스 0)와 연결
+이것이 "버텍스 데이터 → 셰이더 입력"의 바인딩 포인트
+
+uniform은 모든 버텍스에 대해 동일한 값
+"버텍스마다 다른 값"은 in (attribute)
+
+gl_Position은 셰이더의 필수 출력
+
+UE — 버텍스 셰이더는 직접 작성하지 않음
+엔진이 FSceneView::ViewMatrices에서 가져와 자동으로 바인딩
+MVP 변환은 엔진이 자동으로 삽입
+
+---
+
+5.2 프래그먼트 셰이더: 픽셀의 색상을 결정
+
+in vec3 vertexColor;      // 버텍스 셰이더에서 전달된 값
+out vec4 FragColor;       // 최종 픽셀 색상
+
+FragColor = vec4(vertexColor, 1.0);
+
+버텍스 셰이더의 out이 프래그먼트 셰이더의 in으로 연결됩니다
+이 값은 삼각형 내부에서 **보간**됩니다
+삼각형의 세 꼭짓점에 빨강, 초록, 파랑을 줬으면, 내부의 각 픽셀은 위치에 따라 세 색의 가중 평균을 받습니다
+이 보간이 GPU 래스터라이저의 핵심 기능
+
+UE — 머티리얼 에디터의 "최종 출력"
+PBR 라이팅 계산은 엔진이 자동으로 추가
+
+PBR 라이팅, 그림자, 포그, 톤매핑 등
+나머지를 엔진이 합성
+
+5.3 셰이더 컴파일과 링킹
+
+셰이더 컴파일
+glCreateShader(GL_VERTEX_SHADER)
+glShaderSource(vertexShader, 1, &vertexShaderSource)
+glCompileShader(vertexShader)
+
+프로그램 링킹 (버텍스 + 프래그먼트를 하나로)
+glCreateProgram()
+glAttachShader(shaderProgram, vertexShader)
+glAttachShader(shaderProgram, fragmentShader)
+glLinkProgram(shaderProgram)
+
+UE 
+셰이더 컴파일은 에디터에서 또는 쿠킹단계에서
+UMaterial 저장 → FHLSLMaterialTranslator → HLSL 소스 생성
+→ FShaderCompileJob → 플랫폼별 바이트코드 (DXBC, SPIRV, Metal)
+
+5.4 Uniform 전달: CPU → 셰이더
+
+glUseProgram(shaderProgram)
+
+glGetUniformLocation(shaderProgram, "model")
+glUniformMatrix4fv(modelLoc, glm::value_ptr(modelMatrix))
+
+glGetUniformLocation(shaderProgram, "view")
+glUniformMatrix4fv(viewLoc, glm::value_ptr(viewMatrix))
+
+glGetUniformLocation(shaderProgram, "projection")
+glUniformMatrix4fv(projLoc, glm::value_ptr(projectionMatrix))
+
+Model Matrix: 이 객체의 위치·회전·스케일
+Component->GetComponentTransform().ToMatrixWithScale()
+
+View Matrix
+카메라의 위치와 방향으로부터 역변환
+FSceneView::ViewMatrices.GetViewMatrix()
+
+Projection Matrix
+3D → 2D 투영
+ViewMatrices.GetProjectionMatrix()
+
+---
+
+6. 텍스처
+
+glGenTextures(1, &texture);
+glBindTexture(GL_TEXTURE_2D, texture);
+
+glTexImage2D(
+    GL_TEXTURE_2D,
+    0,               // 밉맵 레벨
+    GL_RGB,          // GPU 측 포맷
+    width, height,
+    0,
+    GL_RGB,          // CPU 측 데이터 포맷
+    GL_UNSIGNED_BYTE,
+    imageData        // CPU 메모리의 픽셀 배열
+);
+
+glGenerateMipmap(GL_TEXTURE_2D);
+
+프래그먼트 셰이더
+
+uniform sampler2D ourTexture
+FragColor = texture(ourTexture, TexCoord)
+
+CPU에서 텍스처 유닛 바인딩
+
+glActiveTexture(GL_TEXTURE0)   // 텍스처 슬롯 0번 활성화
+glBindTexture(GL_TEXTURE_2D, texture)   // 그 슬롯에 텍스처 바인딩
+
+GPU에는 동시에 바인딩할 수 있는 텍스처 수에 제한이 있습니다(보통 16-32개)
+각 슬롯에 텍스처를 꽂고, 셰이더에게 몇 번 슬롯을 읽으라고 알려줍니다
+
+UE 
+
+UTexture2D → FTexture2DResource → FTextureRHIRef
+텍스처 바인딩은 MaterialRenderProxy가 자동으로 처리
+머티리얼 에디터에서 TextureSample 노드를 연결할 뿐
+
+---
+
+7. 드로콜: 최종 실행
+
+glUseProgram(shaderProgram);      // 셰이더 활성화
+glBindVertexArray(VAO);           // 버텍스 레이아웃 활성화
+glDrawArrays(GL_TRIANGLES, 0, 3); // "삼각형 모드, 0번 버텍스부터, 3개"
+
+인덱스 버퍼를 쓰는 경우
+glDrawElements(
+    GL_TRIANGLES,    // 그리기 모드
+    indexCount,      // 인덱스 개수
+    GL_UNSIGNED_INT, // 인덱스 타입
+    0                // 오프셋
+);
+
+UE
+FMeshBatch가 드로콜 하나
+
+Batch.VertexFactory = &VF     // VAO에 대응
+Batch.MaterialRenderProxy     // UseProgram + 텍스처 바인딩에 대응
+
+Elem.IndexBuffer
+Elem.NumPrimitives
+
+OpenGL에서는 프로그래머가 직접 드로콜을 호출
+UE에서는 FMeshBatch를 "수집"하면 엔진이 정렬 후 일괄 실행
+
+---
+
+OpenGL — 메인 루프가 완전히 보인다
+
+while(run) {
+  poll input()
+
+  clear screen()
+
+  view = camera.view_mat()
+  proj = perspective()
+
+  use(shader)
+  set uniform (shader, "view", view)
+  set uniform (shader, "proj", proj)
+
+  for each object in scene
+    set uniform (shader, "model", object.transform)
+    bind vertex (object.vertices)
+    draw element (object.indexCount)
+
+  swap buffer(window)
+}
+
+OpenGL의 20줄이 UE에서는 수만 줄의 코드에 분산
+
+---
+---
+---
+---
+---
+---
+---
+
+view 
+카메라가 "어디에서, 어디를 바라보고 있는가"를 행렬로 인코딩
+본질적으로 좌표계 전환
+세계의 모든 점을 카메라 기준으로 재표현하라
+카메라가 (10, 0, 0)에 있으면, 세계의 모든 점에서 (10, 0, 0)을 빼는 것
+
+proj 
+절두체(frustum) 공간을 정규화된 큐브(-1 ~ +1)로 압축
+
+이 두 행렬이 합쳐져 ViewProjection Matrix
+이것은 프레임당 한 번만 계산하면 됩니다 
+카메라가 한 프레임 안에서 바뀌지 않으므로
+
+VP = proj × view
+
+// 오브젝트당 한 번 — 오브젝트 종속
+MVP = VP × model
+
+오브젝트가 1000개여도 VP는 한 번만 계산
+이것이 uniform이라는 개념의 존재 이유
+"모든 버텍스에, 모든 오브젝트에 공통인 값을 매번 보내지 않고 한 번만 설정"
+
+---
+
+per-object 데이터
+
+이 물체는 세계에서 어디에, 어떤 자세로, 어떤 크기로 존재하는가
+같은 메시(의자)를 10개 배치하면, 메시 데이터는 같지만 model 행렬은 10개가 다릅니다.
+
+per-mesh 데이터
+
+bind vertex
+버텍스 배열과 그 해석 방법(레이아웃)
+
+draw element
+
+GPU 파이프라인을 가동
+이 호출 이전에 설정된 모든 상태(셰이더, 행렬, 버텍스, 텍스처)가 이 순간 소비
+
+draw 자체는 가볍습니다. 
+비싼 것은 그 앞의 bind 와 set uniform — 즉 상태 전환입니다. 
+셰이더 교체, 텍스처 교체, 버텍스 버퍼 교체
+
+---
+
+draw element()가 트리거하는 GPU 파이프라인
+
+[1. Vertex Shader]
+각 버텍스에 대해
+Local → Clip 변환
+
+[2. Primitive Assembly]
+버텍스 3개를 삼각형으로 조립
+
+[3. Rasterization]
+삼각형이 덮는 픽셀을 열거
+버텍스 속성을 보간
+
+[4. Fragment Shader]
+각 픽셀의 색상 계산
+(텍스처 샘플링, 라이팅)
+
+[5. Output Merge]
+깊이 테스트
+
+---
+
+Vertex Shader
+
+in: vertex 의 position
+out: vertex 의 clip spcae position
+
+position = proj * view * model * vertex.position
+
+이 셰이더는 버텍스 수만큼 병렬로 실행
+GPU에 수천 개의 코어가 있다
+예를 들어 65,536개의 GPU 코어가 65,536개의 버텍스를 병렬로 변환합니다. 
+각 실행은 독립적이며 다른 버텍스를 참조할 수 없습니다
+
+clip space
+w로 나누는 이 연산(perspective divide)이 원근감을 만듭니다
+먼 물체는 w가 크므로 x/w, y/w가 작아져서 화면에서 작게 보입니다
+
+---
+
+Primitive Assembly
+
+버텍스 셰이더의 출력을 인덱스 버퍼의 순서대로 3개씩 묶어서 삼각형을 만듭니다
+여기서 back-face culling이 일어날 수 있습니다
+
+---
+
+Rasterization
+
+삼각형을 구성하는 세 점의 화면 좌표가 주어졌을 때, 
+이 삼각형이 덮는 모든 **픽셀(fragment)**을 열거합니다
+
+그리고 각 픽셀에서 세 꼭짓점의 속성을 **무게중심 보간(barycentric interpolation)**합니다
+
+프래그먼트 셰이더가 받는 in 값은 이미 보간된 값입니다.
+
+---
+
+Fragment Shader
+
+입력: 보간된 속성(UV, 노멀, 색상 등) + uniform(텍스처, 라이트 정보)
+출력: 이 픽셀의 최종 색상
+
+Fragment Shader는 래스터화된 픽셀 수만큼 병렬로 실행됩니다
+화면에 보이는 삼각형이 100만 픽셀을 덮으면 100만 번 실행됩니다
+
+여기서 텍스처 샘플링, 라이팅 계산, 그림자 판정 등 "보이는 것"에 관한 모든 계산이 이루어집니다.
+
+---
+
+Output Merge
+
+프래그먼트 셰이더가 출력한 색상을 프레임버퍼에 쓰기 전에 **깊이 테스트(depth test)**를 수행
+
+깊이 버퍼(Z-buffer)에 각 픽셀의 "지금까지 가장 가까운 물체의 깊이"가 기록
+
+오브젝트 A를 그림
+오브젝트 B를 그림
+오브젝트 C를 그림
+
+---
+
+현실의 씬에는 불투명 물체, 반투명 물체, 발광 물체가 섞여 있습니다
+각각 다른 셰이더(또는 다른 패스)가 필요합니다
+이것이 멀티 패스 렌더링이고, UE의 Deferred Rendering은 이 루프를 여러 번 돕니다
+GBuffer 패스(기하학 정보를 텍스처에 기록), 라이팅 패스(그 텍스처를 읽어 조명 계산), 반투명 패스, 포스트프로세스 패스
+
+---
+
+point_3d = (x, y, z)
+[변환]
+pixel_2d = (sx, sy)
+
+---
+
+Local Space 
+
+X Model Matrix
+
+World Space
+
+X View Matrix
+
+View Space : 카메라가 원점. 카메라 앞이 -Z.
+
+X Projection Matrix
+
+Clip Space : 정규화된 상자 (-1 ~ +1). 이 안의 점만 화면에 나타남
+
+X 1/w (perspective divide)
+
+Screen Space : 픽셀 좌표. (0,0) ~ (1920,1080)
+
+이 전체를 한 줄로
+clip_pos = Projection × View × Model × local_pos
+
+Model Matrix은 오브젝트마다 다릅니다
+View와 Projection은 프레임당 한 번, 카메라에서 옵니다
+
+per-frame, per-object, per-material
+
+---
+
+점 하나는 보이지 않습니다. 세 점을 이으면 삼각형
+세 점은 항상 하나의 평면을 정의
+
+vertices = [A, B, C, D, E, F, ...]    // 점들의 배열
+indices  = [0,1,2,  2,3,0,  ...]      // "어떤 점 세 개로 삼각형을 만들 것인가"
+
+인덱스가 존재하는 이유
+같은 점을 여러 삼각형이 공유합니다.
+점 데이터를 중복 저장하지 않고, 인덱스로 참조합니다.
+
+---
+
+점에 속성 붙이기: 버텍스
+
+vertex = {
+    position    어디에 있는가
+
+    normal      표면이 어느 방향을 향하는가      → 조명 계산에 필요
+    uv          텍스처의 어느 지점에 대응하는가  → 텍스처 매핑에 필요
+    tangent     표면 위의 수평 방향              → 노멀맵 해석에 필요
+}
+
+이 속성들은 삼각형 내부의 각 픽셀에서 보간됩니다
+보간이 "세 점의 정보로 면 전체의 정보를 만드는" 메커니즘
+
+---
+
+CPU와 GPU의 경계: 데이터 전송
+
+여기까지의 모든 것(버텍스, 인덱스, 행렬, 텍스처 이미지)은 CPU 메모리에 있습니다
+
+CPU 영역                              GPU 영역
+─────────                            ─────────
+TArray<FVertex>  ──── upload ────▶   Vertex Buffer
+TArray<uint32>   ──── upload ────▶   Index Buffer
+FMatrix          ──── upload ────▶   Constant/Uniform Buffer
+UTexture pixels  ──── upload ────▶   Texture Object
+shader source    ──── compile ───▶   Shader Program
+
+upload     CPU → GPU 방향의 메모리 복사. 느림. 최소화해야 함.
+bind       "이후의 draw는 이것을 사용하라"는 상태 설정. 빠름.
+
+---
+
+Vertex Shader        각 버텍스에 대해 실행. 위치를 반환.
+Fragment Shader      각 픽셀에 대해 실행. 색상을 반환.
+
+---
+
+// Level 0: 단색
+fragment(): return RED
+
+// Level 1: 버텍스 컬러 보간
+fragment(interpolated_color): return interpolated_color
+
+// Level 2: 텍스처 샘플링
+fragment(uv): return sample(texture, uv)
+
+// Level 3: 텍스처 + 라이팅
+fragment(uv, normal, light_dir):
+    albedo = sample(texture, uv)
+    brightness = [0, dot(normal, light_dir)]
+    return albedo × brightness
+
+// Level 4: PBR 
+fragment(uv, normal, view_dir, light_dir):
+    albedo    = sample(albedo_map, uv)
+    metallic  = sample(metallic_map, uv)
+    roughness = sample(roughness_map, uv)
+    
+    diffuse   = lambert(normal, light_dir)
+    specular  = cook_torrance(normal, view_dir, light_dir, roughness, metallic)
+    
+    return albedo × diffuse + specular
+
+각 레벨이 추가로 필요로 하는 데이터
+Level 0   아무것도 필요 없음
+Level 1   vertex color          → 버텍스 속성에서 보간
+Level 2   + texture, uv         → 텍스처 오브젝트 + 버텍스 속성
+Level 3   + normal, light_dir   → 버텍스 속성
+Level 4   + view_dir, 다중 텍스처(roughness, metallic)
+
+복셀 마인크래프트는 Level 2.5 정도에 위치합니다
+텍스처 Atlas 샘플링 + 버텍스 컬러에 베이킹된 블록 라이트
+
+---
+
+추가 셰이더 종류들: 파이프라인의 확장 슬롯
+
+Geometry Shader
+삼각형 하나를 받아서 여러 개로 증식하거나 폐기할 수 있습니다
+파티클, 와이어프레임
+느려서 현대 엔진에서는 거의 사용하지 않습니다
+
+Tessellation Shader
+삼각형을 더 작은 삼각형으로 분할합니다
+가까이 다가가면 메시를 동적으로 세밀하게 만드는 LOD에 사용
+
+Compute Shader
+렌더링 파이프라인 바깥에서 GPU의 병렬 연산 능력을 범용적으로 사용
+물리 시뮬레이션, 파티클, 포스트프로세스 등
+입력-출력이 고정되지 않고 프로그래머가 자유롭게 정의
+
+Mesh Shader (최신)
+Vertex + Geometry를 대체
+메시릿(meshlet) 단위로 더 유연한 기하학 처리
+Nanite의 기반 기술
+
+---
+
+[1] Vertex Shader          ★ 프로그래머 작성 
+입력: 버텍스 속성
+출력: clip space 위치 + 보간할 데이터
+실행 횟수: 버텍스 수
+
+[2] Primitive Assembly     ◆ GPU 자동
+버텍스 3개 → 삼각형 조립
+Back-face culling
+
+[3] Clipping               ◆ GPU 자동
+clip space 상자 밖의 삼각형 잘라냄
+
+[4] Perspective Divide     ◆ GPU 자동
+(x,y,z,w) → (x/w, y/w, z/w)
+이것이 원근감의 정체
+
+[5] Viewport Transform     ◆ GPU 자동
+(-1~+1) → (0~1920, 0~1080)
+
+[6] Rasterization          ◆ GPU 자동
+삼각형이 덮는 모든 픽셀(fragment)을 열거
+버텍스 속성을 무게중심 보간
+
+[7] Fragment Shader        ★ 프로그래머 작성
+입력: 보간된 속성 + 텍스처 + uniform
+출력: 이 픽셀의 색상 (+ 깊이)
+실행 횟수: 래스터화된 픽셀 수
+
+[8] Depth Test             ◆ GPU 자동
+이 픽셀이 기존보다 가까운가?
+
+[9] Framebuffer Write      ◆ GPU 자동
+최종 색상을 프레임버퍼에 기록
+
+Tessellation, Geometry, Compute, Mesh
+이 파이프라인에 추가적인 프로그래밍 가능 슬롯을 끼워넣는 것
+
+---
+
+Forward Rendering
+
+Deferred Rendering
+
+G-Buffer: "Geometry Buffer"의 약자. 
+여러 장의 "텍스처"에 각 픽셀의 기하학 정보를 저장
+"2D 인덱스로 접근 가능한 데이터 배열"
+
+Texture 0: Position     (RGB = world x,y,z)
+Texture 1: Normal       (RGB = nx,ny,nz)  
+Texture 2: Albedo       (RGB = 색상, A = alpha)
+Texture 3: Material     (R = metallic, G = roughness, B = AO)
+Texture 4: Depth        (R = z/w)
+
+---
+
+CPU
+
+가시성 판정 (Frustum / Occlusion)
+FMeshBatch 수집 (각 SceneProxy에서)
+패스별 분류 + 머티리얼별 정렬
+
+Render Command Queue에 draw 명령을 기록
+
+---
+
+GPU
+
+Depth Pre-pass
+  출력 → Depth Buffer
+
+Shadow Maps
+  출력 → Shadow Map Textures
+
+G-Buffer (Base Pass)
+  Fragment: albedo, normal, roughness, metallic 기록
+  출력 → G-Buffer Textures (4-5장)
+
+Lighting 
+  Fragment: PBR 라이팅 계산
+  출력 → Lit Scene Texture
+
+Translucency (Forward)
+  반투명 오브젝트를 뒤→앞 순서로 Forward 렌더링
+
+Post Process
+  Bloom, Tone Mapping, Motion Blur, TAA, DOF
+  주로 Compute Shader 또는 Fullscreen Fragment
