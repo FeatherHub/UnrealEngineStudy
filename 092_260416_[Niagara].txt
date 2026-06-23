@@ -1,5 +1,68 @@
+Cascade (UE3 ~ UE4)
 
-Niagara - GPGPU 스크립팅 플랫폼
+Emitter 안에 Lifetime, Size, Color, Velocity 같은 모듈을 쌓아서 파티클의 동작을 정의
+
+파티클 시뮬레이션이 CPU 단일 스레드에서 돌았다
+파티클 수가 늘어날수록 게임 스레드가 부담을 떠안았다
+
+Cascade의 파티클은 위치, 속도, 색상 등의 속성 집합이 고정되어 있었다
+커스텀 속성을 추가하려면 시스템 자체를 수정해야 했다. 즉, 확장성이 없었다.
+
+한 모듈의 출력이 다른 모듈의 입력이 되는 구조를 만들 수 없었다
+
+Niagara UE5 
+Lumen, Nanite와 공존해야 한다
+
+파티클을 "고정된 속성을 가진 점들의 무리"에서 
+"프로그래밍 가능한 데이터 흐름 위의 계산 결과"로 재정의
+
+데이터 흐름의 명시화
+  메시의 표면에서 파티클을 스폰하거나, 
+  오디오 스펙트럼 데이터를 파티클 크기에 매핑하거나, 
+  물리 시뮬레이션 결과를 파티클 속도에 반영
+
+공식 경로로 지원
+(Cascade에서는 이런 외부 데이터 연결이 해킹에 가까웠다.)
+
+System
+  └─ Emitter
+       ├─ Emitter Update     ← 에미터 수준 로직 (프레임마다)
+       ├─ Particle Spawn     ← 파티클 생성 시 실행
+       ├─ Particle Update    ← 파티클 생존 중 매 프레임
+       └─ Render             ← 시각화 방법 정의
+
+GPU 시뮬레이션과 CPU 시뮬레이션이 동일한 스크립트를 공유한다
+
+---
+
+Cascade
+
+하나의 파티클 시스템 안에 
+여러 emitter를 두고, 
+각 emitter에 Spawn, Lifetime, Size, Color, Velocity 같은 모듈을 붙이는 구조
+
+Niagara
+
+효과를 더 코드 자산처럼 다루게
+
+---
+
+메시/본/월드 데이터와 연결되고, 이벤트와 상호작용하는 효과가 필요해졌어요
+
+Data Interface는 외부 데이터 소스와 로직을 Niagara에 연결하는 통로
+
+---
+
+Niagara System
+ ├─ Emitter A
+ │   ├─ Spawn
+ │   ├─ Update
+ │   └─ Render
+ ├─ Emitter B
+ │   ├─ Spawn
+ │   ├─ Update
+ │   └─ Render
+ └─ Shared parameters / user parameters
 
 ---
 
