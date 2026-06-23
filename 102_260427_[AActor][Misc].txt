@@ -444,3 +444,99 @@ GameplayStaticsPermalink
 common game-related functionality
 
 ---
+
+
+Mobility
+
+Static Light
+= 런타임에 움직이지도, 바뀌지도 않는다고 엔진에게 약속함
+- Lightmass 빌드 때 lightmap에 baked됨
+- dynamic shadow를 직접 만들지 않음
+
+Stationary Light
+= 런타임에 위치는 안 바뀌지만, 일부 속성은 바뀔 수 있다고 엔진에게 약속함
+- static geometry에는 baked lighting 기여 가능
+- movable object에는 dynamic shadow 가능
+
+
+Static Mesh Actor / Static
+- 런타임에 이동/회전/스케일 변경하지 않을 오브젝트
+- precomputed lightmap/shadow에 참여 가능
+
+Static Mesh Actor / Stationary
+- Movable Light와 함께 쓸 때 cached shadow map을 재사용할 수 있음
+
+---
+
+
+---
+
+FWorldContext
+	TArray<FNamedNetDriver> ActiveNetDrivers;
+
+왜 월드가 아니라 컨텍스트인가
+
+접속 중: 서버에 연결할 때, 목적지 월드가 아직 존재하지 않는 시점에
+연결(과 그 드라이버)이 살아 있어야 합니다.
+
+심리스 트래블: 맵 전환 때 월드는 파괴되고 재생성되지만 서버와의 연결은 끊기면 안 됩니다
+
+---
+
+UWorld
+  NetDriver
+  DemoNetDriver
+
+월드 것은 바깥에서 꽂아주는 캐시
+
+---
+
+경로 1
+서버: 월드 자신이, 청취를 시작할 때
+
+GEngine->CreateNamedNetDriver(this, NAME_GameNetDriver, ...);   // 엔진에 생성 위탁 → 컨텍스트 명부에 등록
+NetDriver = GEngine->FindNamedNetDriver(this, NAME_GameNetDriver); // 명부에서 찾아 자기 캐시에 꽂음
+
+
+경로 2
+클라이언트: 엔진이, 맵 로드가 끝난 직후    
+
+Context.World()->SetNetDriver(Context.PendingNetGame->NetDriver);
+
+---
+---
+---
+---
+---
+---
+
+UE4 초기엔 UGameInstance가 없었고, 게임 전역 상태는 UGameEngine 서브클래스나 전역에 뒀습니다. 
+이게 PIE에서 깨졌습니다.
+멀티플레이어 PIE는 한 프로세스에 게임 세션 N개인데, 
+엔진은 하나뿐이니 세션 상태가 인스턴스끼리 섞였죠. 
+그래서 4.4에 UGameInstance가 발명됩니다
+
+---
+
+① 에디터·커맨드릿처럼 GameInstance가 0개인 구성에서도 필요한가?
+② 그 상태를 변경하는 동사는 누구의 코드인가(엔진 기계 vs 게임 코드)?
+③ 게임 개발자에게 노출할 공개 표면인가, 엔진의 내부 장부인가?
+④ 상태가 정말 세션에 귀속되는가, 아니면 키로 유도 가능한 무상태 서비스인가?
+
+---
+
+UGameInstance는 게임마다 서브클래스하고 BP에 노출되는 공개 객체입니다. 
+전송 계층의 내부 장부를 거기 두면 엔진의 기계장치가 게임 코드의 손 닿는 곳에 놓입니다
+
+---
+
+GameViewportSubsystem이 엔진급인 이유: 세션 고유의 상태가 없습니다
+AddWidget의 장부는 위젯을 키로 하고, 대상 뷰포트는 위젯→월드→뷰포트로 매번 유도됩니다. 
+이런 무상태성 서비스를 GameInstance마다 N개 복제하면 얻는 게 없습니다
+
+
+ReplaySubsystem이 인스턴스급인 이유
+"지금 이 판을 녹화 중인가"는 PIE 인스턴스 A는 녹화하고 B는 안 할 수 있어야 하는, 
+인스턴스 별 상태입니다
+
+---

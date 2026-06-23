@@ -932,6 +932,39 @@ UObject
 
 ---
 
+
+FStruct를 new로 힙 할당하고 UPROPERTY 없이 들고 있는 것 자체는 가능해. 
+단 그 struct 안에 UObject 참조가 있다면, GC에게 그 참조를 알리는 책임을 개발자가 수동으로 져야 해. 
+그 수단이 AddReferencedObjects 오버라이드야.
+
+
+VS
+
+
+UObject
+  독립 객체 identity 있음
+  UObject heap / GC / reflection object graph 안에 들어감
+
+---
+
+UPROPERTY()
+FRogueAttribute* HealthPtr;
+
+이것은 보통 UHT가 허용하지 않습니다.
+UPROPERTY 포인터는 기본적으로 UObject 계열 포인터를 대상으로 설계되어 있습니다
+
+
+옵션
+
+UPROPERTY()
+FInstancedStruct AttributeData;
+
+AttributeData.InitializeAs<FRogueAttribute>();
+FRogueAttribute* Attribute = AttributeData.GetMutablePtr<FRogueAttribute>();
+
+
+---
+
 UObject* 는 무효화되기 전까지 같은 주소에 영원히 산다
 
 ---
