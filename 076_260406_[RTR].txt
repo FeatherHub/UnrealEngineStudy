@@ -254,58 +254,276 @@ render target, texture, register
 
 ---
 
+Application → Geometry Processing → Rasterization → Pixel Processing
+
+[S1] 씬 준비        "무엇을 그릴지 결정"         CPU
+[S2] 기하 처리      "점의 위치를 변환"           GPU (Vertex/Tess/Geometry Shader)
+[S3] 래스터화       "삼각형을 픽셀로 분해"       GPU (고정 함수)
+[S4] 프래그먼트     "각 픽셀의 색을 계산"        GPU (Fragment Shader)
+[S5] 출력 병합      "깊이 테스트, 블렌딩"        GPU (고정 함수)
+[S6] 후처리         "완성된 이미지를 가공"       GPU (Compute/Fragment)
+[S7] 표시           "화면에 내보내기"            GPU → Display
+
+---
+
+현대 엔진의 한 프레임은 최대 6개 패스로 나뉘며
+각 패스가 S1~S5를 자체적으로 반복
+패스는 "파이프라인을 여러 번 돌리되, 매번 다른 목적으로 돌리는 것"
+
+[P0] Depth Pre-pass       "무엇이 보이는가만 먼저 판정"
+[P1] Shadow Pass          "광원 시점에서 깊이 렌더링"
+[P2] G-Buffer Pass        "재질 정보를 텍스처에 기록"
+[P3] Lighting Pass        "G-Buffer를 읽어 조명 계산"
+[P4] Translucency Pass    "반투명 오브젝트를 Forward로"
+[P5] Post Process Pass    "화면 이미지를 후가공"
+
+---
+
+씬 준비 [S1] — CPU 영역
+GPU가 아직 관여하지 않는, CPU가 "무엇을 그릴지"를 결정하는 단계
+
+컬링과 가시성 판정
+
+Frustum Culling         카메라 절두체 밖의 오브젝트 제거
+Occlusion Culling       다른 오브젝트에 가려진 것 제거 (Hi-Z, HZB)
+Backface Culling 판정   CPU 측 사전 제거 (GPU에서도 수행)
+Portal Culling          실내 구조의 가시성 판정
+
+공간 가속 구조
+
+BVH (Bounding Volume Hierarchy)    오브젝트 계층적 바운딩
+Octree / Quadtree                  공간 분할
+BSP Tree                           이진 공간 분할
+k-d Tree                           축 정렬 분할
+
+LOD 
+
+Discrete LOD            거리별 메시 교체
+Continuous LOD          점진적 메시 단순화
+HLOD                    계층적 LOD (먼 거리에서 여러 오브젝트를 하나로)
+
+정렬과 배칭
+
+Material Sort           같은 셰이더끼리 모아서 상태 전환 최소화
+Front-to-Back Sort      불투명: 앞에서 뒤로 (Early-Z 활용)
+Back-to-Front Sort      반투명: 뒤에서 앞으로 (올바른 블렌딩)
+Instancing 판정         같은 메시 × 다른 Transform = 한 번의 드로콜
+
+---
+
+기하 처리 [S2] — GPU Vertex/Tess/Geometry Shader
+
+좌표 변환 (Vertex Shader)
+
+MVP 변환                Local → World → View → Clip
+Normal/Tangent 변환     법선을 월드 공간으로 (inverse-transpose)
+Skinning                본 행렬 가중합으로 버텍스 이동 (GPU skinning)
+
+기하 생성/변형
+
+Tessellation          곡면 분할 — 가까이서 더 세밀한 삼각형
+Hull Shader           "얼마나 분할할지" 결정
+Domain Shader         "분할된 점의 위치" 결정
+
+Geometry Shader           삼각형 증식/폐기 (현대에서는 거의 미사용)
+Displacement Mapping      높이맵으로 버텍스 위치 자체를 이동
+Morphing / Blend Shapes   여러 형상 사이를 버텍스 단위로 보간
+
+클리핑 
+View Frustum Clipping    절두체 밖 삼각형 잘라냄
+Guard Band Clipping      화면 약간 바깥까지 허용하여 클리핑 비용 감소
+
+화면 매핑
+Viewport Transform       정규화 좌표 → 픽셀 좌표
+
+---
+
+래스터화 [S3]
+
+Triangle Setup
+Triangle Traversal                  삼각형이 덮는 픽셀(fragment) 열거
+Barycentric Interpolation           버텍스 속성을 무게중심 좌표로 보간
+Perspective-Correct Interpolation   원근 보정된 보간
+Backface Culling                    삼각형 앞/뒤 판정
+Early-Z Test                        깊이 사전 판정
+
+---
+
+프래그먼트/픽셀 셰이딩 [S4]
+
+"이 픽셀이 어떤 색인가"를 결정하는 모든 계산이 여기 속합니다
+
+셰이딩 모델
+
+Lambert Diffuse              cosθ 기반 확산 반사
+Blinn-Phong Specular         반벡터 기반 경험적 반사
+Cook-Torrance (Microfacet)   D × F × G / (4·cosθ_i·cosθ_o)
+    D: Normal Distribution   GGX, Beckmann
+    F: Fresnel               Schlick 근사, F₀
+    G: Geometry/Masking      Smith, GGX-Smith
+
+Disney Diffuse               roughness 반응형 확산
+Oren-Nayar                   거친 표면의 확산 모델
+Subsurface Scattering        피부, 왁스 — 빛이 내부에서 산란
+Cloth / Fabric               섬유 방향성 반사 (Kajiya-Kay 계열)
+Clear Coat / Layered         코팅 위의 다중 층 재질
+Thin-Film Interference       비눗방울, 기름막의 파동광학 효과
+
+텍스처 샘플링
+
+Bilinear / Trilinear Filtering   텍셀 보간
+Mipmapping                       거리별 텍스처 해상도 선택
+Anisotropic Filtering            비등방 텍셀 풋프린트 대응
+Texture Compression              BC, ETC, ASTC
+Texture Atlas / Array            여러 텍스처를 하나로 묶어 드로콜 감소
+Cube Map Sampling                환경 반사, 스카이박스
+Volume Texture                   3D 텍스처 (구름, 연기)
+Procedural Texture               함수로 값 생성 (Noise 등)
+
+법선/표면 조작
+
+Normal Mapping               탄젠트 공간에서 법선 편향
+Parallax Mapping             높이맵으로 UV 이동 — 시차 효과
+Parallax Occlusion Mapping   레이 마칭으로 교차점 탐색
+Bump Mapping (Blinn)         높이맵에서 법선 유도
+
+조명 계산
+
+Punctual Light (Point/Spot/Directional)     단일 방향 빛
+Area Light                                  면적광 적분 근사 (LTC, representative point)
+Image-Based Lighting                        환경 맵 기반 조명
+    Prefiltered Specular      roughness별 환경맵 밉 레벨
+    Split-Sum Approximation   BRDF LUT + 환경맵
+    Irradiance Map / SH       diffuse 환경광 (저주파)
+
+Reflection Probe              로컬 환경 반사 캡처
+IES Profile                   실제 조명 배광 패턴
+
+그림자 판정
+
+Shadow Map Lookup        광원 시점 깊이와 비교
+PCF                      다중 샘플 그림자 판정 → 부드러운 edge
+PCSS                     blocker 거리 기반 가변 penumbra
+VSM / ESM / EVSM         모멘트/지수 기반 필터링 가능한 그림자
+Contact Shadows          스크린 스페이스 레이 마칭으로 접촉 그림자
+Cascaded Shadow Maps     거리별 다중 해상도 그림자 맵
+
+전역 조명 근사 (Fragment 내에서 읽는 사전 계산 결과)
+
+Ambient Occlusion (baked)         사전 계산된 차폐 값
+Bent Normal                       차폐되지 않은 평균 방향
+Spherical Harmonics               저주파 조명 인코딩
+Lightmap                          사전 구운 조명 텍스처
+Light Probe / Irradiance Volume   공간 내 조명 샘플 격자
+
+반투명/특수
+
+Alpha Blending                   투명도 합성 (Porter-Duff over)
+Alpha Test / Cutout              임계값으로 투명/불투명 이분
+Order-Independent Transparency   깊이 정렬 없는 투명 합성
+Refraction                       굴절 — 스크린 UV 왜곡
+Fog / Atmospheric Scattering     깊이 기반 안개/대기 산란
+
+---
+
+출력 병합 [S5]
+
+Depth Test (Z-Test)       가까운 것만 남김
+Stencil Test              마스크 기반 픽셀 제어
+Blending                  alpha, additive, multiplicative 합성
+MRT Write                 다중 렌더 타겟에 동시 기록 (G-Buffer)
+Color/Depth Write Mask    특정 채널만 기록 허용/차단
+
+---
+
+후처리 [S6] — GPU Compute/Fragment Shader
+완성된 프레임 이미지를 입력으로 다시 가공하는 모든 기법
+
+안티앨리어싱
+MSAA                     다중 샘플 (래스터화 단계와 연동)
+FXAA / SMAA              형태 기반 후처리 AA
+TAA                      시간축 누적 AA (이전 프레임 재사용)
+TSR (UE5)                Temporal Super Resolution
+
+스크린 스페이스 효과
+SSAO                             스크린 스페이스 차폐 — G-Buffer 깊이/법선로부터
+SSGI                             스크린 스페이스 전역 조명
+SSR (Screen-Space Reflections)   깊이 버퍼 레이 마칭으로 반사
+Screen-Space Shadows             화면 공간 그림자 레이 마칭
+HBAO / GTAO                      개선된 AO 기법들
+
+카메라/렌즈 효과
+Bloom                    밝은 부분의 빛 번짐
+Lens Flare               렌즈 내부 반사에 의한 빛줄기
+Depth of Field           초점 범위 밖 블러 (Circle of Confusion)
+Motion Blur              움직임에 의한 시간축 블러 (velocity buffer)
+Vignetting               화면 가장자리 어두워짐
+Chromatic Aberration     색수차 — 렌즈 가장자리 색 분리
+
+색 변환과 톤매핑
+Tone Mapping              HDR → 디스플레이 범위 변환
+Color Grading / LUT       색 보정 룩업 테이블
+Gamma / sRGB Encoding     선형 → 비선형 디스플레이 인코딩
+
+---
+
+표시 [S7] — GPU → Display
+
+Double Buffering / Swap
+VSync
+
+---
+
+거친 컬링은 CPU, 세밀한 컬링은 GPU라는 분업
+
+MVP 행렬이 사용되는 두 시점
+
+시점 1 — CPU, S1(씬 준비)
+"이 오브젝트를 그릴 가치가 있는가?"를 판정하기 위해
+오브젝트의 "바운딩 박스"를 화면 공간(또는 뷰 공간)으로 변환.
+
+시점 2 — GPU, S2(기하 처리)
+"이 오브젝트의 모든 버텍스를 화면 좌표로 변환"하기 위해
+수만 개의 버텍스에 대해, 셰이더가 병렬로 실행.
 
 
+
+CPU의 S1은 거친 판정입니다. 바운딩 볼륨(구, AABB, OBB) 수준에서
+개별 삼각형이 보이는지는 묻지 않습니다
+곱하는 횟수가 오브젝트당 한 번이므로, CPU로 충분합니다
+
+GPU의 S2는 정밀한 변환입니다
+오브젝트의 "모든 버텍스"를 clip space로 보냅니다
+
 ---
+
+현대 엔진에서는 GPU 컬링도 점점 늘어나고 있습니다. 
+Compute Shader로 바운딩 테스트를 GPU 측에서 수행하고, 
+결과를 Indirect Draw 커맨드로 연결하면 
+CPU-GPU 왕복 없이 GPU가 스스로 "그릴 것"을 결정합니다
+
+전통적:    CPU 컬링 (오브젝트 단위) → GPU 렌더링
+현대적:    CPU 컬링 (오브젝트 단위) → GPU 컬링 (클러스터/삼각형 단위) → GPU 렌더링
+
 ---
----
----
----
----
----
----
----
----
----
----
----
----
----
----
----
----
----
----
----
----
----
----
----
----
----
----
----
----
----
----
----
----
----
----
----
----
----
----
----
----
----
----
----
----
----
----
----
----
----
----
----
+
+행렬의 생산자가 CPU이고, 소비자가 GPU입니다
+
+[CPU] 게임 로직 / 플레이어 입력
+    → 카메라 위치, 회전 결정 (FVector, FRotator)
+    → FTransform으로 합성
+
+    → View Matrix 계산: 카메라 Transform의 역행렬
+    → Projection Matrix 계산: FOV, 종횡비, Near/Far로부터
+
+[CPU] 컬링
+    → VP 행렬에서 절두체 평면 추출
+    → 각 오브젝트의 바운딩 볼륨과 비교
+
+[CPU → GPU] Uniform 전송
+    → VP 행렬을 GPU의 Constant Buffer에 기록
+
+[GPU] Vertex Shader
+    → clip_pos = VP × Model × vertex_pos
+    → 이 VP는 CPU가 계산해서 보내준 것
+    
