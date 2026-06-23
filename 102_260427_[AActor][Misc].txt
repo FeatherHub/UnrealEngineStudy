@@ -273,6 +273,54 @@ Character: Pawn
 
 ---
 
+Pawn
+
+
+GetController(), GetPlayerController()
+Controller 참조
+Actor는 Controller 개념이 없다
+Possesse된 결과 상태 정보
+PossessedBy, UnPossessed, OnRep_Controller
+
+
+GetPlayerState()
+PlayerState 참조 경로
+Pawn이 Controller를 구조적으로 알고 있기 때문에 성립하는 API
+Actor에서는 이 경로가 존재하지 않는다
+
+
+조종자와 연결되기 때문에 이런 질문이 생깁니다
+Controller가 바라보는 방향과
+Pawn 몸체의 방향은 같은가?
+
+컨트롤러 회전을 자신의 회전에 반영할지 여부
+uint8 bUseControllerRotationPitch : 1; 
+uint8 bUseControllerRotationYaw : 1;
+uint8 bUseControllerRotationRoll : 1;
+
+캐릭터는 yaw만 몸에 반영하고,
+pitch는 카메라/aim에만 쓰는 식으로 분리할 수 있어요
+
+
+SetupPlayerInputComponent()
+입력 바인딩 인터페이스
+Actor도 EnableInput()으로 입력을 받을 수는 있다
+
+---
+
+float BaseEyeHeight
+GetPawnViewLocation()
+"이 Pawn을 조종하는 시점이 어디인가"
+Pawn 자체가 소유하는 시점 정보
+
+---
+---
+---
+---
+---
+---
+---
+
 GameModeBase spawns the Pawn via SpawnDefaultPawnAtTransform
 
 the GameModeBase class also specifies which Pawn class to spawn.

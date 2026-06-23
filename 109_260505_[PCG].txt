@@ -1,0 +1,169 @@
+f : (seed, params, constraints) → content
+
+디자이너는 "콘텐츠의 작가"에서 "콘텐츠 생성기의 작가"로
+
+명령형 → 선언형으로의 이행
+
+
+세 가지 압력
+
+규모
+변주 
+룰을 바꿔서 결과 전체를 한 번에 갱신
+
+---
+
+작가의 의도 ↔ 자동화 자유도 (& 의도를 직접 반영하기가 어려움)
+결정성 ↔ 무작위성의 풍부함 (& 예측 어려움 = 고치고 싶은 부분을 직접 고치기 어려움)
+런타임 비용 ↔ 결과 품질 ( = 더 많이 계산할수록 향상)
+단순한 규칙 ↔ 풍부한 출력 (& 복잡한 DSL)
+
+---
+
+핵심 아이디어
+
+
+결정성
+
+같은 입력 (Seed + Rule + Input Data) → 같은 출력 (Deterministic Output)
+이게 깨지면 디버깅·네트워크·QA·체크포인트·shared-seed 멀티플레이가 모두 무너짐
+PCG의 랜덤은 번호가 붙은 우연
+
+
+계층적 노이즈
+
+균일 노이즈는 "soup" — 어디를 봐도 똑같음 -> weighting, bias 의 필요
+자연은 다중 스케일
+큰 진폭의 저주파 + 절반 진폭의 2배 주파수 + 1/4 진폭의 4배 주파수 + ... = 자연스러운 텍스처
+
+
+Domain warping
+
+함수 합성이 "변주"의 본질. 단순한 함수를 자기 자신에 먹여 복잡함을 증폭. fractal과 같은 원리
+noise(p + noise(p))
+
+
+계층의 황금률
+
+작은 디테일은 많고 약하게, 큰 구조는 적고 강하게
+음악도 같음 — 큰 흐름이 강해야 작은 변주가 의미를 가짐
+
+
+---
+
+RNG (Random Number Generator)
+특정 "Seed" 값을 입력하면 결정론적으로 예측 가능한 난수 열을 만들어냅니다
+
+
+L-system, Lindenmayer System
+식물의 성장 과정을 수학적으로 모델링하기 위해 고안한 시스템입니다
+주로 나무, 꽃, 수풀 같은 식물 그래픽을 생성할 때 사용
+
+
+GA (Genetic Algorithm)
+생물의 진화 과정을 모방하여 선택, 교차, 변이 과정을 거쳐 최적의 해(콘텐츠)를 찾아냅니다
+예를 들어, 특정 난이도를 만족하는 던전 구조를 진화시키는 방식에 쓰입니다.
+
+
+Simulated Annealing
+무작위적인 변화를 시도하되, 초기에는 큰 변화를 허용하고 
+시간이 갈수록 세밀한 조정을 통해 최적의 상태로 수렴하게 만듭니다
+
+
+WFC (Wave Function Collapse)
+모든 가능성이 열려 있는 상태에서 인접한 타일과의 제약 조건에 따라 가능성을 하나씩 제거하며 
+최종적인 패턴을 확정 짓습니다
+
+
+CSP (Constraint Satisfaction Problem)
+변수들이 가질 수 있는 값의 범위 내에서 모든 제약 조건을 만족하는 조합을 찾는 수학적 문제입니다
+
+
+ASP (Answer Set Programming)
+선언적 논리 프로그래밍의 일종
+복잡한 제약 조건을 논리식으로 기술하면 컴퓨터가 이를 만족하는 해(콘텐츠 모델)를 자동으로 찾아줍니다.
+
+
+GAN (Generative Adversarial Network)
+생성자(Generator)와 감별자(Discriminator)라는 두 모델이 서로 경쟁
+
+
+VAE (Variational Autoencoder)
+입력 데이터를 압축하여 잠재 공간(Latent Space)을 학습한 뒤,
+이 공간의 수치를 조정하여 새로운 데이터를 생성합니다
+
+---
+---
+---
+
+Domain
+  ↓
+Sample
+  ↓
+Point / Candidate
+  ↓
+Attribute / Metadata
+  ↓
+Filter / Rule / Constraint
+  ↓
+Realize
+  ↓
+World Object
+
+
+Domain
+어디에서 생성할 것인가?
+
+
+Sample
+후보를 어떻게 뽑을 것인가?
+격자, 랜덤, Poisson disk, 텍스쳐 샘플링
+
+
+Point
+아직 물체는 아니지만 배치 후보
+위치, 회전, 스케일, 밀도
+
+
+Attribute
+후보점에 붙은 의미
+biome=forest, slope=0.2, wetness=0.8
+
+
+Filter
+무엇을 제거할 것인가?
+경사 심하면 제거, 물속이면 제거, 길 근처면 제거
+
+
+Transform
+후보를 어떻게 변형할 것인가?
+랜덤 회전, 크기 변화, 지면에 정렬
+
+
+Realize
+후보를 무엇으로 만들 것인가?
+Static Mesh, Actor, foliage instance, decal, sound
+
+---
+
+여기에 집.
+여기에 나무.
+여기에 가로등.
+여기에 벤치.
+
+vs
+
+상업구역은 큰 도로 근처에 둔다.
+주거구역은 소음이 낮은 곳에 둔다.
+공원은 물가와 인접하면 좋다.
+큰 나무는 건물 입구를 막으면 안 된다.
+가로등은 길을 따라 일정 간격으로 둔다.
+바위는 경사면에 더 자주 둔다.
+
+
+Object Thinking
+  “이 나무를 어디에 둘까?”
+
+PCG Thinking
+  “나무가 생겨도 되는 장소란 무엇인가?”
+  
