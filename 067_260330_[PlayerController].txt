@@ -1,0 +1,357 @@
+
+"앞으로 1"이라는 값이 게임 월드의 어느 방향인지는 이 값 안에 없다
+입력 신호는 본질적으로 **무방향(directionless)**이다
+이것을 월드 공간의 3D 이동 벡터로 변환하려면 기준 좌표계가 필요하다
+
+[입력 공간]          [컨트롤 공간]          [월드 공간]
+FVector2D            AController            UWorld
+(-1 ~ 1, -1 ~ 1)     ControlRotation        X, Y, Z 절대 좌표
+"얼마나"             "어느 방향이 앞인가"   "실제로 어디로"
+
+GetControlRotation()
+캐릭터의 방향이 아니라 컨트롤러의 방향
+플레이어가 카메라로 바라보고 있는 방향
+
+Pitch = 0 
+Pitch를 0으로 강제하는 것은 "수평면에 투영한다"는 의미다
+캐릭터는 어디를 바라보든 수평으로만 이동한다
+
+ControlRotation (원본)           ControlRotation (처리 후)
+Pitch: 30° (위 바라봄)     →     Pitch: 0°
+Yaw:   45° (북동쪽)        →     Yaw:  45°
+Roll:  0°                  →     Roll: 0°
+
+ControlRot.Vector()
+→ Yaw 방향의 단위 전방 벡터
+   "내가 바라보는 방향이 월드에서 어느 쪽인가"
+
+ControlRot.RotateVector(FVector::RightVector)
+→ 전방 벡터에 수직인 우측 벡터
+   "내가 바라보는 방향 기준으로 오른쪽이 월드에서 어느 쪽인가"
+
+FVector::RightVector는 엔진 기본 좌표계의 오른쪽(Y축)
+이것을 컨트롤 회전으로 돌려야 비로소 현재 시점 기준의 오른쪽이 된다
+
+플레이어가 북쪽을 바라볼 때의 오른쪽(동쪽)과 
+동쪽을 바라볼 때의 오른쪽(남쪽)은 다르기 때문이다
+
+SpringArm의 bUsePawnControlRotation = true
+"카메라는 컨트롤러 회전을 따른다"는 선언
+
+플레이어가 마우스를 오른쪽으로 돌림
+    ↓
+Controller::ControlRotation이 바뀜
+    ↓
+SpringArm이 그 회전을 따라감 → 카메라가 오른쪽으로 돌아감 (시각)
+Move()에서 GetControlRotation()이 새 값을 가져옴 → 이동 기준도 바뀜 (이동)
+
+---
+
+입력을 이동 시스템이 이해할 수 있는 월드 방향 벡터로 번역하는 번역과정
+
+W     -> ( +1,  0 )
+S     -> ( -1,  0 )
+D     -> (  0, +1 )
+A     -> (  0, -1 )
+W+D   -> ( +1, +1 )
+
+아직은 이것이 “월드 방향”이 아니라
+플레이어 입력 공간의 2D 축값
+
+---
+
+GetControlRotation()
+현재 Controller가 바라보는 회전
+
+이 회전이 보통
+  캐릭터 몸의 회전
+  카메라 컴포넌트(시선)의 로컬 회전
+와 같은 것아 아닐 수 있다
+
+---
+
+ControlRot.Pitch = 0.0f;
+카메라를 위로 올려다보면
+원래 ControlRot에는 Pitch가 들어 있어요
+
+그 상태로 forward 벡터를 쓰면
+앞 방향이 위 성분이 섞이게 돼요
+
+카메라가 보는 방향을 
+바닥면에 투영한 수평 방향으로 간다
+
+"시선의 상하각은 조준/카메라용이고,
+이동 방향은 수평면 위에서만 뽑아라."
+
+---
+
+AddMovementInput(ControlRot.Vector(), InputValue.X)
+
+ControlRot.Vector()는 그 회전이 가리키는
+forward unit vector를 돌려줘요
+
+InputValue.X를 곱해
+앞/뒤 입력을 그 방향에 실어요
+
+---
+
+ControlRot.RotateVector(FVector::RightVector)
+
+RightDirection = FVector::RightVector는 기본 오른쪽 축이고,
+그걸 ControlRot으로 회전시켜서
+현재 시선 기준의 오른쪽 벡터로 바꾸는 거예요
+
+"지금 카메라 기준 앞"
+"지금 카메라 기준 오른쪽"
+
+---
+
+AddMovementInput(RightDirection, InputValue.Y);
+이제 좌/우 입력을 그 오른쪽 축에 실어요.
+
+결과적으로 캐릭터는
+카메라 기준 평면 좌표계에서 움직이게 돼요.
+
+---
+
+AddMovementInput는 “즉시 이동”이 아니에요
+“이번 프레임에 이 방향으로 이동하고 싶다”
+이 의도를 CharacterMovementComponent 쪽에 넘겨두는 거예요
+
+그 뒤에 실제 이동은 CharacterMovement가 처리해요.
+  acceleration
+  max walk speed
+  braking
+  falling
+  collision sweep
+  slide along surface
+  step up
+
+---
+---
+---
+
+1 컴포넌트 계층(Transform Inheritance)
+
+Capsule (RootComponent)
+  └─ SpringArm
+      └─ Camera
+부모의 월드 Transform이 자식에게 전파된다.
+
+2 ControlRotation (계층 외부)
+
+AController::ControlRotation
+마우스/입력이 직접 구동하는 독립적인 회전값.
+컴포넌트 트리 어디에도 속하지 않는다
+
+bUsePawnControlRotation은 
+"나는 부모로부터 회전을 상속받는 대신, ControlRotation을 직접 구독하겠다"는 
+계층 이탈 선언이다
+
+---
+
+SpringArm의 bUsePawnControlRotation = true
+SpringArm의 월드 회전이 ControlRotation을 따른다
+마우스가 움직이면 SpringArm 전체(+그 아래의 Camera 포함)가 그 방향으로 돌아간다
+
+CameraComponent의 bUsePawnControlRotation = true
+Camera 자신이 ControlRotation을 직접 구독한다
+SpringArm으로부터 상속받은 회전을 무시하고 ControlRotation으로 덮어쓴다.
+
+---
+
+[Scene hierarchy: 공간 트리]
+Capsule
+  └─ SpringArm
+       └─ Camera
+
+[View/Control hierarchy: 시선 트리]
+PlayerController
+  └─ ControlRotation
+        └─ Pawn이 필요하면 참조
+              └─ SpringArm / Camera가 필요하면 참조
+
+Camera는 Scene hierarchy 상으로는 SpringArm의 자식이지만
+회전의 원천은 반드시 부모 SpringArm만인 것이 아니라, 
+옵션에 따라 Pawn/Controller의 ControlRotation에 연결할 수도 있어요
+
+---
+
+SpringArm이 카메라 리그의 기준 회전을 
+자기 RelativeRotation에서 가져올까, 
+아니면 Pawn의 view/control rotation에서 가져올까
+
+---
+
+ActorRotation = 몸체가 향한 방향
+ControlRotation = 플레이어/컨트롤러의 시선·조준 방향
+
+Scene Component는 부모-자식 transform 합성
+
+---
+
+PlayerController        
+|
+|──Possess──→  BP_PlayerCharacter
+|
+|──Unpossess──→ (몸을 버림)
+|
+|──Possess──→  BP_Vehicle  (다른 몸으로 이동)
+
+[Pawn 위의 CameraComponent]        
+씬 컴포넌트
+눈알의 위치
+
+[Controller 위의 PlayerCameraManager]
+추상 관리자
+
+PlayerCameraManager는 매 프레임 "현재 ViewTarget이 무엇인가"를 묻는다
+Possess된 Pawn이 ViewTarget이 되고
+CameraManager는 그 Pawn에서 CameraComponent를 찾아 
+그 위치와 회전을 받아들인다
+
+그런 다음 카메라 쉐이크, 시야각 블렌딩, 페이드 같은 처리를 추가해서 
+최종 뷰를 확정한다.
+
+입력(마우스)
+    ↓
+Controller::ControlRotation 갱신
+    ↓
+SpringArm이 ControlRotation을 구독 → CameraComponent의 위치/회전 결정
+    ↓
+PlayerCameraManager가 CameraComponent의 Transform을 ViewTarget으로 채택
+    ↓
+렌더러에 최종 뷰 전달
+
+---
+
+이 분리가 없었다면 카메라 연출이 불가능했다. 
+컷씬에서 카메라가 캐릭터 몸 밖으로 날아가야 할 때, 
+피격 시 카메라 쉐이크를 넣어야 할 때, 
+두 카메라 사이를 블렌딩해야 할 때
+
+"몸에 붙은 CameraComponent를 직접 건드리지 않고 
+PlayerCameraManager 레이어에서 처리"함으로써 가능해진다
+
+---
+
+PlayerController
+입력을 받는 쪽
+시선/조준 방향(ControlRotation)을 가지는 쪽
+무엇을 보고 있는지(View Target)를 관리하는 쪽
+
+PlayerCharacter
+
+---
+
+PlayerController
+  has PlayerCameraManager
+  , a virtual eyeball
+
+CameraComponent
+Actor 안에 있는 카메라 후보
+
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+
+
+`UInputComponent`는 **Pawn의 컴포넌트**다.
+Pawn이 교체될 때 입력 바인딩도 함께 교체되어야 하기 때문이다.
+
+PlayerController가 살아있는 동안:
+    처음엔 SoldierCharacter를 빙의  → 총 쏘기, 달리기 바인딩
+    나중엔 VehicleCharacter를 빙의  → 가속, 핸들 바인딩
+
+입력 바인딩이 PlayerController에 고정되어 있다면 
+Pawn이 바뀔 때마다 PlayerController의 바인딩을 수동으로 해제하고 재설정해야 한다
+
+InputComponent가 Pawn에 속하면 UnPossess 시 자동으로 사라지고, 
+새 Pawn을 빙의할 때 `SetupPlayerInputComponent`가 다시 호출되어 자동으로 재설정된다
+
+PlayerController는 **입력이 어디로 가는지**를 결정한다. 
+Pawn은 **입력이 왔을 때 무엇을 하는지**를 결정한다.
+
+PlayerController: "지금 이 입력을 Pawn에게 전달할 것인가, 
+                   아니면 UI에게 전달할 것인가, 
+                   아니면 무시할 것인가"
+
+Pawn/Character:   "MoveForward 입력이 왔을 때 
+                   나는 앞으로 이동한다"
+
+// 게임 중 — 입력이 Pawn으로 간다
+PlayerController->SetInputMode(FInputModeGameOnly());
+
+// UI 열렸을 때 — 입력이 UI로 간다
+PlayerController->SetInputMode(FInputModeUIOnly());
+
+---
+
+F-16의 조작법 ← 기체(Character)가 정의
+헬기의 조작법 ← 기체(Character)가 정의
+탱크의 조작법 ← 기체(Character)가 정의
+
+---
+
+입력 장치(패드/키보드/마우스)
+    ↓
+Viewport / Local Player
+    ↓
+UPlayerInput  (PlayerController 안, 클라이언트 측)
+    ↓
+PlayerController
+    ↓
+Possess 중인 Pawn / Character
+    ↓
+Movement / Action / Interaction / Animation
+    ↓
+PlayerState / GameState / World 쪽 결과 반영
+
+---
+
+PlayerController는 “플레이어 쪽 연속성”, 
+Pawn은 “월드 안의 몸체”를 대표합니다
+
+---
+
+왜 RPC 라우팅의 기준인가?
+"클라이언트 A에게 RPC를 보낸다"는 것은 "클라이언트 A의 NetConnection으로 패킷을 보낸다"는 것이다. 
+PlayerController가 그 NetConnection의 화신이므로 Owner 체인의 루트가 된다.
+
+PlayerController
+물건(noun) 이 아니라 경계(boundary) 이다
+Pawn과 인간 플레이어 사이의 인터페이스
+
+---
+
+인간 캐릭터를 조종한다
+자동차를 탄다
+자동차가 터져서 내려온다
+죽어서 spectate 상태가 된다
+다시 respawn한다
+
+이때 무엇이 계속 같아야 하나요?
+
+같은 키보드/패드 입력을 받는 주체
+같은 화면과 HUD를 보는 주체
+같은 카메라 규칙을 가진 주체
+같은 로컬 플레이어 세션
+같은 네트워크 owner 통로
+
+---
+
+맵 전환 시 PlayerController가 죽기 전에 저장해야 할 것들을 UGameInstance로 피신시킨다. 
+그리고 새 PlayerController가 생성되면 UGameInstance에서 복원한다.
+
+PlayerController가 ULevel 아래 있는 것은 개념적 귀속이 아니라 기술적 귀속이다.
+의미론적으로 PlayerController는 분명히 월드 전체 스코프에 가까워요
+
+의미상으로는 “한 플레이어의 현재 월드 접속점”인데, 
+저장/거주 구조상으로는 그냥 Actor이기 때문에 Level 아래에 들어가는 거예요

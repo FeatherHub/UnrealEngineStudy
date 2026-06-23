@@ -1,0 +1,522 @@
+레벨은 .umap 파일로 저장된다
+UPackage 포맷
+
+BP_ProjectileSpammer.umap:
+
+[Actor 인스턴스 1]
+  클래스 경로: "/Game/Blueprints/BP_ProjectileSpammer.BP_ProjectileSpammer_C"
+  프로퍼티 (CDO와 다른 값만):
+    Transform: (X=100, Y=200, Z=0)
+    FireRate: 3.0   ← CDO는 1.0이었는데 에디터에서 바꾼 값
+
+"/Game/Blueprints/BP_ProjectileSpammer.BP_ProjectileSpammer_C"
+. 이전: uasset 파일 경로
+. 이후: 그 안에 있는 FName
+
+인스턴스의 메모리 주소를 저장할 수 없다
+다음에 에디터를 열면 주소가 바뀌기 때문이다
+그래서 경로 문자열로 저장한다
+
+---
+
+.umap (레벨)
+  └─ 의존 → BP_ProjectileSpammer.uasset
+                  └─ 의존 → 부모 C++ 클래스가 있는 게임 모듈 DLL
+
+레벨을 로드하려면 BP uasset이 먼저 로드되어야 하고, 
+BP uasset을 로드하려면 게임 모듈 DLL이 먼저 로드되어 있어야 한다
+
+---
+---
+---
+---
+---
+---
+
+에디터:
+.uproject 파싱
+  "Modules": ["ActionRoguelike", "ActionRoguelikeEditor"]
+        │
+        ├─ FModuleManager::LoadModule("ActionRoguelike")
+        │     └─ LoadLibraryW("UnrealEditor-ActionRoguelike.dll")
+        │           └─ ProcessNewlyLoadedUObjects()
+        │                 ├─ ABP_PlayerCharacter의 C++ 부모 UClass 등록
+        │                 ├─ ABP_ExplosiveBarrel 부모 UClass 등록
+        │                 └─ ... 모든 C++ 클래스 UClass + CDO 생성
+        │
+        └─ FModuleManager::LoadModule("ActionRoguelikeEditor")
+              └─ 에디터 전용 커스터마이징 코드 로드
+                 (커스텀 Detail Panel, Asset Factory 등)
+
+패키징 게임:
+모듈 DLL이 따로 없다
+엔진 + 게임 코드가 정적 링크된 단일 바이너리
+→ 프로세스 시작 시 .CRT$XCU에서 이미 전부 등록됨
+→ FModuleManager::LoadModule() 호출 자체가 없음
+
+---
+
+에디터:
+
+Content/ 폴더 전체 스캔
+        │
+        ├─ BP_ExplosiveBarrel.uasset 발견 → 메타데이터 수집
+        ├─ BP_HealthPickup.uasset 발견
+        └─ ...
+
+실제 에셋 데이터는 아직 메모리에 없음
+"어떤 에셋이 어디 있는지"의 맵만 구성
+→ Content Drawer가 즉시 목록을 보여줄 수 있는 이유
+
+패키징 게임:
+
+Content/ 폴더가 없다
+쿠킹된 에셋들이 .pak 파일 안에 압축되어 있음
+→ Asset Registry도 .pak에서 미리 구운 버전을 로드
+→ 파일시스템 스캔 없음
+
+---
+
+GEngine 생성
+
+에디터:
+
+UUnrealEdEngine 생성      ← UEditorEngine의 서브클래스
+        │
+        ├─ 에디터 전용 서브시스템들 초기화
+        ├─ 뷰포트 관리자
+        ├─ 트랜잭션 시스템 (Ctrl+Z Undo 스택)
+        └─ Asset 임포트 파이프라인
+
+패키징 게임:
+
+UGameEngine 생성          ← 에디터 코드 전혀 없음
+        │
+        └─ WITH_EDITOR 매크로로 감싸진
+           수천 줄의 에디터 코드가 컴파일 자체에서 제외됨
+
+---
+
+Slate + 레벨 로드
+
+에디터:
+FSlateApplication 초기화
+        │
+        ├─ 에디터 메인 윈도우 생성
+        │     Outliner, Details, Content Drawer, Viewport 패널들
+        │
+        └─ 이전 세션 레이아웃 복원 (.ini에서)
+
+레벨 로드: P_OpenWorldTestMap.umap
+        │
+        ├─ FLinkerLoad로 .umap 역직렬화
+        │
+        ├─ UBlueprintGeneratedClass 조회/로드
+        │     "/Game/Blueprints/BP_ExplosiveBarrel.BP_ExplosiveBarrel_C"
+        │     "/Game/Blueprints/BP_PlayerCharacter.BP_PlayerCharacter_C"
+        │     "/Game/Blueprints/BP_ItemChest.BP_ItemChest_C"
+        │     ... Outliner에 보이는 BP 액터들 전부
+        │
+        ├─ 각 BP uasset 로드
+        │     ├─ UBlueprint 객체 (노드 그래프)    ← 에디터 전용
+        │     └─ UBlueprintGeneratedClass 객체     ← 런타임 타입 기술자
+        │           UFunction 바이트코드 복원
+        │           FProperty 목록 복원
+        │           CDO 복원
+        │
+        └─ 액터 인스턴스 생성 (155 actors)
+              DirectionalLight, SkyAtmosphere, Landscape...
+              BP_ExplosiveBarrel (여러 개)
+              BP_HealthPickup, BP_ItemChest...
+              ← CDO를 원형으로 생성 후 delta 값 역직렬화
+
+패키징 게임:
+
+FSlateApplication 초기화
+        │
+        └─ 게임 전용 윈도우만. 에디터 패널 없음.
+
+레벨 로드
+        │
+        ├─ .pak에서 쿠킹된 .umap 로드
+        │
+        ├─ UBlueprintGeneratedClass만 로드
+        │     UBlueprint(노드 그래프) 없음 → 메모리 절약
+        │
+        └─ 액터 인스턴스 생성
+              에디터와 동일한 경로지만
+              쿠킹된 포맷이므로 역직렬화가 훨씬 빠름
+
+---
+
+class UEngine : public UObject
+{
+    // 뷰포트 관리의 공통 인터페이스
+    TArray<FWorldContext> WorldList;     // 존재하는 모든 World 목록
+    UGameViewportClient* GameViewport;  // 게임 뷰포트 클라이언트
+
+    // 렌더링 공통
+    TObjectPtr<UFont> TinyFont;
+    TObjectPtr<UMaterial> DefaultMaterial;
+
+    // Tick의 공통 진입점
+    virtual void Tick(float DeltaSeconds, bool bIdleMode) = 0;
+};
+
+struct FWorldContext
+{
+    EWorldType::Type WorldType;
+    //  Editor      ← 에디터 뷰포트가 보여주는 World
+    //  PIE         ← Play In Editor World
+    //  Game        ← 패키징 게임의 단일 World
+    //  EditorPreview ← 머티리얼 프리뷰, 썸네일 등
+
+    UWorld* ThisCurrentWorld;
+    TArray<ULocalPlayer*> LocalPlayers;
+    FSlatePlayInEditorInfo PIELoginInfo;
+};
+
+패키징 게임은 `FWorldContext`가 딱 하나다. 타입은 `Game`.
+에디터는 동시에 여러 개를 들고 있다:
+
+WorldList[0]: FWorldContext (Editor)
+                └─ P_OpenWorldTestMap (에디터 뷰포트용)
+
+WorldList[1]: FWorldContext (PIE)
+                └─ P_OpenWorldTestMap 복제본 (PIE용)
+
+WorldList[2]: FWorldContext (EditorPreview)
+                └─ 머티리얼 에디터 프리뷰 씬
+
+---
+
+UGameEngine
+    │
+    ├─ FWorldContext 하나 (Game)
+    │
+    ├─ UGameViewportClient 하나
+    │     └─ 화면 전체 = 게임 뷰포트
+    │
+    └─ Tick()
+          └─ 단일 World만 Tick
+
+OS 윈도우
+    │
+    └─ 전체 영역 = UGameViewportClient
+            │
+            └─ 게임 렌더링 출력
+            └─ HUD / UMG 위젯
+
+---
+
+UEditorEngine
+    │
+    ├─ WorldList (여러 FWorldContext)
+    │
+    ├─ 에디터 뷰포트들 (FEditorViewportClient)
+    │     ├─ Perspective 뷰포트
+    │     ├─ Top 뷰포트
+    │     ├─ Front 뷰포트
+    │     └─ Side 뷰포트
+    │     (각각 독립적인 카메라, 렌더링 설정)
+    │
+    ├─ PIE 전용 UGameViewportClient (PIE 시작 시 생성)
+    │
+    └─ Tick()
+          ├─ 에디터 World Tick
+          └─ PIE World Tick (PIE 실행 중일 때만)
+
+
+OS 윈도우 (Slate)
+    │
+    ├─ 에디터 레이아웃 (Slate 패널들)
+    │     ├─ Outliner
+    │     ├─ Details
+    │     ├─ Content Drawer
+    │     └─ FEditorViewportClient (에디터 뷰포트)
+    │           │
+    │           └─ 에디터 World를 렌더링
+    │                 그리드, 기즈모, 선택 아웃라인 등
+    │                 WITH_EDITOR 전용 렌더링 패스 포함
+    │
+    └─ PIE 윈도우 (PIE 실행 시 추가)
+            │
+            └─ UGameViewportClient (게임 뷰포트)
+                    │
+                    └─ PIE World를 렌더링
+
+---
+
+FEditorViewportClient                UGameViewportClient
+─────────────────────────────────────────────────────────
+에디터 전용                           게임/PIE 전용
+그리드, 기즈모, 선택 표시             HUD, UMG, 크로스헤어
+카메라 자유 이동 (WASD)              PlayerController가 카메라 제어
+여러 개 동시 존재 가능               하나만 존재
+씬 캡처 → GBuffer 직접 접근          게임 렌더링 파이프라인
+WITH_EDITOR 코드                     WITH_EDITOR 없음
+
+---
+
+UEditorEngine::StartPlayInEditorSession()
+        │
+        ├─ 에디터 World 직렬화
+        │     (현재 레벨 상태를 바이너리로 추출)
+        │
+        ├─ 새 FWorldContext 생성 (타입: PIE)
+        │
+        ├─ PIE World 생성
+        │     UEngine::CreatePIEWorldByDuplication()
+        │     └─ 에디터 World의 액터들을 복제
+        │           같은 UBlueprintGeneratedClass 공유
+        │           액터 인스턴스만 새로 생성
+        │
+        ├─ UGameViewportClient 생성 (PIE 전용)
+        │     └─ Slate에 PIE 윈도우/패널 추가
+        │
+        ├─ ULocalPlayer 생성
+        │     └─ PlayerController 스폰 → Pawn 스폰
+        │
+        └─ InitializeActorsForPlay()
+
+---
+
+UEditorEngine               ← PIE, 뷰포트, World 관리
+    │
+    └─ UUnrealEdEngine      ← 실제 편집 도구들
+            │
+            ├─ 트랜잭션 시스템 (Ctrl+Z, Undo/Redo)
+            │     FTransaction, UTransactor
+            │
+            ├─ 선택 관리
+            │     USelection (액터 선택 상태)
+            │
+            ├─ 에디터 모드 시스템
+            │     FEdMode (이동/회전/스케일/랜드스케이프 편집 등)
+            │
+            └─ 빌드 시스템
+                  라이팅 빌드, NavMesh 빌드, HLOD 빌드
+
+---
+---
+---
+---
+---
+---
+
+Slate가 아는 것은 "이 영역에 외부 렌더링 결과물을 붙여넣어라"는 것뿐이다
+그 인터페이스가 SViewport다:
+
+SWidget (모든 Slate 위젯의 베이스)
+    │
+    └─ SViewport          ← "여기에 렌더링 결과를 붙여넣는 슬롯"
+            │
+            └─ FViewportClient* ← 실제 렌더링 담당자에 대한 포인터
+                                   Slate는 이것이 누군지 모른다
+
+SViewport는 자신의 영역 크기와 위치만 알고 있다.
+
+FSlateApplication (싱글턴)
+    │
+    ├─ OS 윈도우 A (메인 에디터 윈도우)
+    │       │
+    │       └─ SWindow
+    │               └─ SDockTab 시스템
+    │                       ├─ 레벨 에디터 탭
+    │                       │       └─ SLevelViewport
+    │                       │               └─ SViewport ← 메인 뷰포트
+    │                       │                       └─ FEditorViewportClient*
+    │                       │
+    │                       └─ Outliner 탭, Details 탭 ...
+    │
+    ├─ OS 윈도우 B (Viewport 3 플로팅 윈도우)
+    │       │
+    │       └─ SWindow
+    │               └─ SLevelViewport
+    │                       └─ SViewport ← Viewport 3
+    │                               └─ FEditorViewportClient* (별도 인스턴스)
+    │
+    └─ OS 윈도우 C (머티리얼 에디터 윈도우)
+            │
+            └─ SWindow
+                    └─ SMaterialEditor
+                            └─ SViewport ← 프리뷰 구체
+                                    └─ FMaterialEditorViewportClient*
+                                           (FEditorViewportClient 서브클래스)
+
+Viewport 3이 별도 OS 윈도우로 분리될 수 있는 이유
+Slate의 탭 시스템이 SDockTab을 독립 SWindow로 분리(undock)하는 것을 지원
+
+FViewportClient 계층 — 렌더링 요청자
+
+FViewportClient
+    │
+    ├─ FEditorViewportClient        ← 에디터 뷰포트 전담
+    │       │
+    │       ├─ FLevelEditorViewportClient   ← 레벨 에디터 (메인 + Viewport 3)
+    │       └─ FMaterialEditorViewportClient ← 머티리얼 에디터 프리뷰
+    │
+    └─ UGameViewportClient          ← 게임/PIE 전담 (UObject)
+
+층위 3: FViewport — OS 윈도우와 렌더 타겟의 연결
+
+SViewport(Slate)와 FViewportClient(렌더링 요청자) 사이에 FViewport가 있다
+
+SViewport (Slate 위젯)
+    │
+    └─ FViewport (렌더 타겟 + 입력 라우터)
+            │
+            ├─ FRenderTarget    ← 렌더링 결과가 써지는 텍스처
+            ├─ 크기, 해상도
+            └─ FViewportClient* → 실제 렌더링 요청자
+
+FViewport는 "이 크기의 렌더 타겟을 들고 있고, 
+렌더링이 필요하면 FViewportClient에게 위임한다"는 중개자다.
+
+층위 4: 렌더링 파이프라인 — FSceneView가 실제 그림을 그린다
+
+매 프레임 각 FViewportClient::Draw()가 호출되면:
+
+FViewportClient::Draw(FViewport*, FCanvas*)
+        │
+        ├─ FSceneViewFamily 구성
+        │       "이번 프레임에 렌더링할 뷰들의 묶음"
+        │
+        ├─ FSceneView 구성 (ViewFamily에 추가)
+        │       ├─ ViewMatrix     ← 카메라 위치/방향
+        │       ├─ ProjectionMatrix ← FOV, 종횡비
+        │       ├─ ViewRect       ← 화면의 어느 영역에 그릴지
+        │       └─ ShowFlags      ← 그리드, 기즈모, 와이어프레임 등
+        │
+        └─ GetRendererModule().BeginRenderingViewFamily(&ViewFamily)
+                │
+                └─ 렌더링 스레드에 명령 제출
+
+메인 뷰포트와 Viewport 3은 둘 다 P_OpenWorldTestMap을 보고 있다. 
+같은 UWorld를 두 카메라로 보는 것이다:
+
+렌더링 스레드:
+    FScene (UWorld의 렌더링 측 대리자)
+        │
+        ├─ FSceneView (메인 뷰포트 카메라)
+        │       └─ FScene 안의 모든 Proxy를 이 카메라로 렌더링
+        │
+        └─ FSceneView (Viewport 3 카메라)
+                └─ FScene 안의 모든 Proxy를 저 카메라로 렌더링
+
+FScene은 하나지만 FSceneView는 여럿이다
+
+머티리얼 에디터 뷰포트는 메인 레벨과 완전히 다른 UWorld를 들고 있다
+
+WorldList:
+    FWorldContext (Editor)        → P_OpenWorldTestMap의 UWorld
+    FWorldContext (EditorPreview) → 머티리얼 프리뷰 전용 UWorld
+
+FEngineLoop::Tick()
+        │
+        ├─ UUnrealEdEngine::Tick()
+        │       └─ 각 FEditorViewportClient::Tick()
+        │               └─ 카메라 이동, 기즈모 계산
+        │
+        ├─ FSlateApplication::Tick()
+        │       └─ 모든 SViewport에 대해
+        │               └─ FViewport::Draw() 호출
+        │                       └─ FViewportClient::Draw()
+        │                               └─ FSceneView 구성
+        │                               └─ 렌더링 명령 제출
+        │
+        └─ 렌더링 스레드
+                └─ 제출된 FSceneViewFamily들을 순서대로 처리
+                        ├─ 메인 뷰포트 렌더링 → 렌더 타겟 A
+                        ├─ Viewport 3 렌더링  → 렌더 타겟 B
+                        └─ 머티리얼 프리뷰    → 렌더 타겟 C
+
+Slate 합성:
+        렌더 타겟 A → SViewport A 영역에 붙임
+        렌더 타겟 B → SViewport B 영역에 붙임
+        렌더 타겟 C → SViewport C 영역에 붙임
+        └─ 최종 화면 출력 
+
+---
+---
+---
+---
+---
+---
+
+"Slate" 라는 이름 아래 있는 것들:
+
+FSlateApplication      ← 싱글턴. 이 시스템 전체의 관제탑.
+SWidget과 그 서브클래스들 ← UI 위젯 계층
+FSlateRenderer         ← Slate가 렌더링 스레드에 그림을 그리는 방법
+FSlateWindowElementList ← 한 프레임에 그릴 드로우 콜 목록
+
+FSlateApplication과 Slate의 관계는 엔진과 FEngineLoop의 관계와 비슷하다
+FSlateApplication이 Slate 시스템의 실질적 진입점이자 생명주기 관리자다
+
+FSlateApplication (싱글턴)
+    │
+    ├─ 모든 SWindow 목록 관리
+    ├─ OS 메시지(마우스, 키보드) 수신 → 적절한 위젯으로 라우팅
+    ├─ 매 프레임 모든 위젯 Tick
+    ├─ 매 프레임 모든 위젯 Paint → 드로우 콜 생성
+    └─ FSlateRenderer를 통해 렌더링 스레드에 제출
+
+SWindow와 SViewport는 둘 다 SWidget의 서브클래스다
+
+SWidget                          ← 모든 Slate 위젯의 베이스
+    │                               크기, 위치, 이벤트 처리의 공통 인터페이스
+    │
+    ├─ SWindow                   ← OS 창(HWND)을 감싸는 Slate 위젯
+    │       │                       HWND를 소유
+    │       │                       Slate 트리의 루트 노드
+    │       └─ (소유 위젯들)
+    │               └─ SDockTab
+    │                       └─ SLevelViewport
+    │                               └─ SViewport  ←┐
+    │                                              │
+    └─ SViewport                 ← "이 영역은 외부 렌더링 결과물을 표시"
+                                    렌더링 자체는 모름
+                                    FViewport*를 통해 렌더링 결과를 받아 표시
+
+SWindow의 특별한 점은 SWidget이면서 동시에 OS 창과 1:1 대응한다는 것이다
+다른 위젯들은 순수 Slate 개념이지만, SWindow는 HWND라는 OS 자원을 들고 있다
+
+SViewport의 특별한 점은 자신의 영역에 직접 그림을 그리지 않는다는 것이다.
+"이 사각형 영역에 외부 렌더링 결과를 붙여넣는 창구" 역할만 한다.
+
+FViewport는 Slate와 렌더링의 경계에 있는 중개자다
+Slate로부터 "이 크기로 그려줘"를 받고,
+FViewportClient에게 실제 렌더링을 위임하고
+결과 텍스처를 다시 Slate에 돌려준다
+
+SViewport (Slate 위젯)
+    │
+    └─ FViewport
+            │                          
+            └─ FViewportClient*
+
+FEditorViewportClient    → 일반 C++ 객체
+    소유자: SEditorViewport (Slate 위젯)
+    생명주기: Slate 탭의 생명주기와 동기화
+    탭 닫히면 소멸. GC 불필요.
+    에디터 전용 → 패키징 게임에 없음 → UObject 인프라 낭비
+
+UGameViewportClient      → UObject
+    소유자: UEngine::GameViewport (TObjectPtr)
+    생명주기: 엔진의 생명주기와 동기화
+    GC 추적 필요한 이유:
+        → ULocalPlayer들을 UPROPERTY로 들고 있음
+        → UWorld와 연결됨
+        → 네트워크 시스템과 연결됨
+        → 이 연결들이 GC 추적 대상
+
+UWorld는 게임 스레드에 산다
+그런데 렌더링은 별도 렌더링 스레드에서 돌아간다
+
+FScene은 UWorld의 렌더링 측 대리자다
+UWorld가 여럿이면 FScene도 여럿이다
+
+UStaticMeshComponent가 에디터에서 이동하면, 
+게임 스레드가 렌더링 스레드에 
+"이 Proxy의 Transform을 업데이트해라"는 명령을 큐에 넣는다.
