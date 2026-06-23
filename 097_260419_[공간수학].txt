@@ -1,5 +1,3 @@
-
-
 Cross product a × b는 ℝ³ 안의 벡터를 내놓는다
 
 Wedge product a ∧ b는 Λ²(V) 공간의 원소를 내놓는다. (bivector 공간)
