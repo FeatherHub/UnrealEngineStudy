@@ -190,66 +190,18 @@ IR 레벨에서 dead code 제거, 상수 접기 등의 작업을 할 수 있고
 
 ---
 
----
+UAnimBlueprintGeneratedClass 는 UBlueprintGeneratedClass → UClass → UStruct → UField → UObject 계층에 속한다.
 
----
 
----
+UAnimBlueprintGeneratedClass 의 어느 한 인스턴스의 SuperStruct 필드가 URogueCharacterAnimInstance의 UCLASS 를 가리킨다
 
----
+C++ 코드 상에서 URogueCharacterAnimInstance 는 UAnimInstance 를 상속한다.
 
----
+UClass 는 reificated 된 타입
+UClass 객체들은 런타임 데이터
 
----
 
----
-
----
-
----
-
----
-
----
-
----
-
----
-
----
-
----
-
----
-
----
-
----
-
----
-
----
-
----
-
----
-
----
-
----
-
----
-
----
-
----
-
----
-
----
-
----
-
----
+컴파일 없이 클래스를 만들고 고칠 수 있다. 
+디자이너가 에디터에서 새 타입(BP)을 만들고, 부모를 갈아끼우는 것(Reparent = SuperStruct 포인터 교체)
 
 ---

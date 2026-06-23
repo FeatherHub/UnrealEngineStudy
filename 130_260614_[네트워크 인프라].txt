@@ -1145,3 +1145,55 @@ Replication은 World의 복사본을 보내는 시스템이 아니라,
 그 가정의 오차만을 tick마다 수정하는 문법이다
 
 ---
+
+
+A
+
+GetLifetimeReplicatedProps
+Replicated Properties = UPROPERTY(Replicated)
+
+이 클래스의 replication layout(schema)를 만드는 기초 재료
+
+RepLayout.cpp 흐름을 보면 엔진은 class replication layout을 만들 때 CDO에게 묻습니다.
+
+TArray<FLifetimeProperty> LifetimeProps;
+
+UObject* Object = InObjectClass->GetDefaultObject();
+Object->GetLifetimeReplicatedProps(LifetimeProps);
+
+Class Default Object에게 물어서 class-level replication schema를 만듭니다
+
+이 함수가 만들어야 하는 것은 “지금 이 순간 보낼 목록”이 아니라
+이 class의 replication property schema 
+
+Replicate 되어야 할 목록만 따지면 UPROPERTY(Replicated) 로 충분하지만
+Lifetime Condition 의 설정까지 유연하게 처리하려면 GetLifetimeReplicatedProps의 형태가 필요
+
+---
+
+B
+
+"it may be the first time an Object is replicating to a Specific Connection, 
+and we would consider that an Initial Replication, even though the object may have replicated previously."
+
+
+Replication은 항상 "서버 Actor - 클라이언트 Connection" 쌍에 대해 일어나
+하나의 Actor가 10개의 클라이언트에 Replicate되면, 10개의 독립적인 "ActorChannel"이 생겨
+
+
+Initial Replication
+Actor의 탄생이 아니라 특정 Connection / ActorChannel 관계에서의 첫 replication
+
+---
+
+C
+
+void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps)
+
+DOREPLIFETIME_CONDITION(AMyActor, Health, COND_OwnerOnly);
+
+"이 프로퍼티가 객체의 네트워크 수명 중 어느 구간/조건에서 활성화되는가"
+
+Get Lifetime Condition For Replicated Props
+
+---
