@@ -1,0 +1,315 @@
+SVerticalBox
+
+레이어가 아니라 공간 분할기
+
+WidgetHost : SVerticalBox
+├─ AutoHeight ── TitleBar 영역
+└─ Stretch    ── 게임 UI 레이어 영역
+
+플레이어 영역을 계산할 때 VerticalBox TitleBar 높이를 뺀다
+
+SGameLayerManager::AddOrUpdatePlayerLayers()
+  Size.Y -= WindowTitleBarVerticalBox->GetDesiredSize().Y;
+
+---
+
+SOverlay
+
+부모 영역을 자식들이 공유하고 
+ZOrder에 따라 겹쳐 그려집니다
+
+---
+
+SCanvas는 
+
+SCanvas::FSlot
+  Position
+  Size
+  Horizontal/Vertical Alignment
+
+SGameLayerManager::AddOrUpdatePlayerLayers()
+  PlayerLayer->Slot->SetSize(Size);
+  PlayerLayer->Slot->SetPosition(Position);
+
+---
+
+SPlayerLayer: SOverlay
+로컬 플레이어마다 화면 영역을 나누는 공간
+
+SCanvas PlayerCanvas: 전체 GameViewport
+
+SCanvas [PlayerCanvas]
+├─ Position/Size ── SPlayerLayer [Player 0]
+├─ Position/Size ── SPlayerLayer [Player 1]
+├─ Position/Size ── SPlayerLayer [Player 2]
+└─ Position/Size ── SPlayerLayer [Player 3]
+
+┌───────────────┬───────────────┐
+│ Player 0      │ Player 1      │
+│ SPlayerLayer  │ SPlayerLayer  │
+├───────────────┼───────────────┤
+│ Player 2      │ Player 3      │
+│ SPlayerLayer  │ SPlayerLayer  │
+└───────────────┴───────────────┘
+
+---
+---
+---
+
+AHUD 
+UCanvas / FCanvas
+매 프레임 Draw 명령을 제출하는 즉시 방식
+
+
+<->
+
+retained
+
+SCanvas: SPanel: SWidget
+Position + Size로 자식 Widget 배치
+결과만 적용하는 얇은 Panel
+
+UCanvasPanel → SConstraintCanvas
+Anchor + Offset + Alignment + AutoSize + ZOrder
+제약 조건으로 결과를 계산하는 Panel
+
+---
+
+UCanvas / FCanvas Draw API
+          │
+          ├─ FCanvasItem을 제출
+          └─ FBatchedElements 등으로 배칭
+
+vs
+
+SWindow
+└─ SWidget Tree
+
+---
+
+UGameEngine
+  GameViewportWindow: SWindow
+
+
+SWindow [GameViewportWindow]
+  SViewport [GameViewportWidget]
+    SGameLayerManager
+      SDPIScaler
+        SVerticalBox [WidgetHost]
+          SBox [TitleBar]
+          SOverlay [WindowOverlay]
+            SCanvas [PlayerCanvas] 
+              SPlayerLayer [Player 0]
+              SPlayerLayer [Player 1]
+            SBox [ViewportSlotContainer]
+              SOverlay [ViewportOverlay]
+            Debug
+
+---
+
+WidgetHost : SVerticalBox
+
+TitleBar와 게임 영역을 수직으로 분리
+DPI가 적용되는 GameViewport UI 전체의 공통 Layout Root
+
+---
+
+WindowOverlay : SOverlay
+
+ZOrder
+의미적 정책은 SGameLayerManager::EGameLayerOrder에
+
+---
+
+ViewportSlotContainer : SBox
+└─ ViewportOverlayWidget : SOverlay
+   ├─ AddToViewport Widget A
+   ├─ AddToViewport Widget B
+   └─ AddToViewport Widget C
+
+ViewportOverlayWidget
+  전역 Widget들을 보관
+
+SOverlay [ViewportOverlayWidget]
+└─ SOverlay Slot [ZOrder + 10]
+   └─ SConstraintCanvas [Widget마다 하나]
+      └─ UWidget::TakeWidget() 결과
+
+---
+
+SGameLayerManager
+
+GameViewport Layer 구성
+
+전역 Widget과 플레이어 Widget을 라우팅
+
+AddToViewport
+└─ ViewportOverlayWidget
+
+AddToPlayerScreen
+└─ 해당 Player의 SPlayerLayer
+
+Split-screen 영역 계산 
+(분할 화면 레이아웃의 기준 정의와 선택은 UGameViewportClient)
+
+플레이어별 UI Root 생성·제거
+
+---
+
+SWindow
+└─ WindowOverlay
+   ├─ Window 장식
+   ├─ MainWindowArea
+   │  └─ ContentSlot
+   │     └─ GameViewportWidget
+   └─ PopupLayer
+
+
+Border Window
+  .UseOSWindowBorder(true)
+  .CreateTitleBar(true)
+
+Borderless Window
+  .UseOSWindowBorder(false)
+  .CreateTitleBar(false)
+
+---
+
+UGameViewportSubsystem이 AddToViewport Widget 마다 SConstraintCanvas를 만듭니다
+
+---
+
+일반 Window TitleBar 하나와 Borderless Window용 TitleBar 배치 후보 두 개가 준비돼 있습니다.
+
+SWindow의 TitleBarWidget
+일반 OS Window Chrome입니다
+
+창 제목
+닫기·최소화·최대화 버튼
+창 드래그 영역
+
+.UseOSWindowBorder(true)
+.CreateTitleBar(true)
+
+---
+
+SWindow
+= 게임 화면을 담는 OS Window
+실제 네이티브 창은 FGenericWindow
+GameViewportWindow
+
+
+SViewport
+= Slate Tree 안에서 게임 화면이 차지하는 Widget
+GameViewportWidget
+
+
+FSceneViewport
+= Slate와 Engine Rendering/Input을 연결하는 어댑터
+
+
+UGameViewportClient
+= 이 Viewport에서 어떤 World를 그리고
+  입력을 어떻게 게임에 전달할지 결정하는 Client
+
+
+SGameLayerManager
+= Viewport 위의 게임 UI 구조를 관리
+
+---
+
+SViewport에 Interface로 연결
+GameViewportWidgetRef->SetViewportInterface(SceneViewport);
+
+---
+
+FSlateApplication
+└─ SViewport::OnMouseButtonDown
+   └─ FSceneViewport::OnMouseButtonDown
+      └─ UGameViewportClient::InputKey
+         └─ LocalPlayer / PlayerController
+
+---
+
+1. UGameInstance 생성
+2. UGameViewportClient 생성
+3. UGameViewportClient::Init(WorldContext, GameInstance)
+4. SWindow 생성
+5. SViewport + SGameLayerManager 생성
+6. FSceneViewport(Client, SViewport) 생성
+7. SViewport->SetViewportInterface(FSceneViewport)
+
+---
+
+FSceneViewport
+├─ ViewportClient : FViewportClient*     ← FViewport에서 상속받은 멤버
+└─ ViewportWidget : TWeakPtr<SViewport>  ← FSceneViewport 자신의 멤버
+
+FSceneViewport::FSceneViewport(
+    FViewportClient* InViewportClient,
+    TSharedPtr<SViewport> InViewportWidget)
+    : FViewport(InViewportClient)
+    , ViewportWidget(InViewportWidget)
+
+InViewportClient에 전달되는 객체가 UGameViewportClient
+new FSceneViewport(this, InViewportWidget); // this = UGameViewportClient
+
+---
+
+UGameViewportClient
+“게임 입력과 렌더링 정책”
+          ▲
+          │ ViewportClient
+          │
+    FSceneViewport
+          │
+          │ ViewportWidget
+          ▼
+       SViewport
+“Slate 화면 자리”
+
+---
+
+UGameEngine이 전체 생성을 주도하면서 UGameViewportClient의 virtual factory를 호출
+Client별로 FSceneViewport 파생 구현을 선택할 수 있게 하는 Factory Hook
+
+UGameEngine
+├─ UGameViewportClient 생성
+├─ SViewport 생성
+├─ Client에게 FSceneViewport 생성 요청
+└─ 반환된 FSceneViewport를 소유하고 결선
+
+---
+
+SceneViewport = MakeShareable(GameViewportClient->CreateGameViewport(GameViewportWidgetRef));
+// GameViewportClient->CreateViewportBridgeForThisClient(SViewport)
+
+---
+
+FSceneViewport는 독립적인 주체가 아니라 이미 존재하는 두 객체를 연결하는 장치입니다
+
+UGameViewportClient  ←── FSceneViewport ──→  SViewport
+게임 정책                                    화면 자리
+
+생성자도 처음부터 Client를 요구합니다.
+
+FSceneViewport(FViewportClient* InViewportClient, TSharedPtr<SViewport> InViewportWidget);
+
+---
+
+UGameEngine::CreateGameWindow()
+└─ SWindow 생성
+   └─ 아직 GameViewportWidget은 연결되지 않음
+
+UGameEngine::CreateGameViewportWidget()
+└─ SViewport 생성
+   └─ SGameLayerManager를 ChildSlot에 연결
+   └─ 아직 SWindow에는 연결되지 않음
+
+UGameEngine::CreateGameViewport()
+└─ FSceneViewport 생성 및 SViewport와 결선
+
+UGameEngine::SwitchGameWindowToUseGameViewport()
+└─ SViewport를 SWindow::ContentSlot에 연결
+
+---
