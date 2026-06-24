@@ -1,0 +1,389 @@
+FWidgetRenderer, FSceneRenderer, ISlate3DRenderer
+
+---
+
+FPrimitiveSceneProxy
+UPrimitiveComponent, 
+CreateSceneProxy
+
+_GameThread() 세터
+게임스레드에서 값을 바꾸면 렌더스레드로 명령을 enqueue하는 패턴을
+
+---
+
+FMaterialRenderProxy
+GetRenderProxy()
+FMaterialInstanceResource
+
+---
+
+UObject 에셋(게임스레드) <-> FRenderResource(렌더스레드 자원)
+
+UTexture <-> FTextureResource, FTexture2DResource, FStreamableTextureResource 
+
+USkeletalMesh ↔ FSkeletalMeshRenderData
+
+UStaticMesh ↔ FStaticMeshRenderData
+
+UMaterial -> FMaterialResource -> FMaterialShaderMap
+
+---
+
+물리가 충돌 지점에서 표면 종류 해석을 위해 사용하는 데이터의 우선순위 
+
+(LOW) Engine Mat → Material PhysMat → BodySetup Mat → Component Override → Body Override (HIGH)
+
+GEngine->DefaultPhysMaterial
+프로젝트 전역 기본 물리 머티리얼로
+Settings → Physics → Default Physical Material
+엔진 시작 시 로드
+
+---
+
+FPrimitiveSceneProxy 패밀리
+프리미티브 컴포넌트의 렌더스레드 대역
+
+FStaticMeshSceneProxy
+FSkeletalMeshSceneProxy
+FParticleSystemSceneProxy
+
+FSpriteSceneProxy
+FSphereSceneProxy
+FBoxSceneProxy
+
+FTextRenderSceneProxy
+FSplineSceneProxy
+
+FBrushSceneProxy
+
+---
+
+다른 Proxy 패밀리(프리미티브가 아닌 것)
+
+FLightSceneProxy — ULightComponent
+
+---
+
+Flyweight Pattern
+
+컴포넌트는 트랜스폼 + 메시 포인터뿐인 경량체이고, 
+무거운 RenderData가 공유되는 상태
+
+UStaticMeshComponent
+UStaticMesh
+FStaticMeshRenderData
+
+---
+
+UStaticMeshComponent 
+
+공유 불가능한 per-instance 델타
+무거운 건 포인터로 가리킵니다
+
+
+UStaticMesh 
+
+TUniquePtr<FStaticMeshRenderData>
+StaticMaterials 
+Sockets 
+UBodySetup
+
+---
+
+FStaticMeshRenderData 
+LOD별 VertexBuffers, IndexBuffer, Sections, DistanceFieldData
+
+하나의 외형에 대한 N 개의 버전
+
+LOD 스트리밍 — 필요한 LOD만 GPU에 올립니다
+멀어서 안 쓰는 고해상도 LOD는 스트림 아웃
+
+---
+
+DistanceFieldData
+
+거리장은 각 복셀에 "가장 가까운 표면까지 부호 있는 거리"를 미리 구워둬서, 
+한 샘플당 O(1)로 "표면까지 거리"를 읽고 
+삼각형 수와 무관하게 일정 비용으로 레이마칭할 수 있습니다
+
+---
+
+ray marching
+
+광선을 따라 조금씩 전진하며 매 지점에서 검사하는 방식
+
+현재 지점에서 거리장 값 d를 읽는다 → 반경 d 안엔 표면이 없다는 보장
+그러니 광선을 d만큼 안전하게 건너뛴다
+다시 읽고 반복. d ≈ 0이면 표면에 닿은 것
+
+빠르게 수렴
+
+---
+
+해석적(analytic) 도형
+
+닫힌 형태의 수식으로 정의돼, 공식으로 계산할 수 있는 도형
+
+구는 { p : |p − c| = r }로 정의되고, "이 점이 안에 있나?"는 |p − c| ≤ r 
+
+박스는 min/max 범위로 정의
+
+---
+
+메시의 충돌 프리미티브
+  임포트 시 따라온 충돌 메시(FBX의 UCX_/UBX_/USP_ 접두사 도형
+  스태틱 메시 에디터의 Collision 메뉴
+  CollisionTraceFlag를 "Use Complex As Simple"
+
+---
+
+USphereComponent : UShapeComponent
+  ShapeBodySetup의 AggGeom에 구 요소(FKSphereElem)를 채웁니다
+  
+StaticMeshComponent
+  GetBodySetup()은 GetStaticMesh()->GetBodySetup()을 반환
+
+---
+---
+---
+
+F*Renderer
+
+Proxy들이 렌더스레드용 데이터라면
+Renderer는 그 데이터를 받아 패스를 돌리고 RHI 명령을 발행
+
+크게 3D 씬 렌더링과 Slate(UI) 렌더링 두 갈래
+
+---
+
+FSceneRenderer 
+
+It is initialized in the game thread by FSceneViewFamily::BeginRender
+and then passed to the rendering thread
+
+The rendering thread calls Render(), 
+and deletes the scene renderer when it returns
+
+한 프레임의 뷰 패밀리(여러 뷰)를 그리는 객체
+
+일회성 스코프
+
+FDeferredShadingSceneRenderer
+FMobileSceneRenderer
+
+가시성 판정, 베이스 패스, 라이팅, 섀도우, 포스트프로세스 등 모든 씬 패스
+
+Proxy들을 소비하는 주체
+
+FPrimitiveSceneProxy::GetDynamicMeshElements
+FMaterialRenderProxy에서 파라미터를, FLightSceneProxy에서 광원을 읽어 한 장면을 합성
+
+---
+
+FSlateRenderer
+핵심 가상함수 DrawWindows(FSlateDrawBuffer&)
+
+Creates necessary resources to render a window 
+and sends draw commands to the rendering thread
+
+위젯들을 페인트해 만든 드로우 엘리먼트 버퍼를 받아 
+플랫폼 윈도우에 실제 GPU 드로우로 바꿉니다
+
+FSlateRHIRenderer
+게임 뷰포트의 UMG가 화면에 그려지는 경로
+
+---
+
+ISlate3DRenderer 
+
+Slate를 화면이 아니라 렌더타겟 텍스처에 그리기 위한 인터페이스
+화면 합성이 아니라 3D 씬에서 쓸 텍스처를 만든다
+
+---
+
+FWidgetRenderer 
+
+위젯 트리를 텍스처로 굽는 헬퍼
+내부 ISlate3DRenderer로 그 결과를 UTextureRenderTarget2D에 그려 넣습니다
+UI를 텍스처로 베이킹합니다
+
+---
+---
+---
+
+FMeshPassProcessor
+
+transform FMeshBatch draw descriptions received from scene proxy
+into FMeshDrawCommands ready for the RHI command list
+
+패스 종류마다 서브클래스가 하나씩 있다
+
+FBasePassMeshProcessor, FShadowDepthPassMeshProcessor, ...
+EMeshPass::Type MeshPassType
+DepthPass, BasePass, CSMShadowDepth, Velocity, TranslucencyStandard, CustomDepth, LumenCardCapture...
+
+---
+
+FMeshDrawCommand
+
+fully describes a mesh pass draw call
+
+---
+
+FParallelMeshDrawCommandPass
+
+(a) 커맨드 빌드(setup)
+(b) 제출(draw)
+
+---
+
+SceneProxy → FMeshBatch → FMeshPassProcessor(패스별 번역) → FMeshDrawCommand 
+→ FParallelMeshDrawCommandPass(빌드+제출) → FRHICommandList → RHI → GPU
+
+---
+
+FSceneRenderer
+FDeferredShadingSceneRenderer/FMobileSceneRenderer
+
+RDG(FRDGBuilder)로 패스 그래프를 짜고, 
+각 지오메트리 패스에서 해당 FMeshPassProcessor를 (FParallelMeshDrawCommandPass를 통해) 돌려 커맨드를 빌드·제출합니다.
+
+Renderer(프레임/패스 구조 지휘) ⊃ MeshPassProcessor(패스별 batch→command 번역) → FMeshDrawCommand(단위) → RHI 제출
+
+---
+
+Slate 계열 Renderer는 이 파이프라인을 안 탑니다
+FSlateRHIRenderer, ISlate3DRenderer, FWidgetRenderer
+Slate는 자체적인 더 단순한 2D 경로가 있습니다:
+메시 패스 프로세서도, EMeshPass도 없습니다
+같은 RHI 커맨드 리스트에서 끝나지만 경유 경로가 다른, 별개의 미니 파이프라인입니다.
+
+위젯 paint → FSlateDrawBuffer(드로우 엘리먼트) → FSlateElementBatcher(배칭) 
+→ FSlateRHIRenderingPolicy → FRHICommandList → RHI
+
+---
+---
+---
+
+시작은 게임 스레드
+
+엔진 틱에서 월드 틱이 끝난 뒤 
+FViewport::Draw 
+  1 FCanvas 생성
+  2. UGameViewportClient::Draw(this, FCanvas) 호출
+
+UGameViewportClient::Draw(FViewport, FCanvas)
+  1. FSceneViewFamilyContext 구성 (ULocalPlayer::CalcSceneView)
+  2. GetRendererModule().BeginRenderingViewFamily(SceneCanvas, &ViewFamily)
+
+FRendererModule::BeginRenderingViewFamily
+  1. FSceneRenderBuilder 생성
+  2. FSceneRenderBuilder::CreateLinkedSceneRenderers 
+  3. FSceneRenderBuilder::AddRenderer(Renderer, Lambda)
+    Lambda 에서 자유 함수인 RenderViewFamily_RenderThread 호출
+  4. FSceneRenderBuilder::Execute()
+
+
+[렌더 스레드]
+
+FSceneRenderBuilder::Execute()가  ENQUEUE_RENDER_COMMAND한 태스크
+  1. FRDGBuilder 생성
+  2. RenderViewFamily_RenderThread 실행
+  3. FDeferredShadingSceneRenderer::Render
+
+FDeferredShadingSceneRenderer::Render
+  1. 가시성/InitViews, 프록시→FMeshBatch 수집
+  2. FParallelMeshDrawCommandPass로 draw command 빌드 
+  3. FRDGBuilder::AddPass(...)로 패스 등록
+  4. FRDGBuilder::Execute()
+
+---
+
+[RHI 스레드] RHICmdList 번역 → GPU
+
+---
+
+SceneRenderer
+  뷰 패밀리마다 하나씩
+  한 패밀리 안에 FSceneView(카메라)는 여러 개 들어갈 수 있다
+
+CreateLinkedSceneRenderers => TArray<FSceneRenderer*>를 반환
+  메인 뷰 + 씬 캡처(SceneCapture) + 평면 반사(PlanarReflection) + 추가 뷰포트 등
+  씬 캡처 결과를 메인 뷰가 샘플링하므로 캡처가 먼저
+
+---
+
+FSceneRenderBuilder : ISceneRenderBuilder
+  게임 스레드에서 생성
+  record-then-dispatch 패턴
+  프레임 레벨 씬 렌더 오케스트레이터
+  "배칭"은 호환되는 ShowFlags의 렌더러들을 묶고, 안 맞으면 FSceneRenderBuilder::FlushIfIncompatible로 끊는다
+  
+
+---
+
+FRDGBuilder 
+  build → compile → execute
+  FRDGBuilder::AddPass에 람다를 넘김
+  FRDGBuilder::Execute가 그 람다들을 FRHICommandList에 기록
+  렌더러 종류와 무관한 범용 GPU 스케줄러
+
+---
+
+FDeferredShadingSceneRenderer::Render (오케스트레이터) 
+
+가시성/InitViews 단계
+FSceneRenderer가 프록시들의 GetDynamicMeshElements()를 호출해 FMeshBatch를 수집
+
+그다음 뷰·패스마다 FParallelMeshDrawCommandPass를 하나씩 두고
+그 패스용 FMeshPassProcessor를 만들어
+FParallelMeshDrawCommandPass::DispatchPassSetup에 넘긴다
+
+---
+
+FParallelMeshDrawCommandPass::DispatchPassSetup (패스 매니저)
+비동기 setup task를 띄웁니다
+(메인 렌더 스레드를 막지 않고 워커 스레드에서 병렬로 command를 빌드·정렬·병합)
+
+이 task가 GenerateDynamicMeshDrawCommands 호출
+  Converts each FMeshBatch into a set of FMeshDrawCommands
+  batch들을 루프 돌며 PassMeshProcessor->AddMeshBatch(*Mesh, mask, proxy)
+
+---
+
+FMeshPassProcessor::AddMeshBatch (per-batch 워커)
+  FMeshBatch 하나를 FMeshDrawCommand로 번역해 리스트에 추가
+  패스에 맞는 셰이더(VS/PS) 선택 + PSO(파이프라인 상태) 결정 + 셰이더 바인딩(유니폼/텍스처) 수집
+  패스마다 다른 셰이더를 고르므로 패스별 서브클래스 (FBasePassMeshProcessor, FShadowDepthPassMeshProcessor)가 존재
+
+---
+
+마지막에 FParallelMeshDrawCommandPass::Draw(FRHICommandList&)
+
+---
+
+FParallelMeshDrawCommandPass(패스 관리자) → setup task 
+→ GenerateDynamicMeshDrawCommands(batch 루프) → FMeshPassProcessor::AddMeshBatch(per-batch 번역) → FMeshDrawCommand
+
+---
+---
+---
+
+플레이어마다 LocalPlayer->CalcSceneView(&ViewFamily, …)를 불러 
+플레이어 카메라(APlayerCameraManager의 POV)로 FSceneView의 뷰/투영 행렬을 만듭니다. 
+
+카메라 데이터는 플레이어에서 흘러오고, 
+UGameViewportClient는 그걸 조립할 뿐입니다
+
+APlayerController → APlayerCameraManager(POV: 위치/회전/FOV) 
+→ ULocalPlayer::CalcSceneView가 이를 ViewMatrices(뷰/투영 행렬)로 변환 
+→ FSceneView 생성 후 FSceneViewFamily에 추가
+
+---
+
+FDeferredShadingSceneRenderer::Render
+
+패스를 추가(AddPass) 만 하고 실행하지 않습니다, 뭘 할지 그래프로 기술만 하는 거죠. 
+실제 실행은 FRDGBuilder::Execute()
+
+Execute가 그래프를 컴파일(안 쓰는 패스 컬링, 트랜지언트 자원 할당, 배리어 계산)한 뒤 각 패스의 람다를 실행
