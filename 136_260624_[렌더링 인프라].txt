@@ -387,3 +387,772 @@ FDeferredShadingSceneRenderer::Render
 실제 실행은 FRDGBuilder::Execute()
 
 Execute가 그래프를 컴파일(안 쓰는 패스 컬링, 트랜지언트 자원 할당, 배리어 계산)한 뒤 각 패스의 람다를 실행
+
+---
+---
+---
+---
+---
+---
+
+FPrimitiveSceneProxy
+FSceneRenderBuilder
+FDeferredShadingSceneRenderer
+FRDGBuilder
+FParallelMeshDrawCommandPass
+
+FMeshBatch
+FMeshDrawCommand
+
+---
+
+FPrimitiveSceneProxy — 컴포넌트 등록 때 FScene에 만들어져 상주합니다
+프레임마다 새로 안 만듭니다
+
+"씬에 무엇이 있는가."
+
+요청받으면 FPrimitiveSceneProxy::GetDynamicMeshElements로 FMeshBatch를 내놓습니다
+
+---
+
+게임 스레드
+
+FRendererModule::BeginRenderingViewFamily 안에서
+  FSceneRenderBuilder 생성
+  FSceneRenderBuilder::CreateLinkedSceneRenderers로 FDeferredShadingSceneRenderer 1개 생성
+  FSceneRenderBuilder::AddRenderer로 기록
+  FSceneRenderBuilder::Execute로 렌더 스레드에 태스크 enqueue
+  
+FSceneRenderBuilder 에서  FDeferredShadingSceneRenderer 가 생성
+
+---
+
+렌더 스레드
+
+태스크가 FRDGBuilder를 만들고
+자유 함수 RenderViewFamily_RenderThread를 거쳐
+FDeferredShadingSceneRenderer::Render(FRDGBuilder&)를 호출
+
+FSceneRenderBuilder 태스크가 FRDGBuilder 를 만든다
+
+---
+
+FDeferredShadingSceneRenderer::Render, build 단계 (레시피 작성자)
+
+(a) 가시성/InitViews
+  FPrimitiveSceneProxy::GetDynamicMeshElements 호출
+  FMeshBatch 산출
+
+(b) 패스 준비
+  FParallelMeshDrawCommandPass 1개를 두고
+  FMeshPassProcessor를 만들어
+  FParallelMeshDrawCommandPass::DispatchPassSetup(processor, FMeshBatch들)에 넘김
+
+RDG 패스 등록
+  FRDGBuilder::AddPass(..., { FParallelMeshDrawCommandPass::Draw(RHICmdList) })
+  
+---
+
+FParallelMeshDrawCommandPass::DispatchPassSetup
+  자유 함수 GenerateDynamicMeshDrawCommands를 호출 
+  FMeshPassProcessor::AddMeshBatch(FMeshBatch) 가 FMeshDrawCommand 산출
+  정렬 및 병합
+
+---
+
+FRDGBuilder::Execute — execute 단계 (실행자)
+  태스크가 FRDGBuilder::Execute 호출 
+  컬링·정렬·트랜지언트 자원 할당·배리어 계산 후 각 패스 람다 실행 
+  람다가 FParallelMeshDrawCommandPass::Draw(RHICmdList) 호출 
+
+---
+
+씬 데이터
+Component → Proxy → SceneInfo → FScene
+
+
+이번 프레임의 카메라와 렌더러 구성
+ViewportClient → ViewFamily → SceneRenderer
+
+
+패스별 DrawCommand 생성
+SceneProxy → MeshBatch → MeshPassProcessor → MeshDrawCommand
+
+
+GPU 작업 스케줄
+ParallelMeshDrawCommandPass → RDG → RHICmdList → RHI → GPU
+
+---
+
+Game Thread
+
+UPrimitiveComponent::CreateRenderState_Concurrent()
+  FScene::AddPrimitive()
+    UPrimitiveComponent::CreateSceneProxy()
+      FPrimitiveSceneProxy 생성
+      FPrimitiveSceneInfo 생성
+      Render Command enqueue
+
+Render Thread
+
+FScene::AddPrimitiveSceneInfo_RenderThread()
+  FScene에 Proxy/SceneInfo 등록
+
+---
+
+FPrimitiveSceneInfo
+
+Proxy를 FScene에 등록하는 관리 레코드
+
+
+FScene
+
+지속적인 렌더 씬 데이터베이스
+
+---
+
+FPrimitiveSceneProxy::SetSelection_GameThread()
+└─ ENQUEUE_RENDER_COMMAND
+   └─ FPrimitiveSceneProxy::SetSelection_RenderThread()
+
+Proxy의 렌더 스레드 상태를 게임 스레드에서 직접 수정하지 않습니다.
+게임 스레드에서 호출할 수 있는 렌더 스레드 전달용 진입점
+
+---
+
+UGameEngine::Tick()
+└─ UGameEngine::RedrawViewports()
+   └─ FViewport::Draw()
+      └─ UGameViewportClient::Draw()
+
+
+UGameViewportClient::Draw()
+├─ FSceneViewFamilyContext 생성
+├─ ULocalPlayer::CalcSceneView()
+│  └─ FSceneView 생성
+└─ FRendererModule::BeginRenderingViewFamily()
+
+---
+
+FSceneView
+
+카메라 하나의 위치, 투영 행렬, ViewRect, 가시성 정보
+
+
+FSceneViewFamily
+
+같은 렌더 타깃에 함께 렌더링될 View 묶음
+ShowFlags, Scene, RenderTarget 보유
+
+---
+
+FRendererModule::BeginRenderingViewFamilies()
+└─ FSceneRenderBuilder 생성
+   ├─ SceneCapture Renderer 추가 가능
+   ├─ PlanarReflection Renderer 추가 가능
+   ├─ Main FSceneRenderer 추가
+   └─ FSceneRenderBuilder::Execute()
+  
+이번 프레임에 실행할 FSceneRenderer 작업들을 모으고 렌더 스레드로 넘기는 workload builder
+
+---
+
+FSceneRenderer
+├─ FDeferredShadingSceneRenderer
+└─ FMobileSceneRenderer
+
+---
+
+FSceneRenderBuilder::Execute()가 등록한 Render Command가 렌더 스레드에서 실행됩니다
+├─ FRDGBuilder 생성
+├─ RenderViewFamily_RenderThread()
+│  └─ FDeferredShadingSceneRenderer::Render()
+└─ FRDGBuilder::Execute()
+
+---
+
+FDeferredShadingSceneRenderer::Render()
+├─ View 초기화
+├─ 가시성 판정
+├─ Dynamic Mesh 수집
+├─ Mesh Pass 준비
+├─ Shadow/BasePass/Lighting/PostProcess 패스 구성
+└─ FRDGBuilder에 패스 등록
+
+이번 ViewFamily를 어떤 렌더링 단계로 분해할지 결정하는 프레임 오케스트레이터
+
+---
+
+가시성 판정에서 살아남은 Dynamic Primitive에 대해
+
+FPrimitiveSceneProxy::GetDynamicMeshElements()
+└─ FMeshElementCollector::AddMesh()
+
+---
+
+FMeshBatch
+├─ VertexFactory
+├─ MaterialRenderProxy
+├─ Index/Vertex 정보
+├─ FMeshBatchElement[]
+└─ Pass relevance flags
+
+---
+
+View × MeshPass별 FParallelMeshDrawCommandPass
+
+FSceneRenderer::SetupMeshPass()
+├─ FPassProcessorManager::CreateMeshPassProcessor()
+├─ FParallelMeshDrawCommandPass 선택
+└─ FParallelMeshDrawCommandPass::DispatchPassSetup()
+
+---
+
+BasePass
+├─ FBasePassMeshProcessor
+└─ FParallelMeshDrawCommandPass
+
+ShadowDepth
+├─ FShadowDepthPassMeshProcessor
+└─ FParallelMeshDrawCommandPass
+
+---
+
+FMeshPassProcessor: 패스별 번역기
+
+GenerateDynamicMeshDrawCommands()
+└─ FMeshPassProcessor::AddMeshBatch()
+    └─ FMeshPassProcessor::BuildMeshDrawCommands()
+      └─ FMeshDrawCommand 생성
+
+---
+
+동일한 FMeshBatch
+├─ BasePass에서는 Material VS/PS와 GBuffer 상태
+├─ ShadowDepth에서는 Shadow용 Shader와 Depth 상태
+└─ Velocity에서는 Velocity Shader와 Render State
+
+---
+
+FMeshDrawCommand
+├─ Pipeline State
+├─ Shader Bindings
+├─ Vertex Streams
+├─ Index Buffer
+├─ Primitive Type
+├─ Draw Parameters
+└─ Stencil State
+
+---
+
+FRDG Pass
+├─ RenderTarget
+├─ Resource dependency/barrier
+├─ 실행 순서
+└─ FMeshDrawCommand들
+
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+
+scene = [obj, obj, ...]
+
+for obj in scene:
+    desc = obj.describe()            # 정점/머티리얼 등 "그릴 내용"
+    for pass in [depth, color]:      # 패스마다
+        bind_shaders(desc, pass)     # 패스에 맞는 셰이더 바인딩
+        draw(desc)                   # 즉석에서 GPU에 그려라
+
+단일 스레드, 즉시 실행, 캐시 없음
+이 루프에 네 가지 힘을 차례로 가하면 각 노드가 태어나는 걸 보면 됩니다
+
+---
+
+현실이 루프를 부수는 4가지 힘 (= 각 노드의 탄생 이유)
+
+힘 1 — 두 개의 스레드
+
+게임 스레드는 UObject(게임플레이 상태)를 매 프레임 바꿉니다. 
+렌더 스레드는 그걸 직접 만지면 안 됩니다(게임 스레드는 이미 다음 프레임 계산 중)
+
+렌더러가 필요한 모든 걸 렌더 스레드 전용 사본으로 미러링해 둬야 합니다
+
+FPrimitiveSceneProxy(와 그 집합 FScene)의 존재 이유
+ "obj"가 게임 스레드 컴포넌트라면, FPrimitiveSceneProxy는 렌더 스레드가 들고 있는 그 분신 (사본, 미러)
+
+---
+
+힘 2 — 한 프레임에 씬이 여러 개 + 스레드 경계를 건너야 함
+
+메인 뷰만 있는 게 아니라 씬 캡처·반사 등 독립적인 렌더가 여럿이고, 
+이 모두를 게임 스레드의 "그려줘"에서 
+렌더 스레드의 "실행"으로 옮겨야 합니다
+
+이걸 관리·디스패치하는 게 FSceneRenderBuilder
+
+---
+
+힘 3 — GPU 작업을 전역 최적화하려면 전체를 먼저 봐야 함
+
+즉석에서 그리면 "안 쓰는 패스 제거", "안 겹치는 자원끼리 메모리 공유", "배리어 최소화" 같은 걸 못 합니다
+전체 프레임의 작업을 먼저 그래프로 기술하고 그다음 최적화해서 실행해야 합니다
+
+이게 FRDGBuilder이고, 
+그래서 FDeferredShadingSceneRenderer::Render(기술)와 FRDGBuilder::Execute(실행)가 분리됩니다
+
+---
+
+힘 4 — 캐싱·병렬화·패스별 셰이더
+
+"desc"를 즉석에서 셰이더 바인딩하면 매번 다시 하고, 정렬·인스턴싱도 못 하고, 병렬화도 어렵습니다.
+그래서 "그릴 내용"과 "그 패스용으로 셰이더까지 박힌 드로우콜"을 두 단계 데이터로 분리합니다.
+
+FMeshBatch(전자)와 FMeshDrawCommand(후자), 그 사이 번역기 FMeshPassProcessor, 
+그리고 그 변환·정렬·병합·제출을 패스 단위로 관리하는 FParallelMeshDrawCommandPass
+
+---
+---
+---
+
+렌즈 ① 컴파일러
+이 파이프라인은 사실 컴파일러입니다 — 고수준 기술을 점점 낮은 표현으로 lowering합니다
+
+FScene/FPrimitiveSceneProxy = 프로그램/심볼 테이블 (상주)
+
+---
+
+FMeshBatch = 고수준 IR
+"이 메시를 이 머티리얼로 그려라" — 아직 패스도 셰이더도 안 정해짐.
+그래서 depth·base·shadow 패스가 하나의 batch를 재사용합니다
+
+
+FMeshPassProcessor = 코드 생성 백엔드
+IR을 특정 타깃(=렌더 패스)으로 lowering.
+타깃마다 백엔드 하나라서 FBasePassMeshProcessor, FShadowDepthPassMeshProcessor처럼 패스별 서브클래스가 존재
+
+---
+
+FMeshDrawCommand = 기계어
+
+셰이더·PSO·바인딩이 다 박힌, RHI 바로 위의 드로우콜
+
+
+FRDGBuilder 
+
+링커 + 옵티마이저 + 런타임
+모든 패스(오브젝트 파일)를 모아 전역 최적화
+(죽은 패스 제거 = DCE, 트랜지언트 메모리 aliasing = 레지스터 할당, 배리어 = 스케줄링) 
+후 실행
+
+---
+
+렌즈 ② Retained vs Immediate Mode
+
+즉시 모드: 매 프레임 씬을 훑어 즉석에서 그림
+Retained 모드: 렌더러가 자기만의 영속 표현을 들고 있고 변경은 델타만 반영
+그 위에서 캐시·정렬·배칭이 가능.
+
+FPrimitiveSceneProxy는 retained 노드 그 자체입니다
+게임 컴포넌트의 렌더 스레드 영속 사본. FScene은 retained 씬 데이터베이스
+
+---
+
+scene = [obj...]                 →  FScene (FPrimitiveSceneProxy 모음, 단 "retained")
+
+for obj in scene:                →  FDeferredShadingSceneRenderer::Render 의 가시성 단계
+
+    desc = obj.describe()        →  FPrimitiveSceneProxy::GetDynamicMeshElements ⟹ FMeshBatch
+
+    for pass in [...]:           →  패스마다 FParallelMeshDrawCommandPass 하나
+
+        cmd = bind(desc, pass)   →  FMeshPassProcessor::AddMeshBatch ⟹ FMeshDrawCommand
+        draw(cmd)                →  FParallelMeshDrawCommandPass::Draw ⟹ FRHICommandList
+
+(전체 루프의 지휘)               →  FDeferredShadingSceneRenderer::Render
+(실제 GPU 제출 시점)             →  FRDGBuilder::Execute
+(루프 바깥, 보이지 않던 것)      →  FSceneRenderBuilder (멀티 렌더러 + 스레드 경계)
+
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+
+같은 Mesh가 BasePass, ShadowPass, DepthPass, VelocityPass에 반복 참여한다
+DrawCall을 PSO와 Material 기준으로 정렬해야 한다
+렌더 타깃 전환과 Resource Barrier를 삽입해야 한다
+
+---
+
+무엇이 씬에 있는가?
+        ↓
+이번 카메라에서 무엇이 보이는가?
+        ↓
+그 물체를 각 패스에서 어떻게 그릴 것인가?
+        ↓
+DrawCall들을 어떤 순서로 제출할 것인가?
+
+---
+
+변경은 명령으로 전달
+
+FPrimitiveSceneProxy::SetSelection_GameThread()
+└─ Render Command enqueue
+   └─ FPrimitiveSceneProxy::SetSelection_RenderThread()
+
+---
+
+FMeshBatch: 패스에 들어가기 전의 중간 언어
+
+이 VertexFactory를 사용하고
+이 Vertex/Index 데이터를 사용하며
+이 MaterialRenderProxy로
+이 Mesh Elements를 그릴 수 있다.
+
+아직 다음은 결정되지 않았습니다.
+BasePass Shader인지, ShadowDepth Shader인지, Velocity Shader인지
+어떤 PSO를 사용할지
+어느 RenderTarget에 그릴지
+
+---
+
+FMeshBatch
+= "무엇을 그릴 수 있는가"
+
+FMeshDrawCommand
+= "이 패스에서 정확히 어떻게 그릴 것인가"
+
+---
+
+PrimitiveSceneProxy
+└─ 고수준 Draw 표현
+   └─ FMeshBatch              ← High-level IR
+      └─ FMeshPassProcessor
+         └─ FMeshDrawCommand  ← Lowered IR
+            └─ RHI Command
+
+---
+
+Proxy가 모든 패스의 처리법을 직접 안다고 생각해봅시다.
+
+SkeletalMeshProxy
+├─ BasePass 코드
+├─ ShadowPass 코드
+├─ DepthPass 코드
+├─ VelocityPass 코드
+└─ CustomDepth 코드
+
+ParticleProxy
+├─ BasePass 코드
+├─ ShadowPass 코드
+├─ DepthPass 코드
+...
+
+Primitive 종류가 M, 패스 종류가 P라면 의존성이 M × P로 폭발합니다
+
+vs
+
+여러 Proxy 종류
+      ↓
+공통 FMeshBatch
+      ↓
+여러 MeshPassProcessor
+
+---
+
+FMeshPassProcessor: 패스별 Compiler
+이 FMeshBatch를 이 Mesh Pass에서 실행할 수 있는 FMeshDrawCommand로 어떻게 번역할 것인가?
+
+동일한 FMeshBatch
+├─ FBasePassMeshProcessor
+│  └─ GBuffer용 FMeshDrawCommand
+│
+├─ FShadowDepthPassMeshProcessor
+│  └─ Shadow Depth용 FMeshDrawCommand
+│
+└─ FVelocityMeshProcessor
+   └─ Velocity용 FMeshDrawCommand
+
+---
+
+FMeshDrawCommand: 컴파일된 Draw 패킷
+즉시 실행되는 명령이 아닙니다
+
+FMeshDrawCommand 생성
+    ↓
+정렬·캐싱·병합·필터링 가능
+    ↓
+나중에 RHICmdList에 제출
+
+---
+
+FParallelMeshDrawCommandPass: 한 패스의 Draw 목록 관리자
+
+FParallelMeshDrawCommandPass
+= 번역할 Batch 전체와 결과 Command 전체를 어떻게 관리하는가
+
+
+한 View의 한 Mesh Pass마다 존재한다
+
+View 0
+├─ DepthPass의 FParallelMeshDrawCommandPass
+├─ BasePass의 FParallelMeshDrawCommandPass
+├─ VelocityPass의 FParallelMeshDrawCommandPass
+└─ TranslucencyPass의 FParallelMeshDrawCommandPass
+
+
+DispatchPassSetup()
+BuildRenderingCommands()
+Draw()
+
+---
+
+FDeferredShadingSceneRenderer
+= 이 FScene을 이 ViewFamily에서
+  Deferred Rendering으로 렌더링하는 한 번의 작업
+
+---
+
+FRDGBuilder
+의존성 그래프를 작성하고 컴파일
+
+BasePass
+├─ SceneDepth를 쓴다
+├─ GBufferA/B/C를 쓴다
+└─ 여러 후속 패스가 이 결과를 읽는다
+
+LightingPass
+├─ SceneDepth를 읽는다
+├─ GBuffer들을 읽는다
+└─ SceneColor를 쓴다
+
+
+Build
+└─ AddPass, CreateTexture 등으로 그래프 기술
+
+Compile
+
+Execute
+└─ 계산된 의존 순서로 Pass Lambda 실행
+
+---
+
+FParallelMeshDrawCommandPass의 정렬
+    PSO/Shader/Material 변경을 줄이기 위한 Draw 정렬
+
+FRDGBuilder의 순서 결정
+    Resource dependency를 만족하기 위한 GPU Pass 순서
+
+---
+
+FDeferredShadingSceneRenderer::Render는 FRDGBuilder::AddPass로 무엇을 할지 적기만 한다
+
+이후 FRDGBuilder::Execute가 최적으로 실행
+
+먼저 전체를 적고, 그다음 실행한다
+
+---
+---
+---
+---
+---
+---
+---
+
+UPrimitiveComponent
+└─ FPrimitiveSceneProxy
+   └─ FPrimitiveSceneInfo
+      └─ FScene
+
+FPrimitiveSceneProxy는
+카메라가 다른 방향을 보고 있어도, 이 Primitive가 가려져 있어도 
+FScene 안에 계속 존재합니다.
+
+
+---
+
+FPrimitiveSceneProxy::GetDynamicMeshElements() => FMeshBatch
+
+렌더러:
+    "이번 카메라에서 네가 필요하다. 무엇을 그릴 수 있지?"
+
+FPrimitiveSceneProxy:
+    "이 지오메트리와 머티리얼을 사용할 수 있다."
+
+---
+
+FScene에는 세계가 있지만, 아직 화면은 없습니다
+누구의 눈으로, 어디를, 어떤 크기의 화면에 볼 것인가?
+
+UGameViewportClient
+└─ FSceneViewFamily
+   └─ FSceneView
+
+FScene은 "무엇이 존재하는가", 객관적인 세계
+FSceneView는 하나의 시선
+FSceneViewFamily는 "어떤 시선들을 어떤 화면에 출력하는가"
+
+같은 FScene도 카메라가 달라지면:
+보이는 Primitive가 달라지고
+LOD가 달라지고
+Shadow가 달라진다
+
+---
+
+FSceneRenderBuilder
+
+Main View
+SceneCapture
+PlanarReflection
+
+어떤 SceneRenderer들을 실행할지 기록
+실행 순서를 묶음
+렌더 스레드 작업으로 enqueue
+
+SceneCapture 먼저,
+PlanarReflection 다음,
+Main View는 그다음
+
+---
+
+FDeferredShadingSceneRenderer
+
+이 FScene을 이 ViewFamily에서
+Deferred 방식으로 렌더링하는 일회성 감독
+
+이번 ViewFamily의 렌더링 동안만 존재
+
+---
+
+FScene에 존재
+      │
+      ├─ 카메라 밖
+      ├─ 가려짐
+      ├─ Hidden
+      └─ 해당 Pass와 무관
+              ↓
+        이번 작업에서 제외
+ 
+---
+
+가시성 판정에서 살아남은 동적 Proxy에게 요청합니다
+
+FPrimitiveSceneProxy::GetDynamicMeshElements()
+└─ FMeshBatch 산출
+
+---
+
+FMeshBatch
+├─ 사용할 Geometry
+├─ VertexFactory
+├─ MaterialRenderProxy
+├─ Mesh Elements
+└─ Pass 관련 성질
+
+“이 지오메트리를 이 머티리얼로 그릴 수 있습니다.”
+
+---
+
+FMeshPassProcessor
+
+BasePass:
+    표면의 Material 정보를 원한다.
+
+ShadowDepthPass:
+    빛에서 본 깊이를 원한다.
+
+VelocityPass:
+    이전 프레임과 현재 프레임의 움직임을 원한다.
+
+FMeshBatch
+├─ FBasePassMeshProcessor
+│  └─ BasePass용 Shader/PSO/Binding
+│
+├─ FShadowDepthPassMeshProcessor
+│  └─ Shadow용 Shader/PSO/Binding
+│
+└─ FVelocityMeshProcessor
+   └─ Velocity용 Shader/PSO/Binding
+
+출력
+    패스에 특화된 FMeshDrawCommand
+
+---
+
+FMeshDrawCommand
+├─ 이 Pipeline State를 사용하고
+├─ 이 Shader들을 바인딩하고
+├─ 이 Texture와 Uniform을 사용하고
+├─ 이 Vertex/Index Buffer를 연결하고
+└─ 이 범위를 Draw하라
+
+---
+
+FPrimitiveSceneProxy
+    "나는 이런 방식으로 표현될 수 있다."
+
+FMeshBatch
+    "이 Geometry와 Material을 사용할 수 있다."
+
+FMeshDrawCommand
+    "이 패스에서는 정확히 이렇게 Draw하라."
+
+---
+
+고수준 의미
+FPrimitiveSceneProxy
+        ↓
+중간 표현
+FMeshBatch
+        ↓
+패스별 컴파일
+FMeshPassProcessor
+        ↓
+저수준 실행 표현
+FMeshDrawCommand
+        ↓
+RHI Command
+
+---
+
+FParallelMeshDrawCommandPass
+
+이 패스의 모든 Batch를
+어떻게 병렬 번역하고 정렬하고 제출할까?
+
+현재 View
+├─ DepthPass 생산라인
+├─ BasePass 생산라인
+├─ VelocityPass 생산라인
+└─ TranslucencyPass 생산라인
+
+---
+
+FDeferredShadingSceneRenderer는 렌더링 레시피를 알고 있습니다.
+
+Depth를 만든다.
+GBuffer를 만든다.
+Shadow를 만든다.
+Lighting에서 그것들을 읽는다.
+PostProcess로 SceneColor를 가공한다.
+
+하지만 이 선언에는 암묵적인 의존성이 있습니다
+FRDGBuilder는 이 의존성을 실제 GPU 실행 계획으로 바꿉니다
+
+---
