@@ -313,3 +313,244 @@ UGameEngine::SwitchGameWindowToUseGameViewport()
 └─ SViewport를 SWindow::ContentSlot에 연결
 
 ---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+
+Slate는 엔진을 몰라야 하는 독립 프레임워크
+
+범용 retained-mode UI 툴킷
+에디터·런처·Unreal Insight 툴 등에 쓰입니다
+
+"게임"도 "3D 렌더링"도 모른다
+아는 건 위젯·레이아웃·입력 이벤트뿐
+
+---
+
+Slate Tree에서 어느 사각형이 게임 화면인가?
+    SViewport
+
+그 사각형을 Engine Viewport와 어떻게 연결할 것인가?
+    FSceneViewport
+
+---
+
+SViewport (Slate 트리 속 '게임 화면 자리')
+
+"사각형을 씬으로 채워라" → FSceneViewport + UGameViewportClient (어댑터 + 정책)
+
+handle_input
+FSlateApplication → SViewport → FSceneViewport → UGameViewportClient → PlayerController
+
+---
+
+UGameViewportClient   "게임 입력·렌더링 정책"
+        ▲
+        │ ViewportClient (FViewport에서 상속)
+        │
+   FSceneViewport      "두 세계의 어댑터"
+        │
+        │ ViewportWidget (TWeakPtr<SViewport>)
+        ▼
+     SViewport          "Slate 화면 자리"
+
+---
+
+SWindow                         OS 창 + chrome
+└ SViewport                     게임 화면 자리
+  └ SGameLayerManager           
+    └ SDPIScaler                아래 전부에 DPI 스케일 적용
+      └ SVerticalBox[WidgetHost]   
+        ├ SBox[TitleBar]           
+        └ SOverlay[WindowOverlay]  
+          ├ SCanvas[PlayerCanvas]      플레이어별 영역(절대배치)
+          │ ├ SPlayerLayer[Player 0]
+          │ └ SPlayerLayer[Player 1]
+          └ SBox[ViewportSlotContainer]
+            └ SOverlay[ViewportOverlayWidget] 
+
+---
+
+SViewport
+    무대가 보이는 프레임
+
+FSceneViewport
+    무대 프레임과 실제 공연 장비를 연결하는 조정실
+
+UGameViewportClient
+    어떤 공연을 하고 관객의 입력에 어떻게 반응할지 정하는 연출 정책
+
+SGameLayerManager
+    무대 위 자막, HUD, 플레이어 UI, 툴팁을 배치하는 무대 감독
+
+---
+
+일반 Widget은 자신의 Brush와 자식을 그립니다
+
+SViewport는 외부 렌더링 시스템이 만든 화면을 Slate에 제시합니다
+
+SViewport
+├─ Slate Layout에 참여
+├─ 화면상의 Geometry를 가짐
+├─ Input Event를 받음
+├─ Viewport Interface를 호출
+└─ 그 위에 Slate Child를 Paint
+
+HTML의 <canvas> 또는 영상이 출력되는 <video>
+
+---
+
+하지만 실제 장면을 어떻게 렌더링하고 입력을 게임에 어떻게 전달할지는 모릅니다. 
+그 역할을 ISlateViewport 인터페이스 뒤로 밀어냅니다.
+
+SViewport
+└─ TWeakPtr<ISlateViewport> ViewportInterface
+
+---
+
+FSceneViewport는 세 가지 계약을 동시에 구현합니다
+
+FSceneViewport
+├─ FViewport
+└─ ISlateViewport
+
+---
+
+ISlateViewport
+    Slate 쪽 계약
+    Paint, Input, Cursor, Geometry
+
+FViewport
+    Engine 쪽 계약
+    RenderTarget, Resize, Draw, ViewportClient
+
+---
+
+Slate 언어
+
+FGeometry            ───────┐
+Mouse/Keyboard Event ───────┤
+SViewport            ───────┤
+                            FSceneViewport
+RenderTarget         ◀──────┤
+FViewport::Draw      ◀──────┤
+FViewportClient      ◀──────┘
+
+Engine 언어
+
+---
+---
+---
+---
+---
+---
+
+UGameViewportClient
+├─ World            : TObjectPtr<UWorld>            
+├─ GameInstance     : TObjectPtr<UGameInstance>     
+├─ Viewport         : FViewport*  (FSceneViewport)  
+├─ ViewportFrame    : FViewportFrame
+├─ Window           : TWeakPtr<SWindow>             
+├─ (GameLayerManager: TSharedPtr<IGameLayerManager>)
+├─ ViewportConsole  : TObjectPtr<UConsole>          
+├─ EngineShowFlags  : FEngineShowFlags              
+└─ DebugProperties  : TArray<FDebugDisplayProperty>
+
+---
+
+GameInstance (UGameInstance)
+├─ GetLocalPlayers()                       // 이 화면을 보는 사람들
+│   └─ ULocalPlayer
+│      ├─ PlayerController
+│      │   ├─ Pawn (APawn) → Mesh/Movement 등 컴포넌트
+│      │   ├─ PlayerCameraManager
+│      │   ├─ PlayerState
+│      │   ├─ MyHUD (AHUD) → UCanvas (즉시모드 그리기)
+│      │   └─ PlayerInput / 입력 스택
+│      ├─ ViewportClient                    // cycle
+│      └─ ULocalPlayerSubsystem
+├─ UGameInstanceSubsystem
+
+---
+
+World (UWorld)
+├─ PersistentLevel / Levels (ULevel) → Actors (AActor) → Components (UActorComponent)
+├─ AuthorityGameMode / GameState 
+├─ AWorldSettings
+├─ Scene (FSceneInterface = FScene)   // 렌더로 가는 다리
+│     └─ FPrimitiveSceneProxy / FLightSceneProxy … 
+├─ NetDriver
+├─ WorldSubsystems
+├─ TimerManager / LatentActionManager
+└─ FPhysScene
+
+---
+
+Viewport (FSceneViewport, 어댑터)
+├─ ViewportWidget (SViewport)       
+├─ RenderTarget        
+└─ ViewportClient                   // cycle
+
+---
+
+UGameViewportClient::Draw
+
+World->Scene
++ Player Camera POV
++ EngineShowFlags
+
+FSceneView × N → FSceneViewFamily
+FRendererModule::BeginRenderingViewFamily
+FSceneRenderBuilder → SceneRenderer → RDG → …
+
+---
+
+UGameViewportClient::InputKey / InputAxis
+
+FSlateApplication → SViewport → FSceneViewport
+  → UGameViewportClient::InputKey
+  → GEngine::GetLocalPlayerFromInputDevice() → ULocalPlayer → APlayerController → ...
+
+
+UGameInstance는 LocalPlayer들의 보관소이자 세션 Root로 간접적으로 관여하지만, 
+매 입력 이벤트의 직접 호출 노드는 아닙니다.
+
+---
+
+UEngine
+└─ WorldList : TIndirectArray<FWorldContext>
+   └─ FWorldContext
+      ├─ WorldType          Game / PIE / Editor / Preview 
+      ├─ ThisCurrentWorld 
+      ├─ OwningGameInstance 
+      ├─ GameViewport       // UGameViewportClient*
+      ├─ SeamlessTravelHandler / TravelURL / TravelType      
+
+---
+
+UEngine             브라우저 프로세스
+FWorldContext       탭
+UGameInstance       탭에서 유지되는 앱 세션
+UWorld              현재 탭에 로드된 페이지
+UGameViewportClient 페이지를 보여주고 입력받는 View Controller
+
+---
+
+같은 FWorldContext
+같은 UGameInstance
+같은 UGameViewportClient
+
+OldWorld 제거
+    ↓
+NewWorld 로드
+
+---
+
+즉 진실의 원본은 FWorldContext::CurrentWorld이고, 
+UGameInstance::GetWorld()는 접근 인터페이스
