@@ -1,0 +1,437 @@
+FPrimitiveProxy는 Primitive의 렌더 스레드 전략 객체
+
+virtual
+GetDynamicMeshElements, GetViewRelevance, GetLOD
+
+---
+
+FStaticMeshSceneProxy::GetLOD(const FSceneView* View)
+
+---
+
+LOD 체계는 프리미티브 타입마다 다르다
+
+Static Mesh, Skeletal Mesh, Landscape, 
+Nanite
+
+---
+
+만약 렌더러가 LOD를 고른다면 프리미티브 타입마다 switch가 필요해집니다
+M×P / 개방-폐쇄 위반
+
+---
+
+FStaticMeshSceneProxy::DrawStaticElements
+vs
+FStaticMeshSceneProxy::GetDynamicMeshElements
+
+---
+
+UStaticMesh
+├─ StaticMaterials[]
+│  └─ FStaticMaterial::MaterialInterface
+└─ TUniquePtr<FStaticMeshRenderData>
+   └─ FStaticMeshLODResources
+      ├─ VertexBuffers
+      ├─ IndexBuffer
+      └─ Sections[]
+         ├─ FirstIndex
+         └─ NumTriangles
+         └─ MaterialIndex ─→ StaticMaterials[]
+      └─ FStaticMeshVertexFactories [LOD마다]
+         └─ FLocalVertexFactory
+      └─ ScreenSize[]
+
+보조 렌더 데이터
+  Nanite Resources
+  Distance Field, Ray Tracing Geometry
+
+비렌더 데이터
+  BodySetup / Collision
+  Sockets
+
+---
+
+UStaticMeshComponent
+World 안에 놓인 개별 인스턴스
+
+UStaticMesh
+공유되는 원형
+
+UStaticMeshComponent
+├─ StaticMesh 포인터
+├─ World Transform
+├─ OverrideMaterials  // 이 인스턴스에만 해당하는 차이
+├─ ForcedLodModel / MinLOD
+├─ Visibility
+├─ CastShadow
+├─ CustomDepth / Stencil
+├─ Lighting Channels
+├─ Component별 Vertex Color
+└─ 물리 상태
+
+---
+
+UPrimitiveComponent::CreateRenderState_Concurrent()
+└─ FScene::AddPrimitive()
+   └─ UStaticMeshComponent::CreateSceneProxy()
+      └─ FStaticMeshSceneProxy 생성
+---
+
+FStaticMeshSceneProxy
+├─ RenderData*          // FStaticMeshRenderData
+├─ Transform / Bounds
+└─ MeshBatch를 만드는 타입별 로직
+
+---
+
+FPrimitiveSceneProxy
+├─ FStaticMeshSceneProxy
+├─ FSkeletalMeshSceneProxy
+├─ FLandscapeComponentSceneProxy
+├─ FParticleSystemSceneProxy
+├─ FTextRenderSceneProxy
+└─ ...
+
+Renderer는 Component 타입의 아래를 알 필요가 없습니다
+
+---
+
+FMeshBatch
+├─ 공유 상태
+│  ├─ VertexFactory
+│  ├─ MaterialRenderProxy
+│  └─ PrimitiveType
+└─ Elements[]
+   ├─ FMeshBatchElement 0
+   ├─ FMeshBatchElement 1
+   └─ ...
+
+FMeshBatchElement
+├─ IndexBuffer
+├─ FirstIndex
+├─ NumPrimitives
+├─ NumInstances
+├─ BaseVertexIndex
+
+같은 Material과 VertexFactory를 사용하는 묶음 안에서, 
+어느 Index 범위를 그릴지를 기술
+
+---
+
+공유와 개별화, fallback
+
+Component Override
+        ↓ 없으면
+Static Mesh Asset Default
+        ↓ 없으면
+UStaticMeshComponent::GetEditorMaterial()
+
+---
+
+FPrimitiveSceneInfo
+“이 Primitive가 FScene의 어디에 등록되어 있는가”
+
+---
+---
+---
+
+UStaticMesh
+├─ StaticMaterials[]
+│  ├─ Slot 0 → M_Body
+│  ├─ Slot 1 → M_Glass
+│  └─ Slot 2 → M_Decal
+│
+└─ FStaticMeshRenderData
+   └─ FStaticMeshLODResources
+      └─ Sections[]
+         ├─ Section 0.MaterialIndex = 0
+         ├─ Section 1.MaterialIndex = 1
+         └─ Section 2.MaterialIndex = 2
+
+---
+
+방식 A
+Geometry Asset
+└─ 기본 Material Binding 포함
+
+방식 B
+Geometry Asset
+└─ Geometry만 저장
+
+---
+
+UStaticMesh Package
+└─ FStaticMaterial
+   └─ Material Asset을 참조
+
+Material Asset
+└─ Texture Asset들을 참조
+
+에셋 의존성 그래프
+
+---
+
+StaticMesh
+ ├─→ Material Instance
+     ├─→ Parent Material
+     └─→ Textures
+
+---
+---
+---
+
+Struct of Arrays
+
+FScene
+├─ PrimitiveSceneProxies[PackedIndex]
+├─ PrimitiveTransforms[PackedIndex]
+├─ PrimitiveBounds[PackedIndex]
+├─ PrimitiveFlagsCompact[PackedIndex]
+└─ PrimitiveOcclusionBounds[PackedIndex]
+
+---
+
+FPrimitiveSceneInfo ──────→ FPrimitiveSceneProxy
+│                           
+│
+├─ PackedIndex ───────────→ FScene의 밀집 배열들
+├─ PersistentIndex ───────→ 지속 ID / GPUScene
+├─ OctreeId ──────────────→ PrimitiveOctree
+└─ GPUScene offsets ──────→ GPU Buffer 영역
+
+---
+
+FStaticMeshRenderData                       
+  VertexBuffers 
+  IndexBuffer                                 
+  Sections / LOD
+
+
+FLocalVertexFactory
+  런타임 객체, 직렬화 안 됨
+  InitResources 때 생성
+
+---
+
+FScene
+  FScenePrimitiveOctree
+  Primitive별 SoA 배열
+  FPrimitiveSceneInfo
+  Light
+  Lumen Scene, 
+  Nanite Scene, 
+  Distance Field / Ray Tracing
+  GPUScene
+
+---
+---
+---
+
+FLocalVertexFactory
+
+자신의 HLSL 구현을 등록
+
+IMPLEMENT_VERTEX_FACTORY_TYPE(
+    FLocalVertexFactory,
+    "/Engine/Private/LocalVertexFactory.ush",
+);
+
+Material Shader를 FLocalVertexFactory와 조합할 때
+LocalVertexFactory.ush의 코드를 함께 컴파일하라.
+
+---
+
+Mesh Shader permutation
+
+Mesh Pass Shader
+× Material
+× FVertexFactoryType
+× Platform / Feature Level
+
+하나의 최종 Vertex Shader
+
+---
+
+셰이더 선택: FMeshPassProcessor가 VF 타입을 보고 맞는 버텍스 셰이더(PSO)를 고름.
+스트림 바인딩: 이 VF가 가리키는 정점 버퍼를 GPU에 바인딩(SetStreamSource) + PSO에 declaration 세팅.
+파라미터 바인딩: VF의 유니폼 버퍼/SRV를 묶음(FVertexFactoryShaderParameters)
+
+Shader Resource View
+Raw Data가 버퍼 형태로 존재하더라도, 
+셰이더가 이 데이터를 어떤 형식으로 해석하고 읽어야 하는지 명확히 정의
+
+---
+
+FVertexFactory 
+
+FStaticMeshRenderData가 소유
+FMeshBatch가 필수로 참조
+
+---
+
+컴파일 시점
+FVertexFactoryType
+→ Vertex를 해석하는 Shader 코드 결정
+
+실행 시점
+FVertexFactory 인스턴스
+→ 이번 Mesh가 사용하는 실제 Buffer와 그 배치 방법 제공
+
+---
+
+컴파일된 Vertex Shader는 대략 이렇게 알고 있습니다.
+
+ATTRIBUTE0을 Position으로 해석한다
+ATTRIBUTE1을 Tangent로 해석한다
+
+하지만 다음 정보는 알지 못합니다.
+
+Position은 어느 GPU Buffer에 있는가?
+그 Buffer의 시작 위치는 어디인가?
+
+이것을 런타임 FVertexFactory가 제공합니다.
+
+FLocalVertexFactory [특정 Static Mesh LOD의 인스턴스]
+├─ Type             : Local Vertex Factory
+├─ Position Stream  : PositionVertexBuffer
+├─ Tangent Stream   : StaticMeshVertexBuffer
+├─ UV Stream        : StaticMeshVertexBuffer
+├─ Color Stream     : ColorVertexBuffer
+├─ Declaration      : 각 Stream을 Shader ATTRIBUTE에 대응
+└─ Uniform/Resources
+
+---
+
+UStaticMesh::InitResources()
+└─ FStaticMeshRenderData::InitResources()
+   └─ FStaticMeshVertexFactories::InitResources()
+      └─ FStaticMeshVertexFactories::InitVertexFactory()
+
+---
+
+FStaticMeshVertexFactories::InitVertexFactory() 내부 렌더 명령
+├─ Position Buffer를 Data.PositionComponent에 연결
+├─ Tangent Buffer를 Data.TangentBasisComponents에 연결
+├─ UV Buffer를 Data.TextureCoordinates에 연결
+├─ Color Buffer를 Data.ColorComponent에 연결
+
+---
+
+Vertex 0
+├─ Position
+├─ Tangent X
+├─ Tangent Y
+├─ Normal
+├─ UV0
+├─ UV1
+└─ Color
+
+Vertex 1
+├─ Position
+├─ Tangent X
+├─ Tangent Y
+├─ Normal
+├─ UV0
+├─ UV1
+└─ Color
+
+FStaticMeshBuildVertex
+├─ Position
+├─ TangentX
+├─ TangentY
+├─ TangentZ
+├─ UVs[]
+└─ Color
+
+하지만 렌더링용 데이터는 이렇게 한 덩어리로 유지하지 않습니다.
+
+PositionVertexBuffer
+[P0][P1][P2][P3]...
+
+TangentsVertexBuffer
+[Tx0, Nz0][Tx1, Nz1][Tx2, Nz2]...
+
+TexCoordVertexBuffer
+[UV0_0, UV1_0][UV0_1, UV1_1]...
+
+---
+
+Depth Pass나 Shadow Depth Pass는 흔히 Position만 필요합니다.
+
+Position이 다른 정보와 한 구조체에 뒤섞여 있다면 GPU는 Position만 필요해도 불필요한 Tangent와 UV까지 함께 읽습니다
+
+---
+
+FLocalVertexFactory::StaticType
+├─ 이름: "FLocalVertexFactory"
+├─ Shader 파일: LocalVertexFactory.ush
+
+---
+
+FVertexStreamComponent
+“Vertex를 구성하는 성분”
+데이터 하나의 위치
+
+PositionComponent
+Position이라는 데이터를 어디서 어떻게 읽을지
+
+---
+
+Stream 0 → PositionVertexBuffer
+Stream 1 → TangentsVertexBuffer
+Stream 2 → TexCoordVertexBuffer
+Stream 3 → ColorVertexBuffer
+
+---
+
+하나의 Stream 안에 여러 Component가 들어갈 수 있습니다
+
+TangentsVertexBuffer Stream
+├─ Offset 0 → TangentX Component
+└─ Offset 4 → TangentZ Component
+
+---
+
+Attribute는 Shader가 입력을 받는 논리적인 슬롯
+
+Position : ATTRIBUTE0
+TangentX : ATTRIBUTE1
+TangentZ : ATTRIBUTE2
+Color    : ATTRIBUTE3
+UV       : ATTRIBUTE4
+
+---
+
+GPU Buffer
+   │
+   │ Stream
+   ▼
+Buffer 안의 특정 byte 영역
+   │
+   │ Component
+   ▼
+Shader의 ATTRIBUTE 슬롯
+
+---
+
+GPU가 Vertex N의 특정 Component를 찾는 공식
+
+StreamOffset: Buffer 전체에서 이 Stream이 시작되는 위치
+Offset: Vertex 레코드 안에서 Component가 위치한 곳
+Stride: 다음 Vertex의 레코드로 가기 위한 간격
+Type: 그 byte를 Float3, Half2, Color 등 무엇으로 해석할지
+
+---
+---
+---
+
+Tangent는 흔히 압축된 정규화 정수 형식으로 저장합니다
+
+PF_R8G8B8A8_SNORM
+PF_R16G16B16A16_SNORM
+
+방향 벡터는 대개 [-1, 1] 범위이므로 32-bit float 전체를 사용할 필요가 없기 때문
+
+---
+---
