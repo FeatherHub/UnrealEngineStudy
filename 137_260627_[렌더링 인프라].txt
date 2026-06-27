@@ -1,0 +1,420 @@
+FMeshBatch
+
+FPrimitiveSceneProxy::GetDynamicMeshElements 가 산출
+"무엇을 그릴지"의 API-중립 서술
+
+FMeshBatch::VertexFactory
+메시 정점 버퍼 레이아웃과 정점 셰이더 입력 시그니처를 연결
+
+FMeshBatch::MaterialRenderProxy
+인덱스 범위를 담은 Elements
+
+---
+
+FMeshPassProcessor
+
+패스별로(EMeshPass: DepthPass, BasePass, …) FMeshPassProcessor가 하나씩 존재
+
+FMeshPassProcessor::AddMeshBatch가 배치를 받아 VertexFactory+머티리얼에서 셰이더를 고르고
+PSO·바인딩을 확정해 FMeshDrawCommand를 산출한다
+
+---
+
+FRHICommandList
+
+RHI 스레드가 이를 D3D12 백엔드(FD3D12CommandContext)로 번역하면서 
+ID3D12GraphicsCommandList에 기록된다
+
+번역된 커맨드 리스트가 ExecuteCommandLists로 D3D12 큐에 제출
+
+---
+
+디퍼드 렌더러
+
+Depth prepass → BasePass(GBuffer) → 라이팅(Lumen) → 포스트 → 백버퍼 순으로 실행
+
+---
+---
+---
+
+Resource binding은 복사가 아니다
+
+command list
+  SetConstantBufferView(address = 0xABC)
+  DrawIndexedInstanced
+
+"Draw할 때 constant buffer 내용을 0xABC에서 읽어라"
+GPU가 나중에 draw를 실행할 때, 그 주소를 따라가서 실제 데이터를 읽습니다.
+
+그래서 CPU가 너무 빨리 0xABC 내용을 바꿔버리면 문제가 생깁니다.
+
+---
+
+Fence는 GPU 작업 줄에 끼워 넣는 완료 번호표
+
+Command Queue:
+  [Frame 1 Draw 명령들]
+  [Signal Fence = 1] // Fence 값을 1로 변경
+
+---
+
+CreateEvent는 Win32 자유 함수
+
+ID3D12CommandQueue::Signal(fence, currentFenceValue)
+
+ID3D12Fence::GetCompletedValue()
+ID3D12Fence::SetEventOnCompletion(requiredValue, fenceEvent)
+
+WaitForSingleObject(fenceEvent, INFINITE)
+
+---
+
+Renderer::currentFenceValue = CPU가 발급하는 번호표
+fence->completedValue       = GPU가 실제로 완료한 번호
+
+---
+
+Renderer 객체 내부 상태:
+
+commandQueue
+fence
+fenceEvent
+currentFenceValue
+frameFenceValues[]
+
+---
+
+Renderer::WaitForGpuCompleteFrame(frameFenceValue)
+{
+  commandQueue->Signal(fence.Get(), frameFenceValue);
+
+  if (fence->GetCompletedValue() < frameFenceValue)
+  {
+    // "fence 값이 frameFenceValue 이상이 되면 fenceEvent를 켜줘."
+    fence->SetEventOnCompletion(frameFenceValue, fenceEvent)
+
+    WaitForSingleObject(fenceEvent)
+  }
+}
+
+---
+---
+---
+---
+---
+---
+---
+
+한 프레임 뷰들의 공통 맥락
+패밀리 하나당 FSceneRenderer 하나 생성
+한 프레임을 한 렌더타깃으로 렌더하기 위해 필요한 정보들
+
+FSceneViewFamily
+  TArray<FSceneView*>
+  FSceneInterface
+  FRenderTarget
+  FEngineShowFlags
+  FGameTime
+  FrameNumber / FrameCounter
+
+  bResolveScene / bRealtimeUpdate / bIsMainViewFamily / SceneCaptureSource
+
+---
+
+카메라 내재 파라미터
+far 필드가 안 보이는 건 UE가 reversed-Z 무한 평면을 써서 near만 두기 때문
+
+FMinimalViewInfo  
+  Location / Rotation
+  FOV, DesiredFOV // 실제값 vs 요청값
+  AspectRatio
+  PerspectiveNearClipPlane         
+  OrthoNearClipPlane / OrthoFarClipPlane / OrthoWidth
+  ProjectionMode (Perspective/Ortho)
+  OffCenterProjectionOffset // 렌즈 시프트(건축 샷에서 수직선을 수직으로 유지), VR 스테레오 등
+
+---
+
+ULocalPlayer::CalcSceneView 가 생성
+
+FSceneView 
+  FSceneViewStateInterface*
+  TUniformBufferRef<FViewUniformShaderParameters> // GPU 버퍼는 렌더 스레드가 채운다
+
+  FViewMatrices
+  ViewLocation / ViewRotation / FOV
+  UnscaledViewRect / UnconstrainedViewRect
+  ViewFrustum : FConvexVolume
+
+  StereoPass / StereoViewIndex / GPUMask
+
+  HiddenPrimitives / ShowOnlyPrimitives : TSet<FPrimitiveComponentId>
+
+  Diffuse/Specular/Normal OverrideParameter // 씬 전역 머티리얼 오버라이드
+  
+---
+---
+---
+
+Game Thread 쪽에서 FSceneView 생성
+        |
+        v
+FSceneRenderer 생성
+        |
+        |  FSceneView -> FViewInfo 로 복사/확장
+        v
+Views[] : TArray<FViewInfo>
+        |
+        v
+InitViews
+        |
+        |  PrimitiveVisibilityMap
+        |  PrimitiveViewRelevanceMap
+        |  DynamicMeshElements
+        |  VisibleLightInfos
+        v
+MeshPass setup
+        |
+        |  FMeshBatch -> FMeshDrawCommand 준비
+        v
+Render passes
+        |
+        |  Depth / BasePass / Lighting / Translucency / PostProcess ...
+        v
+GPU command submission
+
+---
+---
+---
+
+렌더 스레드에서 FSceneRenderer가 생성
+한 시점을 한 프레임 렌더하는 동안의 작업 차트
+거의 모든 renderer pass가 FViewInfo를 읽습니다
+
+FViewInfo : FSceneView
+  FSceneRenderingBulkObjectAllocator   
+  FSceneViewState*
+
+  PrimitiveVisibilityMap : FSceneBitArray
+  PrimitiveViewRelevanceMap : TArray<FPrimitiveViewRelevance>
+  IndividualOcclusionQueries / GroupedOcclusionQueries : FOcclusionQueryBatcher
+  
+  DynamicMeshElements : TArray<FMeshBatchAndRelevance>   // GetDynamicMeshElements 결과
+
+  TemporalJitterIndex / TemporalJitterPixels
+  PrevViewInfo : FPreviousViewInfo
+
+---
+
+병원 환자 차트
+
+접수에서 차트 개설(이름·생년 = 카메라 정보) = FSceneView 복사로 생성
+
+분류 → 채혈·영상의학 → 진단, 각 스테이션이 같은 차트에 결과를 적는다 = 가시성② → 수집③ → UB④ → 패스⑤ 가 차례로 채움
+
+차트는 환자를 따라다니며 모두가 읽고 쓴다 = FSceneRenderer가 계속 쥐고, 각 단계가 읽고 쓴다
+
+결과물은 차트가 아니라 치료다 = 차트의 일부(처방전 = ViewUniformBuffer)만 약국(GPU)에 전달되고, 
+퇴원 요약만 평생 의무기록(FSceneViewState)에 남는다
+
+퇴원하면 작업용 차트는 폐기 = 프레임 끝에 FViewInfo 소멸
+
+---
+
+같은 수명. 전부 1프레임 살고 같은 아레나(FSceneRenderingBulkObjectAllocator/SceneRenderingAllocator)에서 나서 같이 죽는다. 
+같은 수명 데이터를 한 객체에 모으면 할당·해제·소유가 한 번에 끝난다.
+수명 버킷.
+
+
+수십 개 출력을 단계마다 함수 인자로 실어 나르지 않으려고, 한 컨텍스트 객체에 담아 참조로 넘긴다
+거대 시그니처를 피한다
+
+---
+
+PrimitiveVisibilityMap
+    -> 이 primitive가 보이는가?
+
+PrimitiveViewRelevanceMap
+    -> 보인다면 어떤 pass / shading / shadow / translucency 성격인가?
+
+DynamicMeshElements
+    -> proxy가 실제로 제출한 FMeshBatch 목록은 무엇인가?
+
+DynamicMeshElementsPassRelevance
+    -> 각 dynamic mesh element가 어느 pass에 들어가는가?
+
+---
+---
+
+FSceneViewState : FSceneViewStateInterface, FRenderResource
+
+장기 기억, 일종의 Frame History
+어떤 효과는 이전 프레임 데이터가 필요
+
+TAA/TSR는 이번 프레임을 지난 프레임 이미지와 섞고(지난 색 히스토리 필요)
+오클루전 쿼리는 "지난 프레임에 보였나"
+자동노출은 ~1초에 걸쳐 밝기를 적응
+모션블러는 이전 트랜스폼이 필요
+
+---
+
+FViewUniformShaderParameters 
+
+셰이더가 쓸 수 있는 뷰 상수를 평평한 구조체(포인터 없음, 숫자 + 텍스처 핸들)로 모아 유니폼 버퍼로 업로드한다
+
+---
+
+FPrimitiveSceneProxy::GetViewRelevance가 생성
+어느 패스·기능에 참여하나, 정적이냐 동적이냐
+
+relevance = "어느 패스가 나를 신경 써야 하나", 
+MeshPassProcessor = "그 패스에서 정확히 어떻게 그리나"
+
+FPrimitiveViewRelevance : FMaterialRelevance
+  bStaticRelevance / bDynamicRelevance
+  bRenderInMainPass / bRenderInDepthPass / bRenderInSecondStageDepthPass
+  bShadowRelevance                       
+  bVelocityRelevance                     
+  bUsesLightingChannels / bHasSimpleLights / bTranslucentSelfShadow
+
+프록시는 모든 머티리얼의 OR를 FPrimitiveSceneProxy::CombinedMaterialRelevance로 캐시해 둔다
+
+Primitive Component 의 설정과 사용하는 Material 에서 도출된다
+
+---
+
+ResolveVisibilityAndBuildDrawCommands
+
+FDeferredShadingSceneRenderer::BeginInitViews/EndInitViews
+실제 작업은 비동기 태스크(FVisibilityTaskData)로 
+
+프러스텀 컬링 + 오클루전 → PrimitiveVisibilityMap
+Relevance (FPrimitiveSceneProxy::GetViewRelevance) → PrimitiveViewRelevanceMap, VisibleLightInfos
+
+LOD → PrimitivesLODMask
+
+동적 기하 수집 
+FVisibilityTaskData::GatherDynamicMeshElements → FPrimitiveSceneProxy::GetDynamicMeshElements → DynamicMeshElements
+
+FViewInfo::SetupUniformBufferParameters → InitRHIResources
+CachedViewUniformShaderParameters, ViewUniformBuffer
+
+패스별 드로우커맨드 셋업 
+FVisibilityTaskData::SetupMeshPasses→ FParallelMeshDrawCommandPass::DispatchPassSetup 
+→ 워커가 FMeshDrawCommand 생성·정렬·병합
+
+
+---
+
+FMeshBatch → FMeshDrawCommand
+FMeshDrawCommand → FRHICommandList
+RHICmdList → D3D12 → GPU
+
+---
+
+RDG 패스 그래프 짜기(FRDGBuilder::AddPass로 PrePass·Base·Lighting·Translucency·Post 선언) + 실행(FRDGBuilder::Execute)
+
+이 실행 중에 드로우커맨드가 FParallelMeshDrawCommandPass::Draw/Dispatch
+(→ FMeshDrawCommand::SubmitDraw)로 FRHICommandList에 기록된다
+
+---
+---
+---
+---
+---
+---
+---
+
+FEngineLoop::Tick
+  RHI BeginFrame command enqueue
+
+UGameEngine::Tick
+  World Tick
+  actor/component, animation, camera 등이 갱신
+  MarkRenderTransformDirty, MarkRenderDynamicDataDirty, MarkRenderStateDirty
+
+UGameEngine::RedrawViewports
+  
+FViewport::Draw
+  BeginDrawingCommand enqueue
+  FCanvas를 만들고 client에게 draw를 맡깁니다
+
+UGameViewportClient::Draw(this, &Canvas)
+  FSceneViewFamilyContext 생성
+  LocalPlayer->CalcSceneView
+  ViewFamily.Views 에 추가
+  GetRendererModule().BeginRenderingViewFamily
+
+GetRendererModule().BeginRenderingViewFamily
+  World->SendAllEndOfFrameUpdates
+  FSceneRenderBuilder 생성
+  SceneRenderBuilder.CreateLinkedSceneRenderers
+  FSceneRenderer 생성자에서 FSceneView들이 FViewInfo로 복사/확장
+  SceneRenderBuilder.AddRenderer
+  SceneRenderBuilder.Execute
+
+SceneRenderBuilder.Execute
+  ENQUEUE_RENDER_COMMAND
+
+Render Thread 에서 실행 예정
+  Renderer->Render
+    FRDGBuilder GraphBuilder(...)
+    RenderNode.Function(GraphBuilder, FunctionInputs)
+    GraphBuilder.Execute()
+
+---
+
+World->SendAllEndOfFrameUpdates()
+UActorComponent::DoDeferredRenderUpdates_Concurrent
+{
+  if (bRenderStateDirty) RecreateRenderState_Concurrent();   // 프록시 재생성
+  else 
+  {
+      if (bRenderTransformDirty)   SendRenderTransform_Concurrent();   // → FScene::UpdatePrimitiveTransform
+      if (bRenderDynamicDataDirty) SendRenderDynamicData_Concurrent();
+  }
+}
+
+USkinnedMeshComponent::SendRenderDynamicData_Concurrent 
+  게임 스레드에서 즉시 실행되는 일반 함수
+  스냅샷을 만들어서 렌더 스레드에 ENQUEUE 한다
+
+---
+---
+---
+
+패스 사이(between passes) — 여기에 의존성이 있다
+BasePass가 GBuffer를 쓰고 Lighting이 그걸 읽으니 순서가 강제된다
+
+한 패스 안(within a pass)
+FParallelMeshDrawCommandPass가 병렬화하는 건 이쪽
+한 패스의 드로우 수천 개는 서로 독립이다
+유일한 예외는 순서(반투명 뒤→앞, PSO 묶기)인데, 그건 이미 SortKey로 리스트에 박혀 있다.
+메커니즘은 "정렬된 리스트를 연속 구간으로 쪼개 병렬 기록 → 순서대로 이어붙이기"
+
+---
+
+SceneRenderBuilder_Render lambda
+  FRDGBuilder GraphBuilder
+  Renderer->Render(...)
+  GraphBuilder.Execute()
+
+
+RenderViewFamily_RenderThread
+  Renderer->Render(GraphBuilder, SceneUpdateInputs)
+
+
+FDeferredShadingSceneRenderer::Render(FRDGBuilder& GraphBuilder, ...)
+  한 프레임의 렌더 그래프를 조립하는 함수
+
+  OnRenderBegin
+  BeginInitViews, EndInitViews
+
+  RDG에 “패스 노드”를 등록
+    RenderPrePass
+    RenderBasePass
+    RenderLights
+    AddPostProcessingPasses
+    RayTracingScene.PostRender
+
+---
