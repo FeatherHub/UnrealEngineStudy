@@ -167,3 +167,719 @@ FRDGBuilder::AddPass
 FRDGBuilder::Execute
 
 ---
+---
+---
+---
+---
+---
+
+FRDGBuilder::ExecutePass(...)
+  -> FRDGBuilder::ExecutePassPrologue(...)
+  -> FRDGPass::Execute(...)
+  -> FRDGBuilder::ExecutePassEpilogue(...)
+
+
+FRDGBuilder::ExecutePassPrologue
+resource barrier 제출
+UAV overlap 시작
+
+
+FRDGBuilder::ExecutePassEpilogue
+후속 resource barrier 제출
+UAV overlap 종료
+
+---
+
+렌더 스레드는 "컴파일러"다
+
+소스=씬
+타깃=GPU 커맨드 스트림(FRHICommandList)
+
+가시성·릴러번스 = 죽은 코드 제거 (안 보이면 컴파일 안 함)
+FMeshBatch = 중간표현(IR)
+FMeshPassProcessor = 코드 생성기 (IR→기계어)
+FMeshDrawCommand = 기계어 한 줄
+정렬·병합 = 최적화 패스
+FParallelMeshDrawCommandPass = 병렬 빌드 시스템 (여러 코어로 컴파일)
+FRDGBuilder = 빌드 그래프/스케줄러 (타깃·의존성 선언 후, 메모리·배리어를 최적 배치해 실행)
+FRHICommandList = 어셈블러에 넘기는 오브젝트 파일 (→ RHI 스레드 → D3D12)
+
+---
+
+함수 호출 Draw()는 즉시 사라진다.  
+"Draw 하라"를 데이터(FMeshDrawCommand)로 만들면
+보관(캐시)·비교(병합)·재배열(정렬)·분배(병렬)가 가능해진다
+
+---
+
+visibility
+
+FScene::PrimitiveBounds
+FSceneRenderer::Views[i]:FViewInfo::ViewFrustum
+FSceneViewState
+
+
+FSceneRenderer::Views[i]:FViewInfo::PrimitiveVisibilityMap
+FSceneRenderer::Views[i]:FViewInfo::PrimitiveViewRelevanceMap
+FSceneRenderer::Views[i]:FViewInfo::DynamicMeshElements
+
+---
+
+FParallelMeshDrawCommandPass::DispatchPassSetup으로 띄운 
+setup task(FMeshDrawCommandPassSetupTask)
+
+GenerateDynamicMeshDrawCommands(자유 함수)가 FMeshPassProcessor를 돌려 커맨드 생성
+
+SortAndMergeDynamicPassMeshDrawCommands(자유 함수)가 FMeshDrawCommand::CachedPipelineId 기반 SortKey로 정렬
+
+FParallelMeshDrawCommandPass::BuildRenderingCommands → FInstanceCullingContext에서 인스턴스 병합
+
+---
+
+base FRDGPass는 람다를 안 든다
+메타데이터만(FRDGPass::Name, FRDGPass::ParameterStruct, FRDGPass::Flags…)
+
+람다는 파생 템플릿 TRDGLambdaPass가 멤버 TRDGLambdaPass::ExecuteLambda로 들고, 
+FRDGPass::Execute(virtual)를 override해 그 람다를 호출한다.
+
+이 파생 객체를 만드는 게 FRDGBuilder::AddPass
+
+---
+
+FRDGBuilder::AddPass로 패스들(FRDGPass)을 수집
+
+FRDGBuilder::Execute에서 각 패스의 FRDGPass::ParameterStruct(= 이 패스가 읽고/쓰는 리소스 목록)를 보고 
+의존성 그래프를 자동 도출한다
+"패스 A가 쓴 텍스처를 패스 B가 읽으면 A→B" 식으로
+
+그 그래프로: 리소스 수명 계산 → 트랜지언트 메모리 배정 → 배리어 자동 삽입 → 안 쓰는 패스 컬링 → (가능하면) async compute 오버랩 → 의존성 순서로 람다(FRDGPass::Execute) 호출 → FRDGBuilder::RHICmdList에 기록.
+
+---
+
+FRDGPass = RDG 그래프의 실행 노드 (배리어·의존성 단위)
+
+EMeshPass(Depth/Base/Shadow/Translucency) = 드로우 커맨드의 분류 (정렬 정책·렌더타깃이 다른 묶음)
+
+RenderXxx 함수 = 그 패스를 선언하는 코드
+RenderXxx 함수는 FRDGPass를 1개 이상 만든다.
+
+---
+
+SceneRenderBuilder_Render 
+
+FDeferredShadingSceneRenderer::Render
+FSceneRenderer::OnRenderBegin
+LaunchVisibilityTasks
+
+FVisibilityViewPacket::BeginInitVisibility
+
+FrustumCull(...)
+PrecomputedOcclusionCull(...)
+FGPUOcclusionPacket::OcclusionCullPrimitive(...)
+FRelevancePacket::ComputeRelevance(...)
+
+LaunchVisibilityTasks는 FVisibilityTaskData를 만들고 그 객체에게 visibility task graph 구성을 맡긴다
+
+---
+
+CachedPipelineId: FGraphicsMinimalPipelineStateId 
+PSO(셰이더 + 렌더 상태 묶음)를 작은 정수로 인터닝한 핸들
+
+같은 PSO를 쓰는 드로우끼리 인접하게 정렬
+인접한 동일 커맨드를 인스턴스 드로우로 병합할 수 있다
+
+단, 반투명 패스는 PSO가 아니라 깊이 뒤→앞으로 정렬한다
+
+---
+
+최상위 지휘자: FDeferredShadingSceneRenderer
+프레임 전체 Render를 주도
+OnRenderBegin·InitViews·RenderXxx 전부 호출
+
+GPU 패스 스케줄러: FRDGBuilder
+
+가시성 오케스트레이터: FVisibilityTaskData
+cull→occlusion→relevance→gather
+
+메시 드로우 실행 엔진: FParallelMeshDrawCommandPass — 패스당 하나.
+
+GPU 인스턴스 컬링: FInstanceCullingManager.
+
+프레임/뷰패밀리 묶음: FSceneRenderBuilder.
+
+---
+
+FRendererModule::BeginRenderingViewFamily
+FSceneRenderBuilder::Execute
+RenderViewFamily_RenderThread (자유 함수)
+FDeferredShadingSceneRenderer::Render
+FSceneRenderer::OnRenderBegin
+FScene::UpdateAllPrimitiveSceneInfos
+LaunchVisibilityTasks (자유 함수)
+FDeferredShadingSceneRenderer::BeginInitViews
+GatherDynamicMeshElements 
+FVisibilityTaskData::SetupMeshPasses
+FParallelMeshDrawCommandPass::DispatchPassSetup
+FinishGatherDynamicMeshElements    // 비동기들 Join
+
+---
+
+FRDGBuilder::Execute
+
+1 (컴파일 단계) 의존성 분석 → 수명·트랜지언트 메모리·배리어·컬·async 오버랩 결정
+
+2 패스별로 FRDGBuilder::ExecutePass
+  FRDGBuilder::ExecutePassPrologue   (배리어 제출, UAV overlap 시작)
+  FRDGPass::Execute                  (람다 실행 = RHICmdList에 기록)
+  FRDGBuilder::ExecutePassEpilogue   (후속 배리어, overlap 종료)
+
+---
+
+UE의 visibility pipeline
+
+“octree에서 보이는 객체 목록을 뽑는다”보다 
+“primitive index 배열을 병렬로 훑으며 bitset을 만든다”에 최적화
+
+FSceneRenderer::Views[i]:FViewInfo::PrimitiveVisibilityMap[Index]
+
+Primitive index:
+  0 1 2 3 4 5 6 7 ...
+
+PrimitiveVisibilityMap:
+  1 0 1 1 0 0 1 0 ...
+
+---
+
+123번 primitive라는 번호로 
+bounds, proxy, occlusion flag, visibility bit, relevance가 전부 연결
+
+FScene::Primitives[123] // FPrimitiveSceneInfo*
+FScene::PrimitiveBounds[123]
+FScene::PrimitiveSceneProxies[123] // FPrimitiveSceneProxy*
+FScene::PrimitiveOcclusionFlags[123]
+
+---
+
+FrustumCull
+OcclusionCull
+  -> PrimitiveVisibilityMap
+
+GatherDynamicMeshElements
+  -> 살아남은 dynamic primitive만 수집
+
+---
+
+선형 배열 방식
+
+병렬화가 쉽다
+frustum test 자체가 싸다 (fast 8-plane box intersection)
+
+octree traversal은 branch/pointer/cache miss가 늘 수 있다
+
+---
+
+FrustumCull은 bit를 켠다
+
+for Index in primitive range:
+  FScene::PrimitiveBounds[Index] 검사
+  FSceneRenderer::Views[i]:FViewInfo::PrimitiveVisibilityMap[Index] 갱신
+
+OcclusionCull은 같은 bitset을 다시 깎는다
+같은 PrimitiveVisibilityMap을 보고, 가려졌으면 같은 bit를 false로 내린다
+
+---
+
+FComputeAndMarkRelevance::AddPrimitive(Index)
+FRelevancePacket::ComputeRelevance(...)
+FSceneRenderer::Views[i]:FViewInfo::PrimitiveViewRelevanceMap[BitIndex]
+PrimitiveSceneProxy->GetViewRelevance(&View)
+
+FViewInfo::PrimitiveViewRelevanceMap[Index] 
+
+Relevance
+
+“보인다면 어떤 방식/어느 pass에서 그려야 하는가?”
+
+---
+
+FPrimitiveSceneProxy::GetViewRelevance(&View) -> FPrimitiveViewRelevance
+
+FPrimitiveViewRelevance는 bit bundle
+
+bStaticRelevance
+bDynamicRelevance
+
+bDrawRelevance
+bShadowRelevance
+bVelocityRelevance
+
+bRenderCustomDepth
+bRenderInDepthPass
+bRenderInMainPass
+
+material relevance bits: opaque/translucent/masked/distortion
+
+Result.bDrawRelevance = IsShown(View) && EngineShowFlags.StaticMeshes
+Result.bRenderCustomDepth = ShouldRenderCustomDepth()
+Result.bRenderInMainPass = ShouldRenderInMainPass()
+Result.bRenderInDepthPass = ShouldRenderInDepthPass()
+
+---
+
+FSceneRenderer::Views[i]:FViewInfo::PrimitiveVisibilityMap[123]
+FSceneRenderer::Views[i]:FViewInfo::PrimitiveViewRelevanceMap[123]
+
+"123번 primitive는 보임?"
+"123번 primitive는 occlusion으로 제거됐음?"
+
+"123번 primitive의 ViewRelevance는?"
+"123번 primitive에서 나온 dynamic mesh element는 어느 pass에 들어감?"
+
+---
+
+
+FPrimitiveOcclusionHistory::LastTestFrameNumber
+FPrimitiveOcclusionHistory::WasOccludedLastFrame
+FPrimitiveOcclusionHistory::LastProvenVisibleTime
+FPrimitiveOcclusionHistory::LastConsideredTime
+
+---
+
+FScene::PrimitiveBounds:TScenePrimitiveArray<FPrimitiveBounds>
+  frustum culling
+  distance culling
+  MinDrawDistance / MaxDrawDistance / MaxCullDistance
+
+FScene::PrimitiveOcclusionBounds:TScenePrimitiveArray<FBoxSphereBounds>
+  occlusion query/HZB bounds용
+
+---
+
+FScene::Primitives:TArray<FPrimitiveSceneInfo*>
+FScene::PrimitiveSceneProxies:TArray<FPrimitiveSceneProxy*>
+FScene::PrimitiveBounds:TScenePrimitiveArray<FPrimitiveBounds>
+FScene::PrimitiveOcclusionFlags:TArray<uint8>
+FScene::PrimitiveOcclusionBounds:TScenePrimitiveArray<FBoxSphereBounds>
+FScene::PrimitiveComponentIds:TArray<FPrimitiveComponentId>
+
+---
+
+일을 작게 나눈 묶음
+나중에 큰 결과로 merge/finalize되는 단위
+
+모든 worker가 하나의 거대한 배열에 바로 쓰면 충돌이 많다. 
+packet별로 처리하고 마지막에 합치는 편이 싸다.
+
+FVisibilityViewPacket
+FRelevancePacket
+FRelevancePacket::DrawCommandPacket:FDrawCommandRelevancePacket // FRelevancePacket 안에서 쓰는 draw command 관련 결과 바구니
+FGPUOcclusionParallelPacket
+
+---
+
+전체 primitive index들
+  |
+  | 쪼갬
+  v
+Packet 0 : primitive 0..511
+Packet 1 : primitive 512..1023
+Packet 2 : primitive 1024..1535
+  |
+  | 병렬 처리
+  v
+packet-local 결과
+  |
+  | Finalize / append / replay
+  v
+view-level 결과로 병합
+
+---
+
+primitive별 occlusion history는 view state에 남는다
+
+FSceneViewState::Occlusion::PrimitiveOcclusionHistorySet
+
+---
+
+Hardware occlusion query
+
+RHICmdList.BeginRenderQuery(Query)
+DrawIndexedPrimitive(bounds box)
+RHICmdList.EndRenderQuery(Query)
+
+---
+
+GPU:
+  depth/HZB/query를 매우 싸게 계산
+
+CPU:
+  다음 프레임에 작은 결과만 읽고
+  visibility bit를 끔
+
+---
+
+이런 경우 CPU가 꽤 잘할 수 있다.
+
+cell / portal / PVS
+large occluder
+
+---
+---
+---
+---
+---
+---
+---
+---
+---
+
+---
+
+interning
+
+정규본 하나만 표(table)에 저장해 두고 나머지는 작은 핸들/인덱스로 가리키는 기법
+중복 제거 저장
+
+Java String pool, FName
+
+비교는 정수 비교
+들고 다니는 구조체들이 가벼워짐
+
+PSO 인터닝
+
+드로우 커맨드를 만들 때 PSO 이니셜라이저(셰이더 + 렌더 상태)를 해시로 find-or-add 하고, 
+그 표의 인덱스(FGraphicsMinimalPipelineStateId = 작은 정수)만 커맨드에 적는다
+
+---
+
+두 FMeshDrawCommand가 "어느 인스턴스를 그리나"만 빼고 전부 같으면(같은 PSO·바인딩·정점/인덱스 버퍼·드로우 인자), 
+둘을 합쳐 DrawIndexedInstanced(InstanceCount=N) 한 번으로 만든다. 
+
+인스턴스별 차이(트랜스폼 등)는 셰이더가 InstanceId로 FScene::FGPUScene에서 페치
+
+FGPUScene가 per-primitive 트랜스폼을 커맨드 밖(표)으로 빼놨기 때문에 바인딩이 전부 같아진다
+
+
+ISM/HISM
+한 컴포넌트가 N 인스턴스, 원래부터 한 드로우. (이건 별개 메커니즘)
+
+Material Instance / MID
+머티리얼 파라미터 변형
+드로우 인스턴싱과 무관
+서로 다른 MID는 바인딩이 달라져 안 합쳐질 수 있다
+
+Dynamic instancing(메시 드로우)
+SortKey 정렬 + 병합이 하는 게 이거.
+GPUScene 덕에 가능.
+
+---
+
+드로우마다 같은 것(명령)과 다른 것(인스턴스별 데이터)을 분리하고, 
+다른 것은 GPU 테이블에 넣어 인덱스로 간접 참조한다
+
+그러면 같은 메시·머티리얼을 쓰는 여러 객체의 드로우 명령이 완전히 동일해지고, 
+동일한 명령 N개는 DrawIndexedInstanced(InstanceCount=N) 하나로 접힌다
+
+셰이더는 SV_InstanceID → PrimitiveId로 자기 행을 읽어 각자 위치에 그린다
+
+핵심은 공통/가변 분리 + 간접참조
+
+---
+
+UE에서 "별개의 드로우 명령을 자동 병합"하는 dynamic instancing은 
+UE 4.22의 Mesh Drawing Pipeline 리팩터(FMeshDrawCommand 도입)에서 등장. 
+
+그전엔 드로우가 "코드 실행"이라 비교·병합이 불가능했다. 
+
+4.22가 드로우를 데이터(FMeshDrawCommand)로 사물화하면서 
+"동일성 비교 → 병합"이 열렸고, 
+같은 시기 GPUScene가 한 쌍으로 들어왔다
+
+---
+
+왜 GPUScene 덕인가
+
+옛 모델: 드로우마다 per-primitive 유니폼 버퍼(b1 = Primitive: LocalToWorld 등)를 바인딩했다. 
+이 바인딩이 객체마다 달라서 두 드로우 명령이 절대 같아질 수 없었다.
+
+GPUScene: per-primitive 데이터를 하나의 거대한 GPU 구조화 버퍼(FScene::FGPUScene::PrimitiveBuffer)에 넣고 
+PrimitiveId로 색인. 
+
+드로우 명령은 더 이상 per-primitive UB를 바인딩하지 않고, 
+셰이더가 GPUScene.Primitives[PrimitiveId]를 직접 페치한다.
+
+결과: "변하는 것(트랜스폼)"이 명령 밖으로 빠지니, 같은 메시·머티리얼이면 바인딩이 전부 동일 
+→ 명령이 동일 → 병합 가능.
+
+GPUScene가 "객체를 서로 다르게 만들던 per-draw 유니폼"을 제거해 명령을 동일하게 만들었고, 
+그래서 병합이 가능해졌다
+
+FMeshDrawCommand 사물화 + GPUScene 데이터 분리, 
+그 둘이 만나 dynamic instancing이 성립한다
+
+---
+
+트랜스폼은 FScene::FGPUScene에 살고 셰이더가 PrimitiveId로 페치
+
+Custom Primitive Data
+머티리얼이 읽는 per-primitive 스칼라/벡터 GPUScene 페이로드에
+값만 인스턴스별로 다르게 하고 싶으면 MID 대신 Custom Primitive Data
+
+"두 명령이 병합 가능한가?" = "GPUScene의 어느 행을 가리키느냐만 빼고 모든 인자가 같은가?"
+
+---
+---
+---
+
+shader permutation
+
+머티리얼 
+VertexFactory 
+Depth/BasePass/Shadow/Velocity
+VS/PS/CS
+플랫폼 / 피처레벨 / 퀄리티
+
+---
+
+FMeshDrawCommand::ShaderBindings // FMeshDrawShaderBindings
+
+모든 바인딩을 하나의 연속 바이트 블롭(uint8* Data)에 패킹
+
+셰이더 별 뷰(FMeshDrawSingleShaderBindings)가 그 블롭의 구획을 가리키고
+한 블롭 안에:
+
+유니폼 버퍼 포인터들 (FMeshDrawSingleShaderBindings::GetUniformBufferStart)
+  머티리얼 UB 포함
+SRV / 샘플러 / 텍스처 포인터들
+
+---
+
+UMaterialInstanceConstant, UMaterialInstanceDynamic
+셰이더를 재컴파일하지 않고 부모의 셰이더 맵을 공유
+FMeshDrawCommand::CachedPipelineId(PSO)가 동일
+
+병합을 깨는 건 PSO가 아니라 바인딩
+MI/MID마다 자기 FMaterialRenderProxy와 머티리얼 유니폼 버퍼(파라미터 값이 구워진 UB)를 가져서, 
+그 UB 포인터가 FMeshDrawCommand::ShaderBindings 블롭에서 달라짐
+
+---
+
+loose parameter
+
+유니폼 버퍼(cbuffer)로 묶이지 않은 개별 셰이더 상수
+유니폼 버퍼는 포인터(참조)로 바인딩
+루스 상수는 값(raw 바이트)으로 직접 설정
+
+ShaderBindings 블롭에 memcpy로 박힌다
+옛날 SetShaderValue로 셰이더 상수를 하나씩 세팅하던 방식의 잔재
+
+유니폼 버퍼 = 구조체로 묶인 cbuffer(포인터 바인딩)
+루스 = 낱개 상수(값 복사)
+
+---
+
+frequency of evaluation
+rate of change
+
+버텍스 셰이더는 정점당 한 번, 
+픽셀 셰이더는 픽셀당 한 번
+
+서로 다른 "실행 주파수"
+
+uniform(드로우당) < per-primitive < per-vertex < per-fragment
+
+EShaderFrequency
+SF_Vertex, SF_Pixel, SF_Compute
+
+---
+
+DrawIndexedInstanced(InstanceCount=N) 
+
+PrimitiveId는 per-instance 정점 스트림으로 공급된다
+슬롯 = FMeshDrawCommand::PrimitiveIdStreamIndex
+
+Input Assembler가 인스턴스마다 PrimitiveId를 정점 속성으로 먹인다
+셰이더는 SV_InstanceID로 인덱싱
+
+그 PrimitiveId로 셰이더가 거대 버퍼를 인덱싱한다
+FScene::FGPUScene::PrimitiveBuffer
+
+행 = 프리미티브
+열 = LocalToWorld·바운드·Custom Primitive Data 0/1/…·라이트맵 정보 등
+
+StructuredBuffer/ByteAddressBuffer(SRV)
+
+"vertex attributes"는 이 테이블에 없다. 
+정점 속성(위치·노멀·UV)은 메시 자신의 정점 버퍼에 있고 FVertexFactory가 먹인다
+
+GPUScene 테이블은 per-primitive 데이터(트랜스폼·payload)만 담는다.
+
+---
+
+RHICreateBuffer(... BUF_ShaderResource | BUF_StructuredBuffer)
+변경된 행만 델타 업로드
+FScene::FGPUScene::Update
+
+FScene::FGPUScene는 그 GPU 버퍼를 소유·관리·업로드하는 CPU측 매니저
+
+멤버로 버퍼 핸들 
+FScene::FGPUScene::PrimitiveBuffer
+FScene::FGPUScene::InstanceSceneDataBuffer
+
+PrimitiveBuffer ← 키 = PrimitiveId
+InstanceSceneDataBuffer ← 키 = InstanceId
+
+---
+
+gather = 흩어진 곳에서 읽기, scatter = 흩어진 곳에 쓰기
+전체 연속 복사가 아니라 "바뀐 행만, 자기 자리에." 
+
+---
+
+FScene::FGPUScene::PrimitiveBuffer(셰이더가 SRV로 매 프레임 읽음) = 디폴트 힙
+스테이징 버퍼 = 업로드 힙(CPU 기록 가능). CPU가 바뀐 행을 여기 먼저 쓴다
+그다음 copy/scatter로 업로드 힙 → 디폴트 힙 반영
+
+---
+
+FScene::FGPUScene::InstanceSceneDataBuffer
+per-instance 데이터(인스턴스 트랜스폼·인스턴스 커스텀 데이터 + 자기 PrimitiveId 역참조).
+인스턴스마다 프리미티브 공통 데이터를 복제 안 하려고 2단 분리
+
+SV_InstanceID → InstanceId → InstanceSceneData(트랜스폼 + PrimitiveId) → PrimitiveData
+
+---
+
+GPUScene는 per-primitive/instance 트랜스폼·payload만 관리
+셰이더·머티리얼·텍스처는 각자 별도 서브시스템
+
+FMaterialShaderMap
+FGlobalShaderMap
+FShaderCodeLibrary / FShaderMapResource
+
+UMaterial
+FMaterialRenderProxy, FMaterial, FMaterialResource
+파라미터 값은 머티리얼 유니폼 버퍼로
+
+UTexture
+FTextureResource, FRHITexture
+FRenderAssetStreamingManager
+
+---
+
+Material
+└─(플랫폼/퀄리티/Static Switch)→ FMaterialShaderMap          [축0: 어떤 하드웨어, 설정]
+   └─(VertexFactory)→ FMaterialShaderMap::FMeshMaterialShaderMap   [축1: 어떤 지오메트리]
+      └─(Pass ShaderType: BasePass/Depth/Shadow…)            [축2: 어떤 패스]
+         └─(Permutation id: SHADER_PERMUTATION_*)            [축3: 어떤 컴파일타임 옵션]
+            └→ FShader (구체 컴파일된 GPU 프로그램 = 잎)
+
+---
+
+Static Switch
+예: "UseDetailNormal" 스위치
+
+
+패스마다 출력·로직이 다르니까
+큐브 하나의 머티리얼 → 프리패스용·베이스패스용·섀도맵용 셰이더가 각각
+
+
+SHADER_PERMUTATION
+한 패스 셰이더 안에서도
+라이트맵 정책, 스카이라이트 유무, 벨로시티 출력 여부, forward 라이트 수...
+
+---
+
+FMeshPassProcessor::AddMeshBatch가 네 축을 동시에 알기 때문에 정확히 한 잎을 집는다:
+
+축2(자기 패스 — 예: BasePass 프로세서)
+축1(FMeshBatch::VertexFactory)
+축0(머티리얼의 static/플랫폼)
+축3(런타임 조건으로 permutation 선택)
+
+
+FMaterialShaderMap::GetMeshShaderMap(VF)
+그 안에서 ShaderType + permutation으로 구체 FShader를 꺼낸다.
+
+---
+
+VertexFactory 
+머티리얼 작성자/머티리얼 셰이더에게 균일한 인터페이스를 준다
+
+VertexFactoryGetWorldPosition의 구현이 VF마다 다른 .ush로 들어가 머티리얼 코드와 같이 컴파일된다
+
+컴파일된 VS는 다른 바이너리다. 
+하나의 VS로 강체+스키닝을 둘 다 할 수 없다(스키닝 코드가 컴파일 단계에 있거나 없거나).
+
+template<class VF> VS() { float3 P = VF::GetWorldPosition(Input); ... }
+
+---
+
+0. (컴파일 타임, 오프라인) — 순열의 전제
+
+FVertexFactoryType::ModifyCompilationEnvironment가 VF의 .ush를 #include로 주입
+VF 타입마다 머티리얼 셰이더가 별도 컴파일
+FMaterialShaderMap::FMeshMaterialShaderMap[VF]
+
+---
+
+1. 데이터 평면 (씬 등록 / 리소스 초기화)
+
+FVertexFactory는 FRenderResource
+메시의 렌더 리소스(예: StaticMesh LOD)가 소유
+
+InitRHI에서
+정점 스트림 목록(FVertexFactory::FVertexStreamList) 
+정점 선언(vertex declaration = D3D12 Input Layout)
+을 셋업
+
+"이 메시의 정점 버퍼들 + 레이아웃"
+
+프록시가 이를 참조
+
+---
+
+2. 수집 (gather → FMeshBatch)
+
+FPrimitiveSceneProxy::GetDynamicMeshElements(또는 DrawStaticElements)
+FMeshBatch::VertexFactory로 이 VF가 박힌다
+
+---
+
+3. 굽기 (FSceneRenderer::FViewInfo::FParallelMeshDrawCommandPass / FMeshPassProcessor::AddMeshBatch)
+
+셰이더 선택 키
+FMeshBatch::VertexFactory->GetType()(→ FVertexFactoryType) → FMaterialShaderMap::GetMeshShaderMap(VertexFactoryType) 
+→ 그 VF용 VS/PS 순열을 꺼낸다
+
+정점 스트림 제공
+VF의 스트림/선언이 드로우 커맨드의 IA 바인딩된다
+
+---
+
+4. 커맨드 (FMeshDrawCommand)
+
+FMeshDrawCommand::VertexStreams(어느 버퍼를 어느 슬롯에)와 
+FMeshDrawCommand::PrimitiveIdStreamIndex가 VF에서 온다
+
+FVertexFactory::GetPrimitiveIdStreamIndex
+
+---
+
+5. 제출 (FMeshDrawCommand::SubmitDraw)
+
+그 VertexStreams가 IA에 SetStreamSource로 바인딩
+VF가 컴파일에 주입한 코드(VertexFactoryGetWorldPosition 등)가 VS 안에서 그 스트림을 읽어 월드 좌표로 변환
+
+---
+
+FPrimitiveSceneInfo::PrimitiveComponentId
+신원 키
+
+FPrimitiveSceneInfo::PackedIndex
+위치 키. FScene 패킹 배열·GPUScene 테이블의 행 번호
+불안정
+
+셰이더가 GPUScene를 인덱싱할 때 쓰는 PrimitiveId = PackedIndex
+
+---
