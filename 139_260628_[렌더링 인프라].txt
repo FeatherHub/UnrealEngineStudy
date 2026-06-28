@@ -1,0 +1,169 @@
+FRendererModule::BeginRenderingViewFamily
+FSceneViewFamily
+
+FDeferredShadingSceneRenderer
+FSceneRenderBuilder::Execute
+ 
+RenderViewFamily_RenderThread (자유 함수) 
+FDeferredShadingSceneRenderer::Render
+
+FRDGBuilder
+
+---
+
+FDeferredShadingSceneRenderer::Render
+FSceneRenderer::OnRenderBegin
+
+FScene::Update
+FScene::UpdateAllPrimitiveSceneInfos
+FScene::PrimitiveUpdates 
+  요청 커밋
+  FScene의 SoA 배열 갱신
+  FScene::FGPUScene 업로드
+
+---
+
+FDeferredShadingSceneRenderer::Render
+FSceneRenderer::OnRenderBegin
+  
+LaunchVisibilityTasks (자유 함수) (비동기 태스크 발사)
+FVisibilityTaskData::LaunchVisibilityTasks
+FScene::PrimitiveBounds, FViewInfo::ViewFrustum, FSceneViewState 를 참고해서
+frustum culling → occlusion culling → relevance → gather 파이프라인을 백그라운드로 시작
+
+핸들 IVisibilityTaskData 에 진행 상태를 갱신
+
+---
+
+FDeferredShadingSceneRenderer::Render
+FDeferredShadingSceneRenderer::BeginInitViews
+
+FViewInfo::PrimitiveVisibilityMap, 
+FViewInfo::PrimitiveViewRelevanceMap, 
+FViewInfo::DynamicMeshElements 에 결과를 갱신
+
+FViewInfo::ParallelMeshDrawCommandPasses[] 를 채움.
+  FVisibilityTaskData::SetupMeshPasses
+  FParallelMeshDrawCommandPass::DispatchPassSetup로 워커에 FMeshDrawCommand "굽기"를 디스패치
+
+---
+
+FDeferredShadingSceneRenderer::Render
+FDeferredShadingSceneRenderer::EndInitViews
+
+FViewInfo::SetupUniformBufferParameters
+FViewInfo::InitRHIResources
+FViewInfo::CachedViewUniformShaderParameters
+FViewInfo::ViewUniformBuffer
+
+---
+
+FDeferredShadingSceneRenderer::Render
+
+RenderPrePass
+RenderShadowDepthMaps
+RenderBasePass
+RenderLights
+RenderTranslucency
+
+---
+
+FParallelMeshDrawCommandPass::BuildRenderingCommands
+
+---
+
+Render 반환 후 FSceneRenderBuilder 안에서 FRDGBuilder::Execute
+
+FParallelMeshDrawCommandPass::WaitForMeshPassSetupTask
+그래프를 컴파일하고 패스 람다를 의존성 순서로 호출
+FParallelMeshDrawCommandPass::Draw/Dispatch
+FMeshDrawCommand::SubmitDraw
+
+---
+---
+---
+---
+---
+---
+
+FParallelMeshDrawCommandPass::DispatchPassSetup
+FMeshDrawCommandPassSetupTask
+FParallelMeshDrawCommandPass::WaitForMeshPassSetupTask
+
+정렬된 리스트를 연속 구간으로 쪼개 여러 FRHICommandList에 동시 기록(FParallelCommandListSet)
+
+---
+
+FParallelMeshDrawCommandPass::DispatchPassSetup
+
+setup 태스크가 FMeshDrawCommand::CachedPipelineId 기반 SortKey로 정렬하고 
+동일 커맨드를 인스턴스 드로우로 병합(dynamic instancing)
+
+---
+
+FParallelMeshDrawCommandPass::BuildRenderingCommands(FRDGBuilder&, FGPUScene&)
+
+FInstanceCullingContext로 indirect draw args·instance ID 리스트를 만듦
+GPU-driven 컬링/인다이렉트 드로우
+
+---
+
+FMeshPassProcessor가 "무엇을 그릴지"를 커맨드로 생산하는 계층이라면(배치→커맨드, 컴파일러 백엔드), 
+FParallelMeshDrawCommandPass는 그 커맨드 리스트를 최적화하며 병렬 실행하는 런타임/스케줄러
+
+FMeshDrawCommand=기계어 한 줄, 리스트=프로그램
+FParallelMeshDrawCommandPass=그 프로그램을 정렬·병합하고 여러 코어에 나눠 돌리는 실행기
+
+---
+
+FViewInfo::ParallelMeshDrawCommandPasses[EMeshPass::Num]로 패스당 엔진을 하나씩 둔다
+EMeshPass(Depth/Base/Shadow/Translucency)는 자기 커맨드 리스트·정렬 정책(반투명=뒤→앞, 불투명=PSO 묶기)·렌더타깃이 다르다. 
+
+---
+---
+---
+
+FViewInfo::DynamicMeshElements
+"이번 view에서 그릴 수 있는 mesh 후보들"
+
+FViewInfo::ParallelMeshDrawCommandPasses::BasePass
+이 View의 BasePass용 draw command 준비/실행 객체
+
+---
+---
+---
+---
+---
+---
+
+굳힌다 — 이번 프레임 씬을 확정한다: 무엇이 어디 있나 (CPU 배열 + GPU 버퍼에 올림).
+고른다 — 카메라에 안 보이는 건 버린다 (컬링).
+분류한다 — 보이는 것 각각이 어느 패스(깊이/베이스/그림자/반투명)에 끼는지 정한다.
+굽는다 — "어떻게 그릴지"를 GPU 명령(드로우 커맨드)으로 변환한다: 셰이더·상태 확정 + 정렬·병합.
+
+---
+
+1 굳힌다
+FSceneRenderer::OnRenderBegin 안의 FScene::UpdateAllPrimitiveSceneInfos (+ FScene::FGPUScene 업로드)
+
+2~4 고른다·분류한다·굽는다
+InitViews
+FDeferredShadingSceneRenderer::BeginInitViews
+FDeferredShadingSceneRenderer::EndInitViews
+
+고른다 → FSceneRenderer::FViewInfo::PrimitiveVisibilityMap
+분류한다 → FSceneRenderer::FViewInfo::PrimitiveViewRelevanceMap
+굽는다 → FSceneRenderer::FViewInfo::FParallelMeshDrawCommandPass::DispatchPassSetup → FMeshDrawCommand
+뷰 상수 FSceneRenderer::FViewInfo::ViewUniformBuffer
+
+---
+
+5 받아적는다
+FRDGBuilder::Execute → FMeshDrawCommand::SubmitDraw → FRHICommandList → RHI 스레드
+
+한 번에 안 하고 둘로 쪼갠다
+선언과 실행을 떼어놔야 리소스 배리어를 최적화할 수 있어서
+FRDGBuilder::AddPass
+FRDGBuilder::Execute
+
+---
