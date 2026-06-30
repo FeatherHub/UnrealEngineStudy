@@ -810,3 +810,214 @@ FPrimitiveSceneInfo::PackedIndex
 셰이더가 GPUScene를 인덱싱할 때 쓰는 PrimitiveId = PackedIndex
 
 ---
+---
+---
+---
+---
+---
+---
+---
+
+같은 StaticMesh vertex/index buffer
+같은 Material / Shader / PSO
+같은 VertexFactory layout
+같은 Mesh section draw range
+
+서로 다른 PrimitiveId / InstanceId
+
+GPUScene 에 있는 각자의 LocalToWorld
+
+draw call 은 “이 큐브 메시를 N번 그려라”
+각 N번째 큐브가 어디에 놓이는지는 vertex shader 쪽에서 InstanceId/PrimitiveId로 찾아갑니다
+
+---
+
+World Matrix 를 draw 마다 constant buffer 로 바인딩
+
+Draw 0: bind UniformBuffer(World0), draw cube
+Draw 1: bind UniformBuffer(World1), draw cube
+...
+Draw 99: bind UniformBuffer(World99), draw cube
+
+shader는 현재 바인딩된 World 하나만 봅니다
+1 draw로 바꾸면 shader가 100개의 서로 다른 matrix를 선택할 방법이 없어집니다.
+
+<=>
+
+행렬은 이제 "바인딩"되는 게 아니라 셰이더가 instance id 로 인덱싱해서 가져오는(fetch) 데이터입니다
+
+FScene::GPUScene::InstanceSceneDataBuffer
+그 구조체의 LocalToWorld 멤버가 FDFMatrix
+각 인스턴스는 고유한 InstanceId(버퍼 인덱스)를 받습니다
+
+bind Buffer(WorldMatrices[100])
+DrawIndexedInstanced(cube, InstanceCount = 100)
+
+vertex shader:
+  World = WorldMatrices[SV_InstanceID]
+
+처음부터 instancing용 데이터 구조와 shader contract를 만든 것
+
+---
+
+FMeshDrawCommand::MatchesForDynamicInstancing
+
+이 함수가 두 draw command 를 같다고 보려면 비교하는 것
+
+CachedPipelineId(PSO)
+StencilRef
+ShaderBindings
+VertexStreams
+PrimitiveIdStreamIndex
+IndexBuffer
+FirstIndex, NumPrimitives
+BaseVertexIndex
+
+---
+
+GetSceneDataIntermediates (SceneData.ush)
+
+InstanceId = UnpackInstanceCullingOutput( InstanceCulling.InstanceIdsBuffer[ InstanceIdOffset + DrawInstanceId ] )
+
+---
+
+Instance
+
+같은 mesh를 다른 transform으로 그릴 때의 한 개 배치 항목
+
+---
+
+IndirectArgs
+
+CPU가 draw 함수 인자로 직접 넘기는 값이 아니라, GPU가 읽는 draw parameter buffer
+
+FRHIDrawIndexedIndirectParameters
+  IndexCountPerInstance
+  InstanceCount
+  StartIndexLocation
+  BaseVertexLocation
+  StartInstanceLocation
+
+InstanceCulling에서는 처음에 InstanceCount = 0으로 indirect args를 만듭니다
+그 다음 compute shader가 visible instance를 발견할 때마다 DrawIndirectArgsBufferOut[..., + 1]에 InterlockedAdd를 합니다
+
+---
+
+CPU frustum culling — per-primitive 단위
+씬 프록시(컴포넌트) 하나의 bounds 로 컬링
+
+---
+
+InstanceCulling
+
+그 MeshDrawCommand 안에 들어갈 instance id 목록을 만든다
+InstanceIdsBuffer를 만든다
+
+---
+
+GPU occlusion(HZB) culling
+
+BuildInstanceDrawCommands.usf
+IMPLEMENT_GLOBAL_SHADER(..., SF_Compute) 로 등록
+별도 컴퓨트 셰이더 패스
+
+IsInstanceVisible 
+
+OCCLUSION_CULL_INSTANCES 분기가
+IsVisibleHZB(...) 와 InstanceOcclusionQueryBuffer 를 호출합니다.
+
+CPU primitive 컬링을 통과한 draw command 들을 받아서, 
+그 안의 개별 인스턴스 하나하나를 GPU 에서 컬링합니다
+
+---
+
+무엇이 N-1 → N 으로 넘어오는가
+
+인스턴스 오클루전 컬링이 쓰는 HZB 는 FSceneRenderer::Views::FViewInfo::PrevViewInfo::HZB (FPreviousViewInfo) 입니다. 
+
+프레임 N-1 의 끝에서 FDeferredShadingSceneRenderer::RenderHzb 가 그 프레임 깊이로 furthest HZB 를 만든 뒤, 
+QueueTextureExtraction(FurthestHZBTexture, &FViewInfo::ViewState::PrevFrameViewInfo::HZB) 로 뽑아 
+view state 에 보관합니다
+
+
+프레임 N 에서 FInstanceCullingManager::ViewPrevHZBs에 그 전 프레임 HZB 들을 모읍니다. 
+그리고 컬링 컨텍스트가 FBuildInstanceIdBufferAndCommandsFromPrimitiveIdsCs::HZBTexture 에 이 PrevHZB 를 묶습니다 
+
+---
+
+N-1 의 깊이로 N 의 가시성을 판정하려면 좌표가 안 맞습니다. 
+그래서 IsInstanceVisible (BuildInstanceDrawCommands.usf) 는 
+인스턴스 bounds 를 전 프레임 변환으로 reproject 한 뒤 테스트합니다
+
+---
+
+single-pass + previous-frame-HZB 방식이라 본질적으로 1프레임 지연이 있습니다. 
+카메라/오브젝트가 움직여 이번 프레임에 새로 드러난(disocclusion) 인스턴스는, 
+지난 프레임 HZB 상으로는 아직 가려져 있어서 한 프레임 동안 보수적으로 잘못 컬링될 수 있습니다
+(다음 프레임에 pop-in). 
+
+UE 는 Nanite 지오메트리에 대해선 main+post 2패스 오클루전(같은 프레임 안에서 1차 렌더 → HZB 재생성 → 2차 테스트)으로 
+이 지연을 없애지만, 
+일반 GPU Scene 인스턴스 컬링 경로(r.InstanceCulling.OcclusionCull)는 전 프레임 HZB 를 씁니다
+
+---
+
+(a) 인스턴스 컬링 컴퓨트 패스 — args 버퍼와 id 버퍼를 RWBuffer(UAV)로 쓴다고 등록
+(b) 메시 draw 패스 — 같은 버퍼들을 indirect args + SRV 로 읽는다고 등록
+
+---
+
+CPU Render Thread
+  MeshDrawCommand 후보 생성
+  InstanceCullingContext 생성
+  DrawIndirectArgsBuffer / InstanceIdsBuffer slot 배정
+  RDG에 compute pass 등록
+  RDG에 draw pass 등록
+
+GPU execution
+  compute shader:
+    writes InstanceIdsBuffer_N
+    writes DrawIndirectArgsBuffer_N.InstanceCount
+        |
+        v
+  indirect draw:
+    GPU reads DrawIndirectArgsBuffer_N
+    VS reads InstanceIdsBuffer_N
+    VS reads GPUScene.InstanceSceneData[InstanceId]
+
+---
+
+SceneArgs(FMeshDrawCommandSceneArgs)
+FMeshDrawCommand override 인자
+
+---
+---
+---
+
+UInstancedStaticMeshComponent::PerInstanceSMData: TArray<FInstancedStaticMeshInstanceData>
+
+원소 100개가 각각 큐브 1개입니다
+GPU Scene 상으로는 primitive 1개 + 인스턴스 100개
+
+따로 놓인 100개 StaticMeshComponent 라면
+각자 primitive 1개 + 인스턴스 1개, 합쳐서 인스턴스 100개
+
+어느 쪽이든 FScene::GPUScene::InstanceSceneDataBuffer 의 FInstanceSceneData 1개 = 큐브 1개
+
+---
+
+UInstancedStaticMeshComponent 
+
+인스턴스 transform 은 UInstancedStaticMeshComponent::PerInstanceSMData
+per-instance custom data 는 UInstancedStaticMeshComponent::PerInstanceSMCustomData
+
+
+UHierarchicalInstancedStaticMeshComponent : public UInstancedStaticMeshComponent
+
+계층적 바운딩 트리(cluster tree) 를 얹은 것
+인스턴스들을 공간적으로 묶은 BVH
+per-instance LOD 선택과 컬링을 가속
+
+Foliage가 이걸 기반으로 쓰며, FoliageInstancedStaticMeshComponent 가 HISM 파생
+
+---
