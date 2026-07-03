@@ -1,0 +1,1105 @@
+렌더링 방정식
+빛은 표면에서 표면으로 이동하고, 재질에 따라 흡수되고 반사된다
+
+한 점의 나가는 빛 = 방출 + ∫(들어오는 빛 × BRDF × cos θ)
+
+"들어오는 빛"이 다시 다른 표면들의 "나가는 빛"이라는 재귀
+
+간접광(GI)
+픽셀 수 × ray 수 × bounce 수
+
+Nanite 가 "지오메트리 복잡도 ∝ 씬" 문제를 풀었다면, 
+Lumen 은 "조명 복잡도 ∝ 씬 × 빛 경로" 문제를 풉니다.
+
+---
+
+Quake 의 lightmap 부터 UE4 의 Lightmass 까지
+
+오프라인에서 GI 를 다 계산해 텍스처에 굽는다
+품질은 좋지만 씬이 정적
+
+Nanite 가 LOD 저작을 없앤 것과 정확히 같은 동기
+베이킹이라는 제작 규율의 철폐
+
+---
+
+실시간 근사들
+
+Screen Space GI/반사(화면에 보이는 것만으로 추정 — 싸지만 화면 밖 정보 부재)
+Light Propagation Volumes
+SVOGI — 씬을 voxel 화해서 cone tracing 하는 방식으로
+
+UE4 초기(2012)에 Daniel Wright 가 넣었다가 성능 문제로 잘라낸 기술입니다.
+Lumen 은 같은 사람이 10 년 뒤 그 문제의식을 다시 푼 결과물
+
+probe 기반 계보(Irradiance Volume → DDGI)도 합류
+
+---
+
+캐시의 계층
+
+Lumen 은 씬 표면의 조명을 Surface Cache 에 상시 유지합니다
+메시를 축 방향 "card" 들로 근사해 작은 아틀라스에 머티리얼·조명을 캡처해 두고
+ray hit 은 이 캐시를 조회만 합니다
+
+캐시가 캐시를 먹이므로(이번 프레임 결과가 다음 프레임 입력) 다중 bounce 가 공짜로 나옵니다
+
+---
+
+Screen Probe (화면에 깔린 확률적 probe 들이 방향별 radiance 를 octahedral 맵으로 수집) 
+→ World Radiance Cache (원거리용 월드 probe) 
+→ 시공간 필터링과 temporal 누적으로 픽셀당 실효 ray 수를 1 미만으로 압축
+
+---
+
+"ray 를 싸게" (SDF/화면 재활용) × "hit 을 싸게" (surface cache) × "픽셀을 싸게" (probe + 시공간 재활용)
+
+---
+
+실시간 path tracing 의 저예산 근사
+경로의 모든 단계(가시성, hit 셰이딩, 수렴)를 캐시로 치환한 final gather 아키텍처
+
+---
+
+씬의 세 번째 표현. 
+렌더링용 삼각형(Nanite), 물리용 콜리전에 이어, 
+
+조명용 단순화 표현 (SDF + card + 캐시 아틀라스) 을 하나 더 유지하는 것
+
+삼각형이 아니라 이 프록시 세계에서 일이 벌어진다"
+
+---
+
+deferred 의 라이팅 단계에 꽂히는 공급자
+
+Nanite 가 GBuffer 계약으로 앞단에 꽂혔듯, 
+Lumen 은 "간접 diffuse + 반사" 를 라이팅 구간에 납품하고, 
+직접광·섀도우는 기존 경로가 그대로 담당합니다.
+
+---
+
+라이트맵 UV, 베이크 대기, "라이트 옮기면 다시 빌드" 워크플로우의 소멸
+
+---
+
+한계
+
+card 는 축 정렬 직교 캡처라 오목한 형상·얇은 틈은 커버가 안 됨 → 빛샘
+벽이 voxel 보다 얇다 → 거리 필드에서 벽이 사라짐 → ray 가 통과 → 빛샘
+폴리지 같은 얇고 성긴 형상 → SDF 표현 자체가 부적합 → 별도 취급.
+갱신이 예산제 + 되먹임이 프레임 단위 → 조명 급변 시 GI 가 몇 프레임 늦게 따라옴
+
+
+
+---
+
+“아티스트가 빛을 굽고, probe를 배치하고, reflection capture를 만지는 방식”에서 벗어나서,
+월드가 변하면 조명도 실시간으로 따라오는 방향으로
+
+---
+
+현재 화면의 GBuffer
+  depth / normal / roughness / base color / material data
+        |
+        v
+Lumen이 묻는다:
+  이 픽셀의 표면에서 주변 세계를 향해 빛/반사 경로를 추적하면
+  어떤 표면을 만나고, 거기에는 어떤 빛이 저장되어 있는가?
+
+---
+
+기존 deferred renderer 안에서, 직접광만으로는 부족한 전역 조명과 반사 항을 공급하는 시스템
+
+---
+
+Screen Trace
+
+화면에 이미 보이는 depth, normal, color 정보는 정확하고 싸다
+Lumen은 먼저 현재 화면 안에서 ray를 추적한다
+화면 밖에 있는 물체, 다른 물체 뒤에 가려진 물체는 알 수 없다
+
+---
+
+Lumen Scene
+
+렌더링용 삼각형 원본을 그대로 매번 쓰는 대신, 조명 추적에 쓰기 위한 별도의 월드 표현을 만든다
+이 안에는 표면 정보, 거리장, 카드 기반 표면 캐시, 조명 캐시
+
+“카메라에 보이는 픽셀 렌더링용 장면”과 “광선이 물어볼 수 있는 조명 질의용 장면”을 분리
+
+---
+
+Surface Cache / Card 표현
+
+표면의 재질과 조명 정보를 여러 방향에서 캡처해 캐시에 저장한다
+광선이 어떤 표면을 맞췄을 때 매번 복잡한 머티리얼을 풀로 평가하지 않고, 저장된 표면 정보를 조회한다
+
+이것이 Lumen을 실시간 예산 안에 넣기 위한 타협
+
+---
+
+Software Ray Tracing과 Hardware Ray Tracing 경로
+
+소프트웨어 경로는 Mesh Distance Field와 Global Distance Field 같은 구조를 사용해 광선을 추적
+
+하드웨어 경로는 GPU의 ray tracing acceleration structure를 사용
+삼각형 기반 추적
+
+---
+
+temporal accumulation과 denoising
+
+프레임마다 제한된 샘플을 쓰고, 이전 프레임의 결과를 재사용하고, 필터링해서 안정적인 조명으로 만든다
+
+---
+---
+---
+
+표현층 — 조명 전용으로 다시 지은 세계
+
+SDF Trace
+Signed Distance Field
+
+공간의 각 점에 스칼라 하나를 저장한 3D 볼륨 텍스처
+가장 가까운 표면까지의 거리 (부호: 바깥 +, 안 −)
+
+삼각형 목록이 "표면이 어디 있다"의 명시적 나열이라면
+SDF 는 "여기서 표면까지 얼마나 머냐"라는 질의의 답을 공간 전체에 미리 깔아둔 표현
+
+메시 임포트 시 자동 생성되어
+8³ voxel brick 들의 희소 구조 + mip 3 단으로 저장
+빈 공간은 brick 을 안 만들고, 먼 곳은 거친 mip 으로
+
+Nanite 페이지처럼 이것도 스트리밍됩니다.
+
+UE4 시절 Distance Field AO·DF Soft Shadow (같은 Daniel Wright) 를 위해 다져진 인프라이고, 
+Lumen 은 그 위에 올라탄 겁니다.
+
+가까운 정밀 질의는 MDF, 먼 질의나 대충의 질의는 GDF
+"오브젝트별 정밀본"과 "씬 통합 요약본"의 이중 구조
+
+---
+
+Mesh Distance Field (MDF)
+오브젝트당 하나, 로컬 공간, 상대적 고해상도
+
+색도 머티리얼도 없는 순수한 형태 정보
+거리값이 "이만큼은 안전하게 전진해도 된다"를 보장
+몇 번의 샘플로 ray 가 표면에 도달합니다(sphere tracing)
+
+임포트 시 자동 생성되는 조명용 지오메트리 프록시
+
+---
+
+Global Distance Field (GDF)
+
+카메라 주변에 MDF 들을 월드 공간 clipmap (가까울수록 조밀한 동심 격자)
+씬에 오브젝트가 만 개든 필드는 하나
+
+---
+
+Surface Cache
+
+SDF 는 ray 가 어디에 맞는지만 알려주고 거기에 뭐가 있는지는 모릅니다
+sphere tracing 이 끝나면 손에 쥔 것은 hit 위치와 gradient normal
+
+hit 위치 → 그 오브젝트의 card → FinalLightingAtlas texel
+SDF 가 "어디"를, 장부가 "무엇"을 
+
+메시마다 표면을 6 축 방향의 사각형 "card" 들로 근사하고
+각 card 가 보는 표면의 머티리얼(albedo, normal, emissive)과 
+조명 상태(직접광, 간접광, 최종 radiance)를 작은 아틀라스 텍스처에 유지
+
+씬의 모든 표면에 대해 "그 지점에서 나오는 빛"을 미리 적어둔 장부
+ray hit 은 계산이 아니라 장부 조회가 됩니다
+
+---
+
+광선이 표면을 맞췄을 때 매번 복잡한 material graph를 전부 평가하면 비싸다
+표면 정보를 미리 여러 방향에서 저장해 둔다
+이 캐시가 “hit한 표면이 어떤 빛을 내거나 반사하는가”의 답을 준다
+
+---
+
+Card
+
+복잡한 mesh 표면을 조명 계산용으로 대표하는 2D 표면 조각
+실제 삼각형 전체를 그대로 조명 저장소로 쓰지 않고, 표면을 카드들로 표현해서 캐시한다
+
+---
+
+GBuffer 는 화면 공간·이번 프레임·보이는 면만이고
+surface cache 는 월드 공간·영속·안 보이는 뒷면까지입니다
+
+베이킹 시대와 비교하면, card 는 라이트맵 UV 의 자동화된 후계자이고, 
+아틀라스는 매 프레임 갱신되는 라이트맵입니다.
+
+---
+---
+---
+
+싼 것부터 순서대로 시도하는 fallback 사슬
+
+Screen Trace
+이미 렌더된 이번 프레임 화면(depth + 색)을 따라 ray march
+화면 밖·가려진 뒷면은 모릅니다
+
+---
+
+Sphere Tracing
+
+ray 를 SDF 위에서 굴리는 알고리즘
+
+점 p 에서 SDF(p) = d 라면, 반지름 d 의 구 안에는 표면이 없음이 보장된다
+그러므로 ray 방향으로 d 만큼 안전하게 전진해도 된다.
+
+안개 속을 걷는데, 손에 든 거리계가 "어느 방향이든 가장 가까운 장애물까지 3 m"라고 말해준다고 상상하세요
+방향은 몰라도 3 m 는 눈감고 성큼 걸어도 됩니다.
+도착해서 다시 측정
+
+측정값이 ε 이하로 떨어지면 표면에 닿은 것(hit)
+거리가 계속 크면 씬을 빠져나간 것(miss)
+
+텅 빈 복도는 두세 걸음에 통과하고, 표면 근처에서만 잔걸음이 됩니다
+
+고정 보폭 ray marching (낭비 + 얇은 벽 뚫음) 과 
+삼각형 BVH 순회 (정확하지만 자료구조 순회 비용 + HW RT 필요) 
+사이의 실용적 중간지대
+
+표면과 평행하게 스치는 ray 는 거리값이 계속 작아서 잔걸음만 수백 번
+grazing ray 가 SDF tracing 의 최악 케이스
+
+표면 normal 은 SDF 의 gradient (이웃 샘플 차분) 로 공짜에 가깝게 나오고
+ray 가 지나며 기록한 "표면에 가장 가까웠던 순간의 거리 비율"은 soft shadow 와 AO 의 원료가 됩니다
+
+거리값 자체가 정보라서, hit/miss 만 주는 삼각형 trace 보다 부산물이 풍부합니다
+
+---
+
+Software Ray Tracing
+
+Mesh Distance Field / Global Distance Field 같은 표현을 사용해서 
+하드웨어 RT 없이 월드 안의 hit를 찾는 경로
+
+---
+
+Hardware Ray Tracing
+진짜 삼각형(BLAS)에 trace
+거울 반사나 고품질 모드
+
+hit 셰이딩은 역시 surface cache 조회
+
+---
+
+Final Gather
+
+픽셀 주변으로 여러 방향의 간접광을 모아 최종 diffuse GI를 만드는 단계
+“이 표면에 주변 세계에서 튕겨 온 빛이 얼마나 들어오는가?”를 결정
+
+---
+
+수신층 — 픽셀이 직접 ray 를 쏘지 않는다
+
+Screen Probe
+
+화면에 ~16 픽셀 간격으로 깔리는 탐침
+GLumenScreenProbeDownsampleFactor = 16
+화면을 16 픽셀 간격 격자로 나누고 칸마다 probe 하나를 둡니다.
+
+각 probe 가 자기 위치의 표면에서 반구 방향들로 ray 를 쏘고
+결과를 방향별 radiance 맵(octahedral)으로 수집
+
+1080p 기준 픽셀 2M 개 → probe 약 8K 개
+적분의 단가를 1/256 로 줄이는 구조
+
+간접 diffuse 광이 저주파이기 때문
+벽면을 따라 GI 는 완만하게 변하므로, 띄엄띄엄 정확히 재고 사이는 보간해도 됩니다
+
+이 가정이 깨지는 곳(책상 모서리, 전경/배경 깊이 단차)을 위해 adaptive probe 예산이 따로 있습니다
+r.Lumen.ScreenProbeGather.NumAdaptiveProbes
+
+일반 픽셀은 ray 를 한 발도 쏘지 않고 주변 probe 4 개를 보간합니다
+
+---
+
+probe 당 ray 는 몇십 개뿐이라 균등하게 뿌리면 낭비
+BRDF (cosine) × 지난 프레임의 radiance 추정을 곱해
+"빛이 실제로 올 만한 방향"에 ray 를 몰아줍니다
+
+---
+
+World Radiance Cache
+월드 공간에 고정된 probe 들
+(원거리 radiance 를 캐시, 프레임 간 영속)
+
+일정 거리에서 ray 를 끊고 나머지는 world radiance cache probe 에 위임
+
+가까움 = 정밀·신선, 멂 = 거침·안정
+
+---
+
+시공간 재활용 (Temporal/Spatial filtering)
+
+probe 들의 결과는 노이즈투성이(방향당 ray 몇 개)라
+이웃 probe 간 공유(공간)와 전 프레임 누적(시간)으로 수렴
+
+"부족한 ray 를 시간과 이웃에게 빌린다"
+
+---
+---
+---
+
+FScene::LumenSceneData
+
+조명 추적에 맞게 압축되고 갱신되는 세계
+위의 표현층 전체(card 목록, 아틀라스, SDF 참조)를 소유하고 유지하는 병렬 세계
+
+FScene 이 렌더링용 세계라면
+Lumen Scene 은 조명용 저해상도 분신
+
+매 프레임 예산 내에서 조금씩만 갱신합니다
+새로 보인 메시의 card 캡처 몇 장, 직접광 갱신, 간접광(radiosity) 갱신
+
+---
+
+다중 bounce 는 피드백 루프로 공짜
+시스템이 자기 출력을 자기 입력으로 되먹입니다.
+프레임이 흐를수록 bounce 가 한 단계씩 깊어지고
+몇 프레임 만에 다중 bounce 근사에 수렴합니다
+
+대가는 조명 변화에 캐시가 한 박자 늦는 latency
+
+---
+---
+---
+
+화면용 렌더러가 프레임당 한 번 돈다면, 
+그 옆에서 조명용 미니 렌더러가 씬 전체를 조금씩 나눠 돌고, 
+본 렌더러의 ray 들이 그 결과를 조회한다
+
+---
+---
+---
+---
+---
+---
+
+Rasterizer는 카메라에서 직접 보이는 표면은 잘 찾지만, 
+빛이 월드 안에서 튕기고 퍼지고 가려지는 과정은 자동으로 계산하지 않는다.
+
+Rasterization:
+  Camera -> visible surface 찾기
+
+Direct Lighting:
+  Light -> visible surface 직접 비추기
+
+“빛의 2차, 3차 효과”를 어떻게 싸게 근사할 것인가가
+
+---
+
+1. Lightmap
+정적 표면 위의 조명 결과를 텍스처로 저장
+texel = 이 표면 위치의 미리 계산된 조명
+offline precomputation
+
+mesh에는 기본 material UV와 별도로 lightmap UV가 있다
+빌드 타임에 엔진이나 외부 baker가 정적인 geometry, 정적인 light를 기준으로 indirect lighting을 계산
+그 결과를 표면 위 텍셀에 저장한다
+
+픽셀 셰이더가 lightmap UV로 텍스처를 샘플링해서 “이미 계산된 간접광”을 더한다.
+
+물체가 움직이거나, 벽이 부서지거나, 태양 위치가 바뀌거나, emissive material이 변하면 baked result는 틀어진다
+
+---
+
+2. Light Probe / Irradiance Volume
+공간에 저장된 간접광 필드
+Probe는 공간상의 한 지점에 들어오는 간접광을 저장한 샘플
+동적 오브젝트가 정적 간접광 환경을 샘플링할 수 있게 만든 기술
+
+room volume 안에 probe 배치:
+
+      p       p       p
+
+  p       p       p       p
+
+      p       p       p
+
+character 위치 x
+  -> 주변 probe 몇 개를 보간
+  -> 이 위치의 ambient / indirect light 추정
+
+방향성을 가진 irradiance 표현
+spherical harmonics
+
+위치마다 “주변 모든 방향에서 들어오는 diffuse 조명”을 저장
+런타임에는 오브젝트 위치 주변 probe들을 보간
+surface normal 방향에 맞춰 irradiance를 평가
+
+Probe가 벽을 사이에 두고 보간되면 빛이 새는 현상
+
+---
+
+3. Reflection Capture
+
+특정 위치에서 월드를 cube map으로 캡처해 둔다.
+미리 캡처한 environment lookup
+
+Capture position
+        |
+        v
++X -X +Y -Y +Z -Z 방향으로 scene capture
+        |
+        v
+Cubemap
+        |
+        v
+런타임에서 reflective material이 샘플링
+
+픽셀 셰이더에서는 표면 normal과 view vector로 reflection vector를 만들고, 그 방향으로 cubemap을 샘플링한다
+Roughness가 높으면 mip level이 높은 흐릿한 cubemap을 샘플
+
+
+capture가 특정 지점 기준
+parallax가 틀어진다
+
+---
+
+Screen-space 기법은 “월드 전체”를 보지 않는다. 
+이미 렌더링된 현재 프레임의 버퍼만 본다
+
+입력:
+  Depth Buffer
+  Normal Buffer
+  Scene Color
+  GBuffer material data
+
+알 수 있는 것:
+  지금 카메라에 보이는 표면
+
+알 수 없는 것:
+  화면 밖 표면
+  다른 물체 뒤에 가려진 표면
+
+---
+
+Screen-Space Ambient Occlusion
+
+이 픽셀 주변이 기하적으로 막혀 있으면 ambient light를 줄인다.
+
+픽셀 P의 depth와 normal을 알고 있다고 하자
+SSAO는 P 주변의 여러 샘플 위치를 화면 공간 또는 view space에서 찍어본다
+그 주변 샘플들의 depth가 P 근처에 있고, normal 방향 반구 안에서 공간을 막는 형태라면 occlusion 값을 높인다
+
+주변 depth가 가까움 -> 공간이 막힘 -> ambient 감소
+주변 depth가 멂     -> 열린 공간     -> ambient 유지
+
+결과는 grayscale occlusion factor
+
+final indirect/ambient = ambient_light * (1 - occlusion)
+
+주요 artifact는 halo, depth discontinuity 문제
+얇은 물체 주변의 과한 어두움
+
+---
+
+Screen-Space Reflection
+
+반사 벡터를 따라 depth buffer 위를 추적한다
+
+픽셀의 world/view position P, normal N, view direction V가 있으면 
+reflection direction R을 만든다
+R = reflect(-V, N)
+
+그 다음 P에서 R 방향으로 조금씩 전진
+전진한 위치를 화면에 projection해서 depth buffer와 비교
+
+화면 밖 물체는 반사 불가
+다른 물체 뒤에 가려진 물체는 반사 불가
+ray가 화면 밖으로 나가면 실패
+
+SSR은 보통 reflection capture, planar reflection, ray tracing reflection 같은 다른 경로와 섞인다
+
+---
+
+Screen-Space Global Illumination
+
+주변 화면 표면에서 튕겨 온 diffuse indirect light를 추정한다.
+
+현재 픽셀 P
+  normal N 기준 반구 방향으로 여러 ray/sample
+        |
+        v
+screen depth에서 hit 찾기
+        |
+        v
+hit 위치의 scene color / albedo / lighting 샘플
+        |
+        v
+P로 들어오는 간접광으로 누적
+
+SSAO가 “얼마나 막혀 있는가”만 계산한다면, SSGI는 “막은 표면이 어떤 색의 빛을 들고 있는가”까지 본다
+그래서 color bleeding이 가능하다.
+
+---
+---
+---
+
+LPV
+Light Propagation Volume
+
+장면 공간을 3D grid로 나누고, 빛을 grid cell에 주입한 뒤, 이웃 cell로 전파한다
+
+World -> 3D Grid
+
+[ ][ ][ ][ ]
+[ ][ ][ ][ ]
+[ ][ ][ ][ ]
+
+이제 빛이 직접 닿은 표면을 찾고, 그 표면이 반사할 빛을 가까운 grid cell에 넣는다.
+예를 들어 햇빛이 빨간 벽에 닿으면, 빨간 벽 근처 cell에 “빨간 간접광”을 넣는다.
+
+그 다음 cell들이 이웃 cell에게 빛을 조금씩 넘긴다.
+
+빨간 벽 근처 cell
+  [R] -> [r] -> [r 약함] -> [거의 없음]
+
+grid가 거칠면 빛이 벽을 뚫고 새고, 세밀한 그림자와 좁은 틈을 표현하지 못한다
+
+---
+
+SVOGI
+Sparse Voxel Octree Global Illumination
+
+LPV는 전체 공간을 같은 크기 grid로 나눈다
+장면을 voxel로 바꾸되, 고정 해상도 3D grid 전체를 쓰지 않는다. sparse voxel octree를 쓴다
+빈 상자는 버리고, 필요한 상자만 쪼개는 방식
+
+전체 공간
+  |
+  +-- 비어 있는 큰 공간: 저장 안 함
+  |
+  +-- geometry 있는 공간: subdivision
+        |
+        +-- 더 작은 voxel
+
+여기서 ray 하나를 가느다란 바늘이라고 하면, cone은 점점 넓어지는 손전등 빔
+가까운 곳은 작은 voxel을 보고, 먼 곳은 큰 voxel을 본다
+표면에서 여러 방향으로 "넓어지는 빔"을 쏴서 빛을 모은다
+
+월드 전체를 균일한 3D texture로 만들면 메모리가 폭발한다
+Octree는 geometry가 있는 곳만 세분화한다
+
+---
+
+VXGI
+NVIDIA가 제안했던 voxel GI 기술 계열
+
+장면을 voxel로 만들고, 그 voxel 안에 빛과 재질 정보를 넣고, cone tracing으로 간접광과 반사를 얻는다
+
+Scene
+  -> voxelize
+  -> inject light
+  -> build filtered voxel representation
+  -> cone trace
+  -> diffuse GI / glossy reflection
+
+---
+
+Lightmap — 표면 조명을 텍스처에 굽기
+정적 씬에서만 유효
+
+Surface Cache (card 아틀라스)
+매 프레임 갱신되는 라이트맵 · UV 자동화
+
+---
+
+Light Probe / Irradiance Volume
+수동 배치 · 정적 · 벽 너머 빛샘
+
+Screen Probe + World Radiance Cache
+자동 배치 · 매 프레임 재계산 · depth 인지 보간
+
+---
+
+Reflection Capture (cubemap)
+고정 지점 캡처 · parallax 오류
+
+probe 의 octahedral radiance 맵
+표면마다의 미니 cubemap · 실시간 수집
+
+---
+
+SSR / SSGI / SSAO
+정확하지만 화면 밖은 모름
+
+Screen Trace (fallback 사슬의 1번)
+그대로 채용 — 실패 시 SDF 로 넘길 뿐
+
+---
+
+DF AO / DF Shadow (UE4)
+SDF 인프라의 원조 용도
+
+MDF / GDF Tracing (SW ray 의 바닥)
+십 년 다진 인프라의 재활용
+
+---
+
+SVOGI — voxel 에 형태+빛을 함께 저장
+2012 년 UE4 에서 좌초
+
+형태(SDF)와 빛(card)의 분리
+같은 문제의식, 표현을 둘로 쪼개 해결
+
+---
+---
+---
+
+어두운 방바닥 픽셀 하나에 붉은 커튼의 간접광이 비치기까지
+
+(a) 커튼 표면의 "나가는 붉은 빛"은 어디에 적혀 있나 (surface cache 의 FinalLightingAtlas — 캡처·직접광·radiosity 를 거쳐)
+(b) 바닥 픽셀은 그 빛을 직접 계산했나 (아니오 — 주변 screen probe 4 개를 보간)
+(c) probe 는 커튼을 어떻게 찾았나 (screen trace 실패 → SDF sphere tracing 으로 hit)
+(d) hit 지점에서 머티리얼 그래프를 평가했나 (아니오 — 장부 조회)
+(e) 커튼이 2차, 3차로 반사한 빛은 언제 계산됐나 (이전 프레임들의 radiosity 되먹임에 이미 누적)
+
+---
+
+FDeferredShadingSceneRenderer::Render
+
+---
+
+InitViews 구간
+BeginUpdateLumenSceneTasks 
+어느 card 를 이번 프레임에 캡처/갱신할까
+지난 프레임 GPU 피드백이 입력
+
+---
+
+prepass + RenderNanite
+SceneDepth 확정
+screen trace 와 probe 배치의 입력이 여기서 만들어집니다
+
+---
+
+UpdateLumenScene 
+선별된 card 들을 캡처 
+Nanite 가 Lumen 의 하청 렌더러로 뜁니다
+GDF clipmap 갱신
+
+---
+
+RenderLumenSceneLighting (base pass 직전)
+card 직접광 + radiosity → FinalLightingAtlas 완성
+장부가 이 시점에 최신화됩니다
+
+---
+
+RenderBasePass
+
+본 세계의 GBuffer 생산 (Nanite + 전통 경로)
+
+---
+
+RenderDiffuseIndirectAndAmbientOcclusion 
+
+납품 지점 1
+
+Screen probe 배치 → trace → 필터 → 픽셀 통합이 전부 여기서 돌고
+결과(간접 diffuse)가 라이팅 누적 버퍼에 합성됩니다
+직후 RenderLights 가 직접광을 그 위에 누적
+
+간접광 공급자와 직접광 공급자가 같은 계약(라이팅 누적)의 대등한 납품업체입니다
+
+---
+
+RenderDeferredReflectionsAndSkyLighting 
+
+납품 지점 2
+
+Lumen 반사가 SSR/reflection capture 가 차지하던 슬롯에 대체 공급자로 들어갑니다
+
+---
+
+Nanite 가 "GBuffer 를 채우는 대체 공급자"였다면,
+Lumen 은 "라이팅 항을 채우는 대체 공급자"입니다. 
+
+입력 계약: GBuffer + SceneDepth + HZB + 지난 프레임 scene color (screen trace 용). 
+출력 계약: 간접 diffuse 와 반사를 기존 슬롯에 납품. 
+
+그래서 소비자(톤매핑, 포스트)는 GI 가 Lightmass 베이크인지 Lumen 인지 모릅니다
+
+---
+
+Nanite 는 base pass 앞에 서서 지오메트리를 공급하고
+Lumen 은 base pass 뒤에 서서 그 GBuffer 를 소비해 빛을 공급합니다
+
+---
+
+Lumen 은 Nanite 와 마찬가지로 거의 전부 compute dispatch 입니다
+
+그래픽스 draw 는 card 캡처뿐이고, 
+나머지 — 직접광, radiosity, probe trace, 필터링, 통합 — 는 RDG 에 등록되는 CS 사슬입니다. 
+
+그래서 상당 부분이 async compute 로 그래픽스 큐와 병렬 실행됩니다
+(분신 세계의 갱신은 본 렌더링과 의존성이 느슨해서 겹치기 좋은 일감입니다). 
+
+HW RT 모드를 켜면 trace pass 들만 ray tracing 파이프라인(RayGen 셰이더 + BLAS/TLAS)으로 교체되고, 
+hit 셰이딩이 surface cache 조회라는 구조는 유지됩니다.
+
+Bottom-Level Acceleration Structure
+Top-Level Acceleration Structure
+
+---
+---
+---
+
+Lumen Scene
+Surface Cache / Card
+Screen Probe Gather
+
+---
+
+Lumen Scene
+조명 질의에 맞는 별도 세계
+빛이 부딪히고 조회할 수 있는 조명용 지도
+빛의 질문에 답할 수 있는 구조를 유지하는 것
+
+이 픽셀에서 반구 방향으로 빛을 물어보면, 월드 안에서 무엇을 만나고, 거기서 어떤 빛이 오는가?
+
+---
+
+Surface Cache / Card
+세계의 표면마다 붙은 빛 장부
+그 표면들은 어떤 radiance를 가지고 있는가?
+
+픽셀 P
+  |
+  | ray
+  v
+빨간 벽 hit
+
+1. 어디에 맞았는가?
+2. 맞은 표면은 어떤 빛을 내보내는가?
+
+Distance Field나 Hardware Ray Tracing은 1번을 답한다.
+
+표면이 어떤 빛을 내보내는지 알려면 재질, 조명, 그림자, 간접광, emissive 같은 정보가 필요하다
+이걸 hit마다 매번 계산하면 비싸다
+표면의 정보를 미리 캡처해서 저장한다. 이것이 Surface Cache
+
+
+Ray hit:
+  "이 위치에 도착했습니다."
+
+Surface Cache:
+  "그 위치의 표면 색은 빨강이고,
+   현재 조명 상태에서는 이런 빛을 내보냅니다."
+
+
+Card는 이 Surface Cache를 만들기 위한 표면 대표 조각
+복잡한 mesh 표면 전체를 있는 그대로 조명 캐시에 저장하지 않고, 
+여러 개의 2D 카드로 나누어 본다
+
+복잡한 mesh
+      |
+      v
+여러 방향에서 본 표면 조각들
+
+[Card 0]  앞면
+[Card 1]  뒷면
+[Card 2]  왼쪽
+[Card 3]  오른쪽
+[Card 4]  위
+[Card 5]  아래
+
+Card
+  -> material 정보 캡처
+  -> direct lighting 저장
+  -> indirect lighting 갱신
+  -> radiance 조회 가능
+
+---
+
+벽 mesh
+  |
+  v
+벽을 대표하는 Card 생성
+  |
+  v
+Card atlas에 저장:
+  albedo = red
+  normal = wall normal
+  lighting = sunlight + bounced light
+  radiance = 이 벽에서 나가는 빛
+
+---
+---
+
+Screen Probe Gather
+
+카메라에 200만 픽셀이 있다고 하자. 
+각 픽셀마다 GI를 계산하려면 각 픽셀에서 여러 방향으로 ray를 쏴야 한다
+
+2,000,000 pixels
+  x 여러 방향 ray
+  x hit 조회
+  x radiance 조회
+
+이건 실시간 예산에 맞지 않는다.
+
+모든 픽셀이 직접 주변 빛을 측정하지 않는다. 
+화면 위에 대표 probe를 깔고, probe가 주변 빛을 수집한 뒤, 
+픽셀들은 그 결과를 보간해서 사용한다.
+
+
+방 온도를 모든 점에서 재지 않고 일정 간격으로 온도계를 두는 것과 같다
+
+모든 픽셀:
+  "내 위치의 간접광을 직접 계산해줘"
+
+---
+
+Screen Probe:
+  "화면 위 몇 지점에 대표 측정기를 두고,
+   그 측정기가 주변 방향의 빛을 모은 뒤,
+   픽셀들은 가까운 측정값을 섞어 쓰자"
+
+................................
+....P.......P.......P.......P...
+................................
+....P.......P.......P.......P...
+................................
+....P.......P.......P.......P...
+................................
+
+각 probe는 자신의 위치에서 여러 방향을 본다.
+
+          ray
+       \   |   /
+        \  |  /
+ ray ---- Probe ---- ray
+        /  |  \
+       /   |   \
+          ray
+
+각 방향에서 hit를 찾고, Surface Cache에서 radiance를 조회한다.
+
+Probe
+  -> 여러 방향 ray
+  -> Lumen Scene에서 hit 찾기
+  -> Surface Cache에서 hit radiance 조회
+  -> 방향별 radiance map 생성
+
+일반 픽셀은 주변 probe 결과를 사용한다
+
+---
+---
+---
+---
+---
+
+어두운 방에 창문으로 햇빛이 들어와 바닥에 밝은 사각형을 만든다고 하세요
+바닥의 사각형만 밝은 게 아닙니다. 
+그 빛이 바닥에서 튕겨 천장이 은은히 밝고, 벽도 어슴푸레 보이고, 바닥 카펫이 붉다면 천장이 살짝 불그스름합니다
+방 전체가 "간접적으로" 빛나는 거죠.
+
+엔진의 기본 조명(직접광)은 이 중 바닥의 밝은 사각형만 계산합니다
+나머지 — 튕긴 빛, 스며든 빛, 물든 색 — 는 전부 계산 밖이라 그냥 두면 사각형 바깥은 새까맣습니다
+이 "나머지 전부"가 GI 이고, Lumen 은 그 나머지를 실시간으로 채우는 시스템입니다
+
+끄면 직접광 조각들만 떠 있는 무대
+켜면 빛이 공간을 채운 방
+
+---
+
+미니어처는 뭉툭하지만, 간접광이란 원래 부드럽고 뭉툭한 현상이라 티가 안 납니다.
+
+---
+
+조명이 세상의 변화를 실시간으로 따라온다
+
+해가 뜨고 지는 낮밤 사이클에서 실내 조명까지 함께 변합니다
+예전엔 시간대별로 따로 굽거나 포기했습니다.
+
+---
+
+부서지고 지어지는 세계
+
+플레이어가 벽을 세우고 부수는 게임은 베이킹이 원천적으로 불가능한데
+Lumen 은 벽이 부서지는 순간 빛이 쏟아져 들어오는 것을 그냥 처리합니다
+
+---
+
+빛나는 물건이 곧 광원
+
+네온사인, 용암, TV 화면, 총구 화염 같은 emissive 표면이 
+별도 라이트 배치 없이 실제로 주변을 물들입니다
+
+---
+
+화면 밖까지 비추는 반사
+
+젖은 바닥에 등 뒤의 네온사인이 비칩니다. 
+SSR 은 화면에 보이는 것만 반사했지만, Lumen 은 미니어처가 있으니 화면 밖도 압니다
+
+---
+
+제작 현장의 변화
+
+라이팅 아티스트가 라이트를 끌면 결과가 즉시 보입니다
+라이트맵 UV 펴기, 몇 시간짜리 베이크 대기, "라이트 옮겼으니 다시 빌드"의 소멸
+
+Nanite 가 "임포트하면 그냥 된다"였다면 
+Lumen 은 "배치하면 그냥 빛난다"입니다.
+
+---
+---
+---
+---
+---
+
+Screen pixel (x, y)
+  depth
+  normal
+  material data
+
+최종 화면에 보이는 픽셀은 RGB 하나지만, 
+deferred rendering 중간 단계에서는 픽셀마다 여러 버퍼가 있다.
+
+GBuffer at (x, y):
+
+Depth      = 카메라에서 보이는 표면까지의 깊이
+Normal     = 그 표면의 방향
+MaterialID = 머티리얼 관련 정보
+
+그래서 Lumen이 보는 “픽셀”은 2D 색 점이 아니라, 
+카메라 ray가 월드의 어떤 표면에 부딪힌 결과를 저장한 screen-space record
+
+---
+
+픽셀 좌표 (x, y)와 depth가 있으면, 그 픽셀이 가리키는 3D 위치를 되살릴 수 있다.
+
+World Position
+  -> View Space
+  -> Clip Space
+  -> NDC
+  -> Screen Pixel (x, y) + Depth
+
+pixel (x, y)
+  + depth
+  + inverse projection/view
+
+world-space surface position P
+
+---
+
+월드 위치 P만으로는 부족하다. 반구를 만들려면 표면 normal이 필요하다.
+
+GBuffer에는 normal이 들어 있다.
+
+P = 이 픽셀이 보는 월드 표면 위치
+N = 그 표면의 normal
+
+그러면 Lumen은 N을 기준으로 반구를 만든다.
+
+             N
+             |
+        \    |    /
+         \   |   /
+          \  |  /
+             P
+
+---
+
+P에서 N 방향 반구로 여러 방향을 보냈을 때, 
+월드 안에서 무엇을 만나고, 거기서 어떤 radiance가 오는가?
+
+---
+---
+---
+
+deferred 렌더러는 프레임 도중에 화면과 같은 해상도의 보조 버퍼들을 일부러 옆에 쌓아둡니다
+
+depth buffer (픽셀마다 깊이 하나), 
+GBuffer (normal, albedo, roughness...)
+
+Lumen 이 gather 를 도는 시점(base pass 직후)에는 이것들이 전부 살아 있습니다
+
+---
+
+픽셀 (x, y) 는 "카메라에서 그 방향으로 나가는 시선(ray)"을 결정합니다
+2D 좌표가 3D 방향 하나와 일대일 대응. 
+depth 는 "그 시선 위의 어디서 멈췄나"를 결정
+
+방향 + 거리 = 월드의 점
+
+(x, y) 를 NDC 로 바꾸고 depth 와 합쳐 clip space 좌표를 만든 뒤, 
+(ViewProjection)⁻¹ 을 곱하고 w 로 나누면 월드 위치 P 가 나옵니다
+
+거기에 GBuffer 의 normal 을 얹으면 "그 표면이 어느 쪽을 향해 있나"까지 복원됩니다
+
+---
+
+deferred rendering 버퍼들은 화면 좌표로 인덱싱된 표면 샘플 데이터베이스다.
+(x, y) 는 그 테이블의 row key 이고, depth·normal·albedo 는 컬럼
+
+월드 점 → 화면 (x, y) 로 투영하는 것이 rasterization 이 하는 일
+화면 (x, y) + depth → 월드 점으로 되돌리는 것이 screen-space 기법들이 하는 일
+
+---
+---
+---
+
+픽셀 (x, y)는 카메라 위치에서 시작해 그 픽셀 방향으로 나가는 ray 하나를 정의한다.
+이 ray를 camera ray, view ray, primary ray, eye ray라고 부른다.
+
+rasterizer에서 픽셀이 삼각형을 찾는 것이 아니라, 삼각형이 픽셀을 덮는다.
+결과적으로 depth buffer에는 “그 픽셀 방향에서 가장 앞에 보인 표면의 깊이”가 남는다.
+이 결과는 수학적으로는 camera ray의 closest hit와 같은 의미를 가진다.
+
+Ray tracing: 픽셀마다 → ray 를 쏘고 → 어떤 삼각형에 맞나 찾는다 (gather)
+Rasterization: 삼각형마다 → 화면에 투영하고 → 어떤 픽셀들을 덮나 찾는다 (scatter)
+
+rasterization 에서 카메라는 ray 를 한 발도 쏘지 않습니다. 
+대신 지오메트리가 카메라를 향해 날아옵니다. 투영 행렬이 정점을 화면 좌표로 끌어오는 것
+
+투영이란 "이 정점을 지나는 픽셀-ray 가 어느 것인가"를 
+행렬 곱 하나로 일괄 처리하는 것이니, ray 는 암묵적으로 존재합니다
+그래서 복원이 가능했던 겁니다 
+
+---
+
+모든 ray 가 한 점(카메라)에서 출발하기 때문
+원점 하나 + 규칙적인 방향 격자 = 행렬 하나로 표현되는 ray 다발
+
+이 특수 구조 덕에 삼각형 순회 한 번으로 수백만 ray 의 답이 나오고, 
+메모리 접근도 규칙적이라(같은 삼각형의 픽셀들은 붙어 있음) 하드웨어가 극한으로 최적화됩니다. 
+
+z-buffer 는 이 방식의 필연적 부속품
+픽셀 하나를 여러 삼각형이 방문하니 승자를 가릴 장치가 필요
+
+---
+
+1990 Comprehensible Rendering of 3D Shapes
+
+3D 형태를 화면에 더 명확하게 시각화하기 위해 
+픽셀마다 "기하학적 특성 정보"를 렌더링해 두는 
+스크린 공간(Screen-space) 버퍼를 제안
+
+Geometry Buffer
+
+Deferred Shading
+
+1단계 (Geometry Pass)
+라이팅 계산은 일체 하지 않고, 
+화면에 보일 오브젝트들의 "기하학적 구조 및 재질 정보"만 화면 크기의 텍스처들에 기록
+
+2단계 (Lighting Pass)
+1단계에서 모아둔 기하 정보를 바탕으로 실제 빛 계산을 수행
+
+개념은 1990년에 나왔지만 당시 하드웨어는 여러 개의 텍스처에 동시에 값을 쓰는 MRT(Multiple Render Targets) 기능이 없었기에
+한동안 쓰이지 못했습니다.
+
+--- 
