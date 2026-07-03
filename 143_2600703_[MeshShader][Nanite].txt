@@ -1,0 +1,1101 @@
+전통 지오메트리 파이프라인
+
+IA(Input Assembler) → VS → HS/DS(테셀레이션) → GS → Rasterizer 라는 고정된 구조
+
+---
+
+고정 기능 IA 가 병목
+
+정점 fetch·인덱스 해석·정점 재사용 캐시가 하드웨어에 박혀 있어서 
+셰이더가 지오메트리를 읽는 방식을 제어할 수 없습니다
+
+---
+
+draw 내부의 세밀한 컬링이 불가능합니다
+GPU-driven rendering
+
+기존 방식은 compute pass 로 컬링 → 결과를 메모리에 쓰고 → ExecuteIndirect 로 다시 읽는 메모리 왕복이 필요
+
+GS/테셀레이션
+
+GS 는 출력 크기가 가변이라 GPU 병렬성과 상성이 나빠
+
+---
+
+Mesh Shader (DX12 Ultimate SM6.5, Vulkan VK_EXT_mesh_shader; NVIDIA Turing+, AMD RDNA2+)
+"GPU-driven rendering 으로의 패러다임 전환
+
+IA/VS/HS/DS/GS 전체를
+compute 스타일의 두 스테이지로 대체
+
+Meshlet / Cluster data
+        |
+Optional Amplification Shader / Task Shader
+        |     <- 어떤 meshlet을 처리할지, 몇 개의 mesh shader group을 띄울지 결정
+        |
+Mesh Shader
+        |     <- 작은 meshlet 단위로 정점과 primitive를 직접 출력
+        |
+Rasterizer
+        |
+Pixel Shader
+
+---
+
+Mesh Shader 는 사실상 rasterizer 에 직접 출력하는 compute shader 입니다
+하나의 threadgroup 이 협력해서 meshlet(정점 ≤ 256, 프리미티브 ≤ 256 의 작은 메시 조각) 하나를 만들어 
+정점 배열 + 인덱스 배열을 on-chip 메모리에 직접 써서 rasterizer 로 넘깁니다
+
+정점 fetch 는 고정 기능이 아니라 셰이더 코드가 버퍼에서 직접 읽습니다 (push model → pull model)
+
+Amplification Shader 는 그 앞단에서 "Mesh Shader threadgroup 을 몇 개 띄울지"를 결정합니다
+여기서 meshlet 단위 frustum culling, backface cone culling, occlusion culling, LOD 선택을 수행하고 
+살아남은 meshlet 만 발사합니다.
+
+---
+
+Input Assembler가 고정적으로 vertex/index를 읽어주는 구조에서 벗어난다
+compute shader처럼 thread group 단위로 실행되고, 그 group이 직접 버퍼를 읽고, 
+필요한 정점과 삼각형 목록을 만들어 rasterizer로 넘깁니다
+
+보이지 않는 geometry를 더 일찍, 더 큰 단위로 버리기 위해서
+
+---
+
+예전 방식에서는 정점 셰이더가 정점을 다 처리한 뒤에야 
+primitive 단위의 여러 판단이 가능해지는 경우가 많았습니다.
+
+반면 Mesh Shader에서는 보통 모델을 작은 cluster, 즉 meshlet으로 미리 쪼개둡니다. 
+그러면 GPU는 meshlet 하나를 보고 
+“이 묶음 전체가 화면 밖인가?”, “너무 작아서 낮은 LOD를 써도 되는가?”, “삼각형 일부를 버릴 수 있는가?” 
+같은 판단을 rasterization 전에 할 수 있습니다.
+
+---
+
+기존 사고방식
+  정점 -> 정점 -> 정점 -> 삼각형 조립 -> 나중에 버림
+
+Mesh Shader 사고방식
+  meshlet 하나를 먼저 판단
+    보이지 않음 -> 통째로 버림
+    보임        -> 필요한 정점/삼각형만 만들어 보냄
+
+---
+
+차이는 실행 단위
+
+Vertex Shader: 입력 정점 하나를 출력 정점 하나로 변환
+
+Mesh Shader: thread group이 작은 meshlet을 협력해서 처리하고, 출력 vertex와 primitive list를 직접 만든다
+
+---
+
+스레드당 정점 1 개라는 모델의 폐기
+
+VS 는 정점 하나를 받아 정점 하나를 내는 1:1 함수였지만, 
+Mesh Shader 는 threadgroup 이 groupshared memory 와 협력 연산으로 
+지오메트리 조각 전체를 생성하는 N:M 모델
+
+컬링이 파이프라인 안에서 메모리 왕복 없이 이루어지고,
+per-primitive attribute 출력, 절차적 지오메트리 생성, 커스텀 정점 압축 해제 같은 것이 자연스러워집니다
+
+---
+
+Nanite 는 메시를 cluster(≈ 128 triangle) 로 쪼개 GPU 에서 계층 컬링하는데, 
+작은 삼각형은 compute shader rasterizer 로, 
+큰 삼각형은 하드웨어 rasterizer 경로로 보냅니다
+
+---
+
+순수 compute 로 rasterization 까지 해버린 게 Nanite 의 소프트웨어 rasterizer 인데, 이게 이기는 건 픽셀 크기 삼각형뿐
+큰 삼각형은 하드웨어 rasterizer 의 전용 유닛(fine raster, depth, attribute interpolation)이 압도적
+
+---
+---
+---
+
+VS 를 쓰든 안 쓰든 하드웨어는 이미 "compute 로 지오메트리를 처리하고 rasterizer 에 넘기는" 구조
+전통 파이프라인은 그 위의 에뮬레이션 계층
+Mesh Shader 는 이 실제 하드웨어 모델을 개발자에게 직접 열어준 것
+
+---
+
+Mesh Shader 의 핵심은 
+threadgroup 출력이 메모리를 거치지 않고 on-chip 으로 rasterizer 에 직결된다는 점
+
+Mesh Shader 의 승리 조건은 "draw 내부에 컬링할 것이 많을 때"
+수백만 폴리곤 정적 메시, 밀집 인스턴싱, 절차적 지오메트리가 그 영역
+
+---
+
+meshlet 빌드·툴링 비용
+지원 하드웨어가 Turing+/RDNA2+ 로 제한
+모바일 GPU 는 사실상 미지원이며 (TBDR 의 binning 구조와도 상성 문제)
+PS5 는 DX Mesh Shader 가 아닌 자체 primitive shader API
+
+---
+
+Compute software rasterizer
+
+고정 기능 rasterizer 하드웨어를 안 쓴다
+
+삼각형을 픽셀로 바꾸는 작업을 셰이더 코드로 직접 구현
+
+하드웨어 rasterizer 는 큰 삼각형에 최적화되어 있고 픽셀을 2×2 quad 단위로 처리합니다
+픽셀급 삼각형이 수백만 개면 ALU 로 무식하게 도는 쪽이 더 쌉니다
+
+---
+
+TBDR 
+Tile-Based Deferred Rendering
+
+모바일 GPU의 아키텍처
+
+모바일에서 DRAM 대역폭이 비싼 자원이라, 
+데스크톱처럼 삼각형을 바로 DRAM 프레임버퍼에 그리는(IMR, Immediate Mode) 대신 
+화면을 타일(예: 32×32 픽셀)로 쪼갭니다
+
+1단계(binning pass): 모든 지오메트리의 위치만 먼저 변환해서
+"이 삼각형은 어느 타일에 걸치는가"를 타일별 리스트에 기록
+
+2단계: 타일 하나씩 on-chip 메모리 안에서 rasterize·셰이딩·블렌딩을 전부 끝내고 
+최종 결과만 DRAM 에 한 번 씁니다
+
+binning 은 픽셀 작업 전에 전체 지오메트리 위치를 알아야 하는데, 
+mesh shader 는 지오메트리를 파이프라인 안에서 동적으로 생성
+
+그 출력을 binning 하려면 결국 메모리에 받아 적어야 해서 
+"메모리 왕복 제거"라는 mesh shader 의 핵심 이득이 사라집니다
+
+---
+
+Meshlet
+
+엔진/빌드 파이프라인이 오프라인에서 만듭니다
+DCC 툴은 관여하지 않고, GPU 가 자동 변환해 주지도 않습니다
+
+임포트나 쿠킹 시점에 도구(meshoptimizer 라이브러리, DirectXMesh, Unreal 은 임포트 시 Nanite 빌드)가 
+인덱스 버퍼를 분석해서 "정점 ≤ 64, 삼각형 ≤ 126" 같은 제약으로 클러스터를 자르고, 
+각 클러스터의 정점 목록·삼각형 목록·바운딩·normal cone(backface culling 용)을 별도 데이터 구조로 저장
+
+---
+
+컬링 단위
+삼각형 하나씩 컬링하기엔 오버헤드가 크고 메시 전체는 너무 굵으니, 
+그 중간 granularity 를 만든 겁니다
+
+---
+
+2006 
+unified shader architecture
+
+VS/PS/CS 는 같은 ALU 코어에서 도는 같은 종류의 프로그램
+차이는 스케줄링과 앞뒤에 붙는 고정 기능 배관(IA 가 입력을 먹여주느냐, rasterizer 출력이 붙느냐)
+
+최근의 변화는 그 배관까지 일반화된 것
+
+---
+---
+---
+
+DX12/Vulkan 의 PSO (Pipeline State Object)
+
+DX11 시절의 "슬롯에 바인딩" 모델과 달리
+셰이더 조합 + rasterizer state + blend state + vertex layout 을 통째로 컴파일해 둔 불변 객체
+
+Mesh shader 가 추가한 건 PSO 의 두 번째 종류
+
+전통형: InputLayout + VS (+ HS/DS/GS) + PS
+메시형: (AS) + MS + PS — InputLayout 없음, 정점 fetch 는 MS 코드가 직접
+
+어느 쪽을 쓸지는 draw 단위 결정 
+같은 프레임, 같은 render pass 안에서 두 종류가 공존
+
+전통형은 DrawIndexedInstanced, 메시형은 DispatchMesh(x, y, z)
+
+Nanite 의 하드웨어 rasterization 경로가 바로 이 메시형 PSO
+
+---
+
+Nanite 는 컬링을 통과한 cluster 들을 두 개의 리스트로 나눠 담고, 
+SW 리스트는 compute PSO + Dispatch 로, 
+HW 리스트는 메시형 그래픽스 PSO + draw 로 별도 제출
+
+두 경로 모두 같은 visibility buffer (UAV) 에 64-bit atomic 으로 쓰기 때문에, 
+depth 비교가 atomic InterlockedMax 안에서 일어나 결과가 자연스럽게 합쳐집니다
+
+---
+---
+---
+
+meshlet 하나에 배정되는 건 스레드 1 개가 아니라 threadgroup 1 개
+
+meshlet 이 정점 ≤ 128 로 잘려 있는 이유가 바로 이것인데,
+threadgroup 크기를 128 로 잡으면 스레드 1 개 = 정점 1 개가 됩니다
+
+mesh shader 가 곧 정점 처리 단계이고, 출력은 rasterizer 로 직행합니다
+
+---
+
+GS 는 스레드 1 개가 프리미티브 1 개를 받아 가변 개수의 출력을 순차 생산했고, 
+출력량 상한을 모르니 하드웨어가 최악 케이스만큼 버퍼를 예약하거나 메모리로 흘려야 했으며, 
+출력 순서 보장까지 얹혀 직렬화가 생겼습니다
+
+---
+
+Mesh shader 는 정반대 설계
+
+출력 상한을 컴파일 타임에 선언 (정점 ≤ 256, 프리미티브 ≤ 256)
+on-chip 공간 정적 할당 가능, threadgroup 전체가 협력해서 출력 배열을 병렬로 채움, 
+증폭이 필요하면 별도 스테이지(Amplification Shader)가 threadgroup 개수를 늘리는 방식으로 처리
+
+"한 스레드가 많이 만든다"를 "많은 스레드가 하나씩 만든다"로 뒤집은 것
+
+---
+
+SW 경로는 compute PSO 인데, compute 파이프라인에는 그래픽스 스테이지라는 개념 자체가 없습니다
+그냥 스레드들이 UAV 에 쓰는 프로그램
+
+HW 경로조차 render target 에 출력하지 않습니다. 
+PS 가 ROP 대신 SW 경로와 같은 visibility buffer UAV 에 InterlockedMax 로 씁니다
+
+---
+
+GS 는 현재 거의 버려진 스테이지입니다
+Metal 은 아예 지원하지 않고, UE5 도 사실상 안 씁니다.
+과거 용도였던 point sprite 확장·절차적 생성은 compute + instancing 으로
+
+HS (Hull Shader) — patch(제어점 묶음) 단위로 실행
+"얼마나 쪼갤까"를 결정
+edge 별 tessellation factor 를 계산해서 출력 (예: 카메라 거리 기반 LOD).
+
+Tessellator — 고정 기능. "쪼개기 자체"를 합니다
+HS 가 준 factor 대로 patch 도메인을 균일 분할해서 새 점들의 (u, v) 좌표와 연결 토폴로지를 생성합니다
+위치는 모르고 패턴만 만듭니다
+
+DS (Domain Shader) 
+"새 정점이 어디에 있나"를 계산
+
+GS (Geometry Shader)
+프리미티브 하나당 실행
+완성된 삼각형을 통째로 보고 0~N 개의 프리미티브를 방출하는 후처리기
+
+하드웨어 벤더들은 이 스테이지들에 더 이상 전용 실리콘을 투자하지 않습니다
+내부적으로 compute 형태로 에뮬레이션
+지원은 되는데 빠르지는 않은 상태
+
+displacement 수요는 Nanite tessellation(소프트웨어, compute 기반)이 흡수
+
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+
+UStaticMesh 빌드 시 Nanite 빌더가 삼각형을 cluster (128 tri) 로 자르고,
+cluster 들을 group 으로 묶어 단순화(simplify)한 뒤 
+그것을 다시 cluster 로 자르는 과정을 재귀해서 DAG 를 만듭니다
+
+각 cluster 는 자신의 단순화 오차(error)를 갖고, 결과는
+UStaticMesh::FStaticMeshRenderData::NaniteResourcesPtr:Nanite::FResources 에 페이지 단위로 저장됩니다
+root page 는 항상 상주
+
+LOD 체인이 아니라 "오차가 단조 증가하는 cluster 계층"
+
+---
+
+단조증가
+
+값이 진행 방향으로 감소하지 않는다
+x₁ ≤ x₂ ⇒ f(x₁) ≤ f(x₂)
+
+DAG 를 leaf → root 로 올라갈수록(거칠어질수록) 
+cluster 의 단순화 오차가 감소하지 않도록 빌드 시 강제
+
+child error ≤ parent error
+
+ParentError > Threshold ∧ ClusterError ≤ Threshold
+
+---
+
+DAG 를 왜 만드나
+
+cluster 를 개별 단순화하면 이웃 cluster 와 만나는 경계 정점이 어긋나 틈이 생기므로 
+경계는 잠그고(lock) 내부만 단순화해야 합니다
+
+트리 구조로 매 레벨 같은 묶음을 유지하면 같은 경계가 영원히 잠겨서 
+그 edge 들은 끝까지 단순화되지 못하고 조밀한 이음새로 남습니다.
+
+---
+
+cluster 여러 개를 group 으로 묶고 → group 경계만 잠근 채 내부 단순화 → 결과를 새로운 cluster 들로 다시 분할 
+→ 다음 레벨에서는 다르게 group 핑. 
+
+이러면 이번 레벨의 잠긴 경계가 다음 레벨에서는 group 내부가 되어 단순화
+
+---
+
+페이지 단위
+
+스트리밍 최소 단위
+
+Nanite::FResources 의 cluster 데이터를 고정 크기 블록(스트리밍 페이지, ~128 KB 급)으로 잘라 디스크에 저장하고, 
+GPU 컬링 중 "더 정밀한 cluster 가 필요한데 없다"는 피드백이 쌓이면 
+Nanite::GStreamingManager:Nanite::FStreamingManager 가 해당 페이지만 GPU 페이지 풀에 올립니다. 
+
+Virtual texturing 의 지오메트리 버전
+화면에 기여하는 디테일만 상주시키는 "virtualized geometry"
+
+---
+
+Root Page
+
+계층 최상부(가장 거친 cluster 들 + hierarchy 진입부)
+절대 스트리밍 아웃되지 않는 페이지
+
+Nanite::FResources::RootData, 메시 로드 시 즉시 업로드
+큰 메시는 root page 가 여러 개일 수 있음
+
+어떤 순간에도 메시가 최소한 거친 형태로는 그려질 수 있고(스트리밍 지연 시 검은 구멍 방지), 
+BVH 순회의 진입점이 항상 메모리에 있음을 보장
+
+---
+
+Raster Context
+
+Nanite::InitRasterContext 가 만들어 반환하는 구조체
+pass 파라미터 보따리
+
+---
+
+컴포넌트 등록 시 일반 FStaticMeshSceneProxy 대신
+FScene::Primitives::FPrimitiveSceneInfo::Proxy:Nanite::FSceneProxy 가 생성됩니다
+
+이 프록시는 draw command 를 만들지 않습니다
+인스턴스 transform 을 FScene::GPUScene:FGPUScene (GPU 상주 인스턴스 데이터) 에 올리는 게 전부
+
+---
+
+프레임에서 FDeferredShadingSceneRenderer::Render 가 하는 Nanite 관련 일은
+
+Nanite::GStreamingManager 업데이트(페이지 업로드)
+GPUScene 업데이트
+메인 뷰에 대해 Nanite::CullRasterize 호출
+
+CPU 비용이 폴리곤 수와 무관하게 상수라는 게 Nanite 본질의 절반
+
+---
+
+GPU: 컬링 (compute)
+
+InstanceCull: FScene::GPUScene 의 인스턴스들을 frustum + HZB 로 거르고, 
+생존 인스턴스의 root node 를 후보 버퍼에 push.
+
+---
+
+기존 StaticMesh
+Component
+ -> FStaticMeshSceneProxy
+ -> FMeshBatch
+ -> FMeshDrawCommand
+ -> IA / VS / Rasterizer / PS
+ -> GBuffer
+
+
+Nanite
+Component
+ -> Nanite::FSceneProxy
+ -> Nanite resource identity
+ -> GPU cluster culling / LOD
+ -> SW or HW raster
+ -> VisBuffer64
+ -> depth export
+ -> compute base pass shading
+ -> GBuffer
+
+---
+
+출발점은 UStaticMeshComponent가 scene proxy를 만들 때
+
+FStaticMeshComponentHelper::CreateSceneProxy()에서
+ShouldCreateNaniteProxy()를 호출하고, 조건이 맞으면 Nanite proxy 생성 경로로 들어간다
+
+“플랫폼이 Nanite를 지원하는가”, “component가 유효한 Nanite 데이터를 가지는가”, “material이 Nanite 경로에서 사용 가능한가”
+
+bCreateNanite가 true면 일반 FStaticMeshSceneProxy가 아니라 Nanite::FSceneProxy를 만든다
+
+이 mesh는 “전통적인 section별 mesh batch를 CPU가 쌓아서 draw command로 보내는 물체”가 아니라, 
+“Nanite resource를 가진 primitive”로 장면에 들어간다.
+
+---
+
+Nanite Proxy는 여전히 Primitive지만, 들고 있는 본체가 다르다
+
+위치, bounds, material relevance 같은 장면 primitive로서의 성격은 유지한다
+중요한 것은 “그릴 삼각형 목록”이 아니라 Nanite resource identity
+
+GetNaniteResourceInfo()는 RuntimeResourceID, HierarchyOffset, AssemblyTransformOffset 같은 정보를 반환
+Nanite renderer가 나중에 “이 primitive를 draw call로 그려라”가 아니라 
+“이 primitive가 가리키는 cluster hierarchy/resource를 GPU에서 탐색해라”로 간다
+
+---
+
+RenderNanite가 visibility를 만든다
+
+RenderPrepassAndVelocity 에서 Nanite가 호출된다
+Nanite raster context를 준비
+
+RenderNanite
+ -> InitRasterContext
+ -> CreateNaniteViews
+ -> Nanite::IRenderer::Create
+ -> DrawGeometry !
+ -> ExtractResults
+ -> EmitDepthTargets
+
+---
+
+DrawGeometry 안에서 GPU가 cluster를 고른다
+FRenderer::DrawGeometry()가 Nanite의 중심부
+
+PrimitiveFilter
+ -> instance / hierarchy culling
+ -> node / cluster culling
+ -> visible cluster list 생성
+ -> SW/HW raster binning
+ -> rasterize
+ -> VisBuffer64 기록
+
+(Scene, Views) -> Clusters for rasterization
+“mesh를 그린다”보다 “view에서 보일 cluster 집합을 만든다”
+
+삼각형 하나하나를 CPU가 골라서 draw call로 보내는 게 아니라, 
+GPU가 cluster hierarchy를 내려가며 “지금 view에서 필요한 적절한 cluster만” 골라낸다
+
+---
+
+Nanite raster의 출력은 바로 GBuffer가 아니다. 
+먼저 “이 픽셀에 어떤 cluster의 어떤 triangle이 보였는가”를 visibility buffer에 쓴다.
+
+---
+
+일반 BasePass 단계에서 Nanite 전용 shading이 들어간다
+RenderBasePass(... NaniteRasterResults)
+
+---
+---
+---
+---
+---
+---
+
+가상화된 geometry 렌더링 시스템
+
+mesh를 전통적인 LOD + draw call + vertex shader + pixel shader 방식으로 직접 그리는 대신
+mesh를 작은 cluster 계층으로 쪼개 저장해 두고
+런타임에 GPU가 view 기준으로 필요한 cluster만 골라 rasterize한 뒤
+visibility buffer를 통해 나중에 material shading을 수행하는 시스템이다.
+
+---
+
+cluster
+
+cluster들이 부모-자식 관계를 가지면서 
+“멀리서 볼 때는 더 거친 cluster”, “가까이서 볼 때는 더 세밀한 cluster”처럼 선택될 수 있게 구성
+
+---
+
+Nanite의 사고방식
+
+"이 view에서 보이는 적절한 cluster들만 고른다"
+
+LOD처럼 “mesh 전체가 LOD0, LOD1, LOD2 중 하나로 바뀐다”가 아니라, 
+mesh 내부의 cluster들이 화면 조건에 따라 훨씬 세밀하게 선택
+
+같은 object 안에서도 어떤 부분은 더 자세한 cluster, 어떤 부분은 더 거친 cluster가 선택될 수 있다
+
+기존 LOD는 보통 mesh 전체가 LOD0, LOD1, LOD2로 바뀐다
+실제 화면에서는 같은 mesh 안에서도 가까운 부분, 먼 부분, 실루엣에 중요한 부분, 가려진 부분의 필요 해상도가 다르다
+
+Nanite는 object 전체가 아니라 cluster 단위로 선택한다.
+
+Nanite는 단순한 자동 LOD가 아니다.
+
+---
+
+FDeferredShadingSceneRenderer::RenderNanite
+FRenderer::DrawGeometry
+Nanite::EmitDepthTargets
+Nanite::DispatchBasePass
+
+---
+---
+---
+
+programmable shader (2001)
+unified shader (2006)
+compute shader (2009)
+GPU-driven pipeline (2015~, Ubisoft 계열 발표)
+mesh shader (2018)
+
+파이프라인의 고정 배관이 하나씩 셰이더 코드로 대체되어 왔고
+Nanite 는 그 종착점에 가깝습니다
+컬링·LOD 선택·rasterization·depth test 까지 전부 compute 로
+
+---
+
+draw call 병목 → instancing → indirect draw → ExecuteIndirect → "GPU 가 자기 일감을 스스로 결정"
+Nanite 에서 CPU 는 씬 데이터베이스(GPUScene)를 갱신하고 고정 개수의 dispatch 를 제출하는 스케줄러일 뿐입니다
+
+---
+
+데이터의 가상화
+
+OS 가상 메모리 → megatexture/virtual texturing (id Software) → virtualized geometry
+전체를 메모리에 올리지 말고, 관측되는 부분만 상주시켜라
+
+---
+
+전통 렌더링의 비용 함수는 비용 ∝ 씬 복잡도
+폴리곤 수, draw 수
+
+Nanite 가 푸는 문제는 이것을 비용 ∝ 화면 픽셀 수 로 바꾸는 것 
+
+씬에 삼각형이 10⁶ 개든 10¹¹ 개든, 화면은 어차피 ~10⁶ 픽셀이고 
+픽셀당 유효 삼각형은 1 개면 충분하다는 관찰
+
+렌더링 비용을 O(씬) 에서 O(화면) 으로
+
+---
+
+draw call 의 CPU 비용, 
+아티스트의 LOD 체인 수작업과 popping,
+폴리곤 버짓 관리라는 제작 규율, 
+메모리에 안 들어가는 영화급 에셋, 
+픽셀급 삼각형에서의 하드웨어 rasterizer 비효율
+
+---
+
+불투명한 강체 지오메트리가 본래 영역
+반투명, 변형(스키닝은 후대에 추가), 헤어 같은 비다양체 극세 지오메트리는 도메인 밖이거나 별도 확장
+
+---
+
+IA→VS→Raster→OM 을
+"persistent cull → 하이브리드 rasterizer (compute + mesh shader) → atomic 병합 → visibility buffer" 로 
+
+셰이딩을 지오메트리에서 분리해 픽셀당 정확히 1 회로 만든 것
+
+---
+
+FMeshBatch → FMeshDrawCommand 파이프라인의 우회
+씬은 GPU 상주 데이터베이스가 되고, 렌더러는 그 위의 쿼리 실행기가 됩니다
+
+---
+---
+---
+
+전통적 사고방식
+"이 Mesh의 LOD를 골라서 DrawCall로 그린다"
+
+Nanite의 사고방식
+"이 View에서 실제로 필요한 Cluster만 골라서 보이는 표면을 만든다"
+
+---
+
+Indirect draw
+GPU-driven 의 기초 부품
+
+draw 의 인자(정점 수, 인스턴스 수, 시작 오프셋 등)를 CPU 함수 인자가 아니라 
+GPU 버퍼에서 읽는 draw
+
+DrawIndexedInstancedIndirect, ExecuteIndirect
+
+compute 가 인자 버퍼에 숫자를 써 두고,
+CPU 는 내용을 모른 채 "저 버퍼에 적힌 만큼 그려라"를 제출합니다
+
+---
+---
+---
+
+hardware occlusion query
+
+오브젝트의 바운딩 박스를 그려보고 "몇 샘플이 depth test 를 통과했나"를 GPU 가 세서 CPU 가 readback 하는 것
+결과가 1+ 프레임 늦게 도착
+오브젝트당 query 비용, 그래서 수백 개 단위가 한계
+query 는 "GPU 에게 물어보고 CPU 가 기다림"
+
+---
+
+HZB (Hierarchical Z-Buffer)
+depth buffer 의 mip 피라미드
+
+각 mip 텍셀 = 하위 2×2 중 가장 먼 depth.
+
+readback 없음, CPU 개입 없음, cluster 수만 개에 적용 가능
+
+---
+
+ID3D12GraphicsCommandList6::DispatchMesh
+
+정점 개수를 넘기는 게 아니라 compute 처럼 threadgroup 그리드를 발사
+
+---
+---
+---
+
+과거 - 제한된 표면 표현
+텍스처 하나 붙이고, 정점 조명이나 픽셀 조명을 한다
+
+표면 표현력 증가
+shader/material 복잡도 증가
+
+형태 표현력 증가
+geometry/triangle 복잡도 증가
+
+Nanite는 형태/geometry 복잡도를 다루는 시스템
+
+---
+
+Cluster 선택
+ -> Cluster rasterization
+ -> Visibility Buffer
+ -> 나중에 Material Shading
+
+visibility 결정과 material shading을 분리한다
+Nanite는 먼저 “이 픽셀에 어떤 cluster/triangle이 보였는지”를 visibility buffer에 써 놓고, 
+나중에 그 정보를 읽어서 material shading을 한다
+
+---
+
+Mesh section
+mesh 안에서 같은 material을 쓰는 삼각형 묶음
+
+StaticMesh
+ -> LOD 0
+    -> Section 0: 나무 material, triangle range A
+    -> Section 1: 금속 material, triangle range B
+    -> Section 2: 유리 material, triangle range C
+
+Section
+- 어떤 material slot을 쓰는가
+- index buffer의 어느 범위를 그리는가
+
+즉 vertex buffer는 mesh 전체가 공유할 수 있지만, 
+index buffer의 특정 구간을 section이 가리킨다.
+
+Vertex Buffer
+[v0 v1 v2 v3 v4 v5 ...]
+
+Index Buffer
+[0 1 2 | 2 3 0 | 4 5 6 | 6 7 4 ...]
+
+Section 0
+index start = 0
+index count = 6
+material = wood
+
+Section 1
+index start = 6
+index count = 6
+material = metal
+
+---
+
+GPU rasterizer
+
+한 triangle이 수백, 수천 픽셀을 덮으면 setup 비용을 한 번 내고 많은 픽셀을 병렬로 처리할 수 있다.
+문제는 triangle이 픽셀보다 작아지는 경우다.
+
+큰 triangle
+triangle setup 1번
+ -> 많은 pixel 생성
+ -> 비용 대비 생산량 좋음
+
+작은 triangle
+triangle setup 1번
+ -> pixel 0~1개 생성
+ -> 비용 대비 생산량 나쁨
+
+---
+
+Cluster는 렌더링/LOD/culling의 논리 단위
+Page는 저장/압축/스트리밍의 메모리 단위
+
+Cluster
+ -> "이 geometry 조각을 그릴까?"
+ -> culling, LOD, rasterization 단위
+
+Page
+ -> "이 데이터를 메모리에 올릴까?"
+ -> streaming, 압축, residency 단위
+
+여러 cluster와 관련 데이터를 page에 묶는다
+
+Nanite Mesh
+ -> Cluster 0
+ -> Cluster 1
+ -> Cluster 2
+ -> Cluster 3
+ -> ...
+
+Streaming Page A
+ -> Cluster 0, 1, 2, 3 ...
+
+Streaming Page B
+ -> Cluster 4, 5, 6, 7 ...
+
+문장 = cluster
+페이지 = page
+책 전체 = mesh resource
+
+읽을 때 의미 단위는 문장이지만, 
+책을 물리적으로 넘길 때는 페이지 단위로 넘기는 것과 비슷하다
+
+---
+---
+---
+
+deferred shading 의 계약
+
+"지오메트리 단계는 GBuffer 만 채워라, 라이팅은 GBuffer 만 읽는다"
+
+Nanite 는 그 앞 단계의 대체 공급자
+
+같은 규격의 산출물(SceneDepth + GBuffer + velocity)만 내놓으면 
+뒤쪽 파이프라인은 아무것도 몰라도 됩니다
+
+VisBuffer64, DAG, atomic — 그 모든 기계장치는 Nanite 차선 내부에 봉인되어 있고 밖으로는 새어 나가지 않습니다
+
+---
+
+SceneDepth + GBuffer
+공통 출력 계약 · 합류 지점
+
+두 차선은 같은 depth 로 서로를 가립니다. 
+Nanite 픽셀과 전통 픽셀이 같은 SceneDepth 에 기록되므로, 
+Nanite 벽이 일반 캐릭터를 가리고 일반 캐릭터가 Nanite 바위를 가리는 
+상호 occlusion 이 자동으로 성립합니다.
+
+
+Lighting → Post Processing
+어느 픽셀이 Nanite였는지 모름
+
+---
+
+FMeshBatch → FMeshDrawCommand → Draw 라는 기존 지오메트리 공급 라인 옆에 놓인 두 번째 공급 라인
+입력은 같은 FScene, 출력은 같은 GBuffer
+다른 것은 중간의 운반 방식(CPU 명령 생성 대신 GPU 스스로 선택·rasterize)
+
+---
+---
+---
+
+GBuffer pixel
+- base color
+- normal
+- roughness
+- metallic
+- specular
+- depth
+- shading model
+
+Nanite visibility buffer
+픽셀마다 이것을 저장
+
+- 이 픽셀에서 최종으로 보이는 visible cluster index
+- 그 cluster 안의 triangle index
+- depth
+
+visibility buffer
+화면의 (x, y) 픽셀에 보이는 것은
+"어떤 Nanite cluster의 몇 번째 triangle인가?"
+
+Pixel (640, 360)
+
+Visibility Buffer:
+visible cluster index = 12531
+triangle index        = 47
+depth                 = 0.384...
+
+---
+
+visible cluster index 12531
+ -> VisibleClustersSWHW 배열에서 cluster record 찾기
+ -> 이 cluster가 어떤 Nanite resource에 속하는지 찾기
+ -> 어떤 instance / primitive인지 찾기
+ -> cluster data에서 triangle 47의 세 정점 index를 찾기
+ -> 세 정점의 position, normal, tangent, UV 등을 decode
+ -> 픽셀 위치와 depth로 barycentric을 복원
+ -> material input을 계산
+ -> GBuffer에 base color / normal / roughness 등을 기록
+
+Nanite도 rasterization을 한다. 
+다만 rasterization의 출력이 바로 material shaded pixel이 아니라 visibility buffer
+
+기존 Rasterization의 목적
+ -> pixel shader를 실행할 fragment를 만든다
+
+Nanite Rasterization의 목적
+ -> 각 pixel에 보이는 cluster/triangle identity를 쓴다
+
+---
+
+화면 픽셀을 덮는 것은 삼각형입니다
+Nanite 의 목표("픽셀당 삼각형 1 개")가 전부 커버리지에 관한 서술이라 자연 단위가 삼각형인 것이고, 
+cluster 도 삼각형 128 개로 정의됩니다
+
+---
+
+Nanite::FRasterContext::VisBuffer64
+픽셀당 64-bit 정수 하나
+
+상위 32-bit = depth, 
+하위 32-bit = visible cluster index (25-bit) + 삼각형 index (7-bit; 2⁷ = 128 = cluster 의 삼각형 수)
+
+---
+
+GPU 의 Dispatch
+
+parallel_for 발주
+이 커널을 x·y·z threadgroup 그리드로 실행하라
+
+---
+
+기하학적 편차
+
+반지름 100 cm 구를 삼각형 10,000 개로 만들면 표면이 거의 매끈하지만, 
+100 개로 줄이면 평평한 면들이 구 안쪽으로 파고듭니다
+진짜 구면과 평면 조각 사이에 최대 0.5 cm 의 처짐이 생겼다고 합시다.
+
+원본 표면 위의 임의의 점에서 단순화된 표면까지의 최대 거리
+형상의 위상이나 실루엣이 얼마나 망가졌는지를 길이 단위 하나로 요약한 값
+
+---
+
+오차 거리
+
+위의 편차를 cluster 하나당 보수적 스칼라 하나로 저장한 것
+이 단순화된 cluster 의 표면은 원본 표면에서 어디서든 d cm 이상 벗어나지 않는다
+
+---
+
+빌드 시 단순화기(QEM 계열)가 edge collapse 를 할 때마다 얼마나 벗어났는지 누적 추정하고
+그 상계를 cluster 에 기록합니다
+
+---
+---
+---
+---
+---
+---
+
+Nanite 런타임 경로에는 원본 정점 버퍼·인덱스 버퍼가 아예 등장하지 않습니다
+
+빌더가 그것들을 입력으로 소비해서 전혀 다른 자급자족형 인코딩을 만듭니다
+
+cluster 마다 자기 정점 사본
+cluster-로컬 인덱스  (정점이 ≤ 256 이므로 8-bit 참조면 충분, NANITE_USE_STRIP_INDICES = 1 로 strip 형태 압축)
+
+이 데이터가
+
+UStaticMesh::GetRenderData():FStaticMeshRenderData::NaniteResourcesPtr:Nanite::FResources
+
+에 페이지 단위로 담기고
+
+런타임에는 셰이더가 IA 없이 이 버퍼를 직접 fetch·디코드합니다
+
+원본 리소스는 빌드 타임의 원료이고, Nanite 는 자기 전용 창고(cluster 페이지)만 들고 다닌다
+
+---
+
+원본 형태의 VB/IB 가 남는 곳은 하나, fallback mesh 입니다
+
+빌드 시 함께 생성되는 저폴리 일반 메시 (FStaticMeshRenderData::LODResources)
+Nanite 미지원 플랫폼, ray tracing 용 BLAS, per-poly 콜리전 같은 "전통 파이프라인이 필요한 소비자"를 위한 것입니다
+
+---
+---
+---
+
+정점 10,000 개 ≈ 삼각형 ~20,000 개
+20,000 tri → 대략 157 개의 leaf cluster (Nanite::FCluster)
+
+DAG 구축
+인접한 cluster 8~32 개를 group 으로 묶고
+group 경계를 잠근 채 내부를 삼각형 수 ~½ 로 단순화한 뒤
+결과를 다시 ≤ 128 tri cluster 들로 분할하고 오차를 기록합니다
+이걸 root 까지 반복: 157 → ~80 → ~40 → … → 1~2 개
+
+---
+
+인코딩: cluster 정점은 양자화 압축되어 페이지에 패킹됩니다
+
+root page 32 KB
+streaming page 128 KB
+
+---
+
+SW compute rasterizer + HW 메시형 PSO 두 경로
+Nanite 자체적 rasterize
+
+rasterization 이란 정의상 "삼각형이 덮는 픽셀들을 열거하는 작업"
+rasterize 하는 주체는 그 순간 (픽셀, cluster, 삼각형) 조합을 알고 있습니다
+
+전통 rasterizer 는 그 지점에서 PS 를 돌려 색을 썼다면
+Nanite 의 rasterizer 는 색 대신 신분증 (cluster index 25-bit + tri index 7-bit + depth) 을 VisBuffer64 에 씁니다
+
+---
+---
+---
+---
+---
+---
+
+Nanite는 고밀도 mesh로부터 만들어진 virtual geometry database를 view로 질의해서
+픽셀마다 앞에 보이는 triangle의 주소를 구하고,
+그 주소를 다시 material shading으로 변환해 GBuffer를 채우는 시스템
+
+---
+---
+---
+
+아티스트가 4,000,000 삼각형짜리 바위를 임포트합니다. 
+빌더가 이것을 leaf cluster ~31,000 개로 자르고, 
+group 단순화를 root 까지 반복해 DAG 전체 ~62,000 cluster 를 만들어 
+페이지 수십 개에 패킹합니다. 
+디스크에 수십 MB, 이 중 root page 32 KB 만 "항상 상주" 딱지가 붙습니다. 
+여기서 Nanite 의 지능 전부가 소진됩니다. 런타임에는 판단할 것이 별로 없습니다
+
+---
+
+프레임 N, 카메라가 바위에서 10 m
+CPU 는 FDeferredShadingSceneRenderer::RenderNanite 로 dispatch 몇 개를 기록합니다
+
+GPU 에서 InstanceCull 이 바위의 행을 frustum 에 통과시키고, hierarchy 순회가 root 에서 내려갑니다
+각 노드에서 묻는 것은 단 하나: "네 오차 d 를 지금 거리에서 투영하면 1 픽셀 넘어?"
+넘으면 더 내려가고, 안 넘으면 거기서 cut
+
+바위가 화면 ~200,000 픽셀을 차지한다면 순회는 대략 cluster 1,600 개 (× 128 tri ≈ 픽셀당 1 삼각형) 에서 멈춥니다
+HZB 가 뒷면 절반을 버리고, 생존자 ~800 개가 VisibleClustersSWHW 에 적힙니다
+
+이때 "다음 단계 페이지가 GPU 에 없다"가 감지되면 스트리밍 요청이 피드백 버퍼에 쌓이고
+이번 프레임은 그냥 거친 cluster 로 그립니다
+
+---
+
+800 개가 화면 크기로 binning 되어 대부분 SW rasterizer dispatch 로
+실루엣의 큰 것들만 메시형 PSO 로 갑니다
+
+Nanite::EmitDepthTargets 가 이것을 SceneDepth 로 풀어내는 순간, 
+옆에서 전통 경로로 그려지던 캐릭터와 서로 가리기 시작합니다
+
+---
+---
+---
+
+Nanite
+미리 구워둔 다해상도 삼각형 창고(DAG + 페이지)
+매 프레임 그 창고에서 필요한 만큼만 꺼내 픽셀에 신분증을 찍는 GPU 프로그램(컬링 + rasterizer)
+신분증을 나중에 색으로 바꾸는 셰이딩 pass
+
+---
+
+FDeferredShadingSceneRenderer::RenderNanite
+
+-> Nanite::InitRasterContext
+-> Nanite::CreatePackedViewFromViewInfo
+-> Nanite::IRenderer::Create
+-> FRenderer::DrawGeometry
+-> FRenderer::ExtractResults
+
+
+---
+
+FRenderer::DrawGeometry
+
+-> FRenderer::PrepareRasterizerPasses
+-> FRenderer::AddPass_InstanceHierarchyAndClusterCull
+-> FRenderer::AddPass_Rasterize
+-> FRenderer::AddPass_InstanceHierarchyAndClusterCull   // post pass, occlusion two-pass일 때
+-> FRenderer::AddPass_Rasterize                         // post pass
+
+---
+
+SW path
+ -> compute shader
+ -> ClusterRasterize
+ -> RasterizeTri_Adaptive
+ -> WritePixel
+
+HW path
+ -> mesh shader / hardware raster path
+ -> HWRasterizeMS
+ -> WritePixel
+ 
+---
+---
+---
+
+UStaticMeshComponent::CreateSceneProxy
+ShouldCreateNaniteProxy() 판정
+Nanite::FSceneProxy
+
+FScene::Primitives[i]:FPrimitiveSceneInfo::Proxy :Nanite::FSceneProxy
+
+---
+
+Nanite::GGlobalResources.Update → Nanite::GStreamingManager.BeginAsyncUpdate(GraphBuilder)
+
+전 프레임 readback 된 페이지 요청을 비동기로 설치 시작 (디스크 → GPU 페이지 풀, hierarchy fixup 포함)
+
+Nanite::GStreamingManager.EndAsyncUpdate
+
+페이지 설치 완료 동기화. 이후부터 GPU 가 새 페이지를 참조 가능
+
+---
+
+Scene->WaitForCacheNaniteMaterialBinsTask() → FDeferredShadingSceneRenderer::RenderNanite 호출
+
+---
+
+FDeferredShadingSceneRenderer::RenderNanite
+
+Nanite::FSharedContext — ShaderMap + Pipeline = Nanite::EPipeline::Primary
+
+Nanite::InitRasterContext(..., Nanite::EOutputBufferMode::VisBuffer, ...) 
+→ RasterContext:Nanite::FRasterContext
+VisBuffer64 등 출력 텍스처 생성 + FRasterClearCS (NaniteRasterClear.usf) 로 클리어
+
+---
+
+Nanite::FRenderer::DrawGeometry
+GPU pass 조립 (핵심부)
+
+입력: Scene::NaniteRasterPipelines[BasePass]
+VisibilityQuery, PackedViewArray, SceneInstanceCullQuery
+
+컬링 모집단 = GPUScene 전체
+
+---
