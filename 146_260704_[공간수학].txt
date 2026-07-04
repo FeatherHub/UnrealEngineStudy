@@ -385,3 +385,273 @@ B를 곱하는 방향은 조립이라 새 이름 → 옛 이름입니다.
 미터를 실제로 정의한 것은 파리에 보관된 백금 막대, 
 지금은 특정 시간 동안 빛이 가는 거리
 어느 쪽이든 물리 세계의 무언가를 가리키는 행위
+
+---
+---
+---
+
+(2,3,1)
+계수 목록
+
+어떤 basis vector set을 쓰느냐에 따라 
+같은 (2,3,1)이 다른 geometric point를 가리킬 수 있다
+
+geometric vector
+표현하는 coordinate system
+
+---
+
+어떤 coordinate system이든 자기 자신의 basis vector를 자기 자신의 coordinate system으로 표현하면 항상 이렇게 나온다.
+
+x axis basis vector = (1, 0, 0)
+y axis basis vector = (0, 1, 0)
+z axis basis vector = (0, 0, 1)
+
+하지만 model coordinate system의 x axis basis vector를 world coordinate system으로 표현하면 (1, 0, 0)이 아닐 수 있다.
+
+---
+
+(2, 3, 1)은 혼자서는 완성된 위치가 아니다
+
+어떤 origin을 기준으로 하는가
+어떤 x axis basis vector를 쓰는가
+어떤 y axis basis vector를 쓰는가
+어떤 z axis basis vector를 쓰는가
+
+이 네 가지가 있어야 실제 geometric point가 된다
+
+---
+---
+---
+
+model coordinate system이 world coordinate system 안에서 90 degree 회전해 있다
+model에 붙여서 사용하기로 한 측정 틀의 x axis basis vector가 world coordinate system 기준으로 어느 방향을 가리키는가
+
+---
+
+공간에 point가 있다.
+관찰자가 origin point를 하나 고른다.
+관찰자가 axis direction들을 고른다.
+관찰자가 unit length를 고른다.
+이제 어떤 point든 origin과 axis basis vector 조합으로 이름 붙일 수 있다.
+
+---
+
+같은 공간의 point set에 대해 여러 naming rule을 정의한다
+
+P가 두 개가 된 것이 아니다. 이름이 두 개 생긴 것이다.
+
+---
+
+(1,0,0) dot product (0,1,0) = 0 이라는 말은 
+standard Euclidean coordinate system에서만 바로 90 degree를 의미한다.
+
+하지만 x axis basis vector와 y axis basis vector가 실제 공간에서 30 degree라면, 
+그 coordinate system은 orthonormal coordinate system이 아니다.
+
+기저 자체의 geometric 관계를 담은 metric matrix가 필요하다.
+G[i][j] = basis_i dot product basis_j
+
+[ 1        cos(30 degree) ]
+[ cos(30 degree)  1       ]
+
+---
+---
+---
+
+orthonormal coordinate system 상정
+
+dot(a, b) = ax*bx + ay*by + az*bz
+
+일반형은 
+
+geometric_dot(a, b) = a^T G b
+
+---
+
+p_A · M = p_B
+M의 행들 = A-종이의 화살표들을 B-언어로 적은 것
+
+p의 A-이름이 (x, y)
+p = x·a₁ + y·a₂
+
+B이름(p) = x·B이름(a₁) + y·B이름(a₂)
+
+---
+---
+---
+
+row vector convention에서 B의 행벡터는 기저벡터의 번역 결과다.
+하지만 B의 열벡터는 기저벡터가 아니다
+B의 열벡터는 여러 행벡터에서 같은 coordinate slot만 세로로 모은 것이다
+
+---
+
+A는 어떤 coordinate를 coordinate system A로 번역한다.
+B는 coordinate system A의 coordinate를 coordinate system B로 번역한다.
+
+p x A x B = p_B
+
+이제 행렬끼리 먼저 합치고 싶다.
+
+C = A x B
+
+p x C = p_B
+
+즉 C는 한 번에 coordinate system B로 번역하는 합본 사전
+
+---
+
+행렬 A의 한 행은 원래 basis vector 하나가 coordinate system A에서 어떻게 불리는지다.
+
+---
+
+A공장 (원료 → 중간재)
+
+밀가루 1kg → 빵 2개 + 쿠키 1개
+우유 1L    → 빵 0개 + 쿠키 1개
+
+B공장 (중간재 → 최종성분)
+빵 1개   → 설탕 1 + 버터 1
+쿠키 1개 → 설탕 3 + 버터 0
+
+(밀가루량, 우유량) · C = (설탕량, 버터량)
+
+2 1
+0 1
+
+1 1 
+3 0
+
+이제 합성 기계 C의 성분 하나를 묻습니다. 
+C₁₁ = 밀가루 1kg은 최종적으로 설탕 몇 개가 되는가?
+
+밀가루는 빵 2개와 쿠키 1개가 됐습니다
+설탕은 두 경로로 들어옵니다
+
+빵 경로: 빵 2개 × 빵당 설탕 1 = 2
+쿠키 경로: 쿠키 1개 × 쿠키당 설탕 3 = 3
+
+합계: 5
+
+C₁₁ = 2·1 + 1·3 = (A의 1행)·(B의 1열)
+
+---
+
+열의 정체
+
+질문이 성분 하나를 묻기 때문
+
+설탕 총량을 알려면 모든 중간재 각각으로부터 설탕 기여만 걷어야 합니다
+
+---
+
+B first column
+=
+A x axis basis vector가 B x coordinate에 주는 양
+A y axis basis vector가 B x coordinate에 주는 양
+
+---
+---
+---
+---
+---
+
+출발점은 공식이 아니라 요구 조건이어야 해.
+row vector convention에서 두 행렬 A, B를 합친 C는 반드시 이 조건을 만족해야 한다.
+
+모든 입력 p에 대해
+p x C = (p x A) x B
+
+즉 C는 A를 거친 뒤 B를 거친 결과와 완전히 같은 일을 한 번에 해야 한다.
+
+---
+
+이름 붙이기의 합성
+
+old basis vector들을
+middle basis vector들의 말로 다시 써라
+
+middle basis vector들을
+new basis vector들의 말로 다시 써라
+
+old basis vector들을
+new basis vector들의 말로 바로 다시 써라
+
+---
+
+선형성
+무한의 압축
+
+공간
+무한하고, 연속적이고, 모든 곳이 균등
+
+번역과 변형이 왜 하필 선형인가? 
+공간이 균등하기 때문입니다
+
+여기서 성립하는 규칙이 저기서 다르면 안 되니, 
+규칙은 위치에 무관해야 하고, 
+
+그런 규칙은 부분으로 쪼개 처리하고 합쳐도 되는 규칙뿐입니다
+쪼개기가 허용되는 세계에서만 우리는 계산이라는 걸 할 수 있어요
+
+유한한 검증 능력에 맞춘 신뢰의 분할
+
+---
+
+공간의 무한한 점들은 화살표 세 개에서 두 연산(합, 배율)으로 전부 생성됩니다
+
+선형성은 계산 가능성의 다른 이름입니다
+
+매끄러운 것은 무엇이든 충분히 확대하면 선형으로 보이기 때문입니다
+그 확대경의 이름이 미분
+
+---
+---
+---
+
+mesh asset recipe
+        |
+        +-- instance 1 frame -> world position A
+        |
+        +-- instance 2 frame -> world position B
+        |
+        +-- instance 3 frame -> world position C
+
+---
+
+확대하면 곧게 펴지는 성질
+손잡이가 걸리는 세계와 영원히 헛도는 세계
+
+아무리 확대해도 꺾임은 꺾임, 편차가 버팁니다
+프랙탈 — 확대할수록 새로운 굴곡이 무한히 기어 나옵니다
+카오스: 점마다의 선형 근사는 훌륭한데 오차가 합성마다 증폭되어 장기 예측이 무너지는 세계
+부분의 합이 전체가 아닌 곳
+
+---
+
+f(a + h) ≈ f(a) + J·h
+
+미분
+점마다 선형 손잡이를 하나씩 발급하는 행정
+
+1차원이면 J는 숫자 하나(기울기), 
+3차원이면 3×3 야코비안 행렬
+
+---
+
+아무 함수나: 불가능(점마다 독립인 무한 정보). 
+
+그럼 유한 정보로 잡히는 최소의 변화 모형은? 
+
+상수 모형(아무것도 안 변한다: 숫자 1개)은 변화를 못 담습니다. 
+
+그다음이 선형 모형(변화율은 일정하다: 숫자 몇 개) — 변화를 담는 가장 싼 모형
+
+세계가 매끄럽다면, 이 가장 싼 모형이 국소적으로는 점근적으로 정확하다.
+
+---
+
+선형 기계가 주어지면, 그 기계가 방향을 섞지 않는 특별한 방향들이 존재합니다. 
+그 방향들로 종이를 다시 깔면 n차원 문제가 서로를 모르는 1차원 문제 n개로 완전히 분해됩니다. 
+그 방향들의 이름이 고유벡터
