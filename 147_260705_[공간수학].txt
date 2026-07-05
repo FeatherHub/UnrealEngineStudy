@@ -390,3 +390,693 @@ i가 perpendicular basis direction 역할
 
 ---
 ---
+---
+---
+---
+
+b̂를 â 기준으로 쪼개: b̂ = cos θ · â + sin θ · â⊥
+
+내적
+
+â·b̂
+â·(cos θ · â + sin θ · â⊥)
+u·(v+w) = u·v + u·w
+cos θ (â·â) + sin θ (â·â⊥)
+â·â = 1(자기 정렬 최대), â·â⊥ = 0(수직)
+cos θ·1 + sin θ·0 = cos θ
+
+평행 성분(cos)만 남기고 수직 성분(sin)은 죽여
+정렬 탐지기
+
+
+외적
+
+â×b̂
+cos θ (â×â) + sin θ (â×â⊥)
+cos θ·0 + sin θ·n̂
+sin θ·n̂
+â×â = 0(자기 자신과는 넓이 0), â×â⊥ = n̂(수직 두 단위벡터가 단위 넓이) → sin θ · n̂
+
+수직 성분(sin)만 남기고 평행 성분(cos)은 죽여. 수직 탐지기
+
+---
+
+내적은 대칭(a·b = b·a)이라 θ의 짝함수여야
+짝함수(even): f(−x) = f(x)
+세로축에 대해 거울처럼 대칭
+x², |x|
+cos(−θ) = cos θ
+
+---
+
+외적은 반대칭(a×b = −b×a)이라 θ의 홀함수여야
+홀함수(odd): f(−x) = −f(x)
+원점에 대해 180° 회전 대칭
+x, x³
+sin(−θ) = −sin θ
+
+---
+
+â축 반사에서 평행 성분(cos)은 불변, 
+수직 성분(sin)은 부호 반전. 
+
+그래서 내적(대칭)=cos, 외적(반대칭)=sin.
+
+---
+
+봉우리 위치
+
+내적은 평행(0°)에서 최대인데 cos도 0°에서 최대
+외적(넓이)은 수직(90°)에서 최대인데 sin도 90°에서 최대
+
+---
+
+e₁ = (1,0), e₂ = (0,1)
+
+기준축에서 각 θ만큼 떨어진 단위 벡터의 두 좌표가 (cos θ, sin θ)다
+
+---
+
+표준 기저 {e₁, e₂}에서: b̂ = (cos(φ+θ), sin(φ+θ))
+적응 기저 {â, â⊥}에서: b̂ = (cos θ, sin θ)
+
+---
+
+관계 b̂ = cos θ · â + sin θ · â⊥ 자체는 어떤 좌표계도 없이 성립
+â 방향으로 cos θ, â⊥ 방향으로 sin θ 가면 b̂
+
+b̂·â = 0.766 = cos 40°, b̂·â⊥ = 0.643 = sin 40°
+b̂이 â, â⊥를 따라 얼마인지를 말해.
+â 좌표계로 직접 쓰면 아예 â = (1,0), â⊥ = (0,1), b̂ = (0.766, 0.643)
+
+---
+
+기저 {u, v}에서 어떤 벡터 w의 좌표란, w = a·u + b·v
+가 되는 (a, b)
+
+---
+---
+---
+
+벡터 u는 좌표 이전에 존재하는 기하 객체
+벡터공간은 좌표 없이 덧셈·스칼라배만으로 정의
+
+좌표는 그 다음에 유도
+
+w를 u, v로 얼마씩 만드나?
+w = u면 답은 u 1개, v 0개.
+
+u는 자기 1개 + v 0개
+
+---
+---
+---
+
+(0.766, 0.643)
+
+실체 자체가 아니라, 있는 건 
+방향을 가진 화살(단위벡터)
+그리고 그것을 기준으로부터 40° 돌린 것
+
+두 수는 자유로운 두 값이 아니라 한 방향에 묶여 있어
+그리고 x ^ 2 + y ^ 2 = 1 에 묶여 있다
+
+---
+
+(cos 40°, sin 40°) = (0.766, 0.643)
+
+40°로 1만큼 가면 동쪽으로 0.766, 북쪽으로 0.643 움직인 것
+
+---
+
+0.766은 x축과 40° 어긋난 정렬도
+
+정렬도의 눈금 — [−1, 1]
+
+0° → 1 (완전히 같은 방향, 최대)
+40° → 0.766
+60° → 0.5
+90° → 0 (수직, 공유하는 방향 0)
+120° → −0.5
+180° → −1 (정반대, 최대 역정렬)
+
+---
+
+정렬도(내적)가 원초적이고 
+각도는 arccos로 유도된 파생값
+
+게임에서 만지는 건 0.766이라는 정렬도지 40°가 아니고
+
+---
+
+(cosine 40 degrees, sine 40 degrees) = (0.766, 0.643)
+40 degrees라는 direction을, 두 개의 basis direction ruler로 읽은 coordinate
+
+length가 1인 direction 하나
+reference basis direction에서 40 degrees만큼 벌어진 unit vector
+
+reference basis direction 의 coordinate
+= 1 reference basis direction + 0 perpendicular basis direction
+= (1, 0)
+
+perpendicular basis direction 의 coordinate
+= 0 reference basis direction + 1 perpendicular basis direction
+= (0, 1)
+
+---
+
+a·b = a₁b₁ + a₂b₂
+(x, y)·(1, 0) = x·1 + y·0 = x
+(x,y)가 x축과 정렬된 정도는 바로 그 x성분
+
+화살이 x방향으로 얼마나 뻗었나
+곧 x축에 드리운 그림자
+
+(0.766, 0.643)이면 정렬도는 0.766
+x방향으로 0.766만큼 뻗었다는 것 그 자체
+
+cos 60° = 0.5는 각으로 절반이라는 뜻이 아니야
+그림자가 절반이라는 뜻이야
+
+---
+
+정렬도(내적)가 부모고, 길이와 각은 자식
+
+길이 |a| = √(a·a)
+각 θ = arccos(a·b / (|a||b|))
+
+---
+
+|a−b|²
+(a₁−b₁)² + (a₂−b₂)²
+a₁² − 2a₁b₁ + b₁² + a₂² − 2a₂b₂ + b₂²
+(a₁²+a₂²) + (b₁²+b₂²) − 2(a₁b₁+a₂b₂)
+|a|² + |b|² − 2(a·b)
+
+---
+
+OA = |a|, OB = |b|, 그리고 A에서 B로 가는 변이 AB = |a−b|
+O에서의 끼인각이 두 벡터 사이 각 θ
+
+코사인 법칙은 삼각형에 대한 기하 정리
+
+|a−b|²
+|a|² + |b|² − 2|a||b|cos θ
+
+---
+
+대수 세계
+기하 세계
+
+a·b = |a||b|cos θ
+
+---
+
+각도
+그 동의량을 각도기 위에 다시 적은 이름
+
+최대 동의 = 같은 방향(0°)
+동의와 불일치가 상쇄 = 수직(90°)
+총 불일치 = 반대(180°)
+
+---
+
+a = (cos α, sin α), b = (cos β, sin β
+a·b = cos α cos β + sin α sin β = cos(α − β)
+
+---
+
+(0.766, 0.643)·(0.766, 0.643) = 0.766² + 0.643² = 0.587 + 0.413 = 1
+개별 동의는 1이 아니라 각각 aᵢ²
+
+각 축의 동의는 그 축에 실린 양만큼만 기여
+딱 겹쳐도 y에서 동의할 거리 자체가 작아
+동의는 완벽한데(둘의 y가 똑같이 0.423) 그 동의의 무게가 작은 거야
+
+---
+
+a = (cos α, sin α)라고 적는 순간, α는 x축(기준축 e₁)에서 a까지 잰 각으로 정의
+b = (cos β, sin β)도 β는 x축에서 b까지 잰 각
+x→a가 α, x→b가 β, 그리고 a→b가 α−β
+
+a·b = cos(α − β)는 α, β 각각이 아니라 오직 차이 α − β에만 의존
+둘을 똑같이 γ만큼 돌려도(α→α+γ, β→β+γ) 값이 안 변해
+(α+γ) − (β+γ) = α − β
+
+즉 내적은 회전 불변
+
+두 방향이 프레임 어디에 앉았는지는 모르고, 둘 사이의 관계만 알아
+
+---
+
+cos α cos β − sin α sin β = cos(α+β)
+sin α cos β + cos α sin β = sin(α+β)
+
+---
+
+e₁ = (1,0)을 θ만큼 반시계로 돌리면 (cos θ, sin θ)
+e₂ = (0,1)을 θ만큼 반시계로 돌리면 (−sin θ, cos θ) 
+
+cos·(−sin) + sin·cos = 0
+수직 유지, 직각이 보존
+
+(cos, sin), (sin, cos)로 쓰면 내적이 2 sin θ cos θ ≠ 0이라 두 축이 안 수직
+
+둘째 열은 첫째 열을 90° 더 돌린 것
+90° 규칙 (x,y)→(−y,x)
+
+---
+
+한 번에 α+β 돌리면 → (cos(α+β), sin(α+β)) 
+두 번에(β 후 α) 돌리면 → (cos α cos β − sin α sin β,  sin α cos β + cos α sin β)
+
+cos(α+β) = cos α cos β − sin α sin β
+sin(α+β) = sin α cos β + cos α sin β
+
+---
+
+새 x = cos α·(옛 x) − sin α·(옛 y)
+
+−sin α·(옛 y)는 옛 세로가 새 가로로 얼마나 흘러드나(마이너스 = 위가 왼쪽으로 스윙)
+cos α·(옛 x)는 옛 가로가 얼마나 살아남나(정렬된 몫)
+
+---
+
+(x₀, y₀)는 오른쪽 화살(길이 x₀) + 위쪽 화살(길이 y₀)
+전체를 α만큼 돌려
+회전은 선형이라 점 돌리기 = 두 화살 각각 돌리기
+
+각 돌아간 화살이 왼쪽/오른쪽으로 얼마나 뻗나(x그림자)를 더하면 새 점의 x야.
+
+---
+
+(cos(90°+α), sin(90°+α)) = (−sin α, cos α)
+
+sin은 y축이 아니라 각 α 화살의 y좌표야
+
+---
+---
+---
+
+J는 평면을 90° 반시계로 돌리는 연산
+J(x, y) = (−y, x)
+[0, −1]
+[1, 0]]
+
+핵심 성질: J² = −I.
+90°를 두 번 = 180° = 뒤집기
+
+---
+
+3D엔 독립된 회전 평면이 셋(xy, yz, zx)이라 생성원도 셋 필요
+
+---
+
+새 x = −(옛 y)
+옛 y의 부호에 따라 달라져
+
+---
+
+
+rotation matrix는 basis direction 세 개가 회전 후 어디를 향하는지 담는다.
+
+x basis direction은 여기로 간다
+y basis direction은 여기로 간다
+z basis direction은 여기로 간다
+
+---
+
+unit quaternion = cosine(half angle) + axis direction × sine(half angle)
+
+quaternion은 orientation을 저장하고 누적 회전하고 부드럽게 보간하기 좋다
+rotation matrix보다 적은 숫자로 rotation을 담고, normalization으로 drift를 관리하기 쉽다
+
+---
+
+rotated vector = q vector q⁻¹
+scalar part가 0인 quaternion으로 잠깐 바꾼 것
+
+vector = (0, x, y, z)
+
+q = (cosine half angle, axis direction × sine half angle)
+
+---
+---
+---
+
+v = (x, y, z)
+v M = x(row 1) + y(row 2) + z(row 3)
+
+v = (x, y, z)
+v = x e1 + y e2 + z e3
+
+---
+
+geometric vector
+공간 안에 있는 실제 arrow다. 숫자가 아니다.
+
+frame도 공간 안에
+공간 안에 꽂아 둔 측정 장치
+공간 안에 ruler set을 하나 꽂는다
+
+---
+
+frame A
+- A basis direction 1
+- A basis direction 2
+- A origin
+
+이 ruler set으로 arrow를 읽으면 coordinate가 나온다.
+
+---
+
+같은 공간 안에 ruler set을 하나 더 꽂을 수 있다
+
+frame B
+- B basis direction 1
+- B basis direction 2
+- B origin
+
+둘 다 같은 공간 안에 있다.
+
+---
+---
+---
+
+geometric vector = 책상 위에 놓인 막대기
+frame = 책상 위에 올려둔 투명한 모눈자
+coordinate = 그 모눈자로 읽은 숫자
+
+---
+
+world frame은 level 전체에 고정된 ruler set이다.
+character local frame은 character transform에 붙어 함께 움직이는 ruler set이다.
+
+---
+
+같은 geometric space 안에 
+frame A와 frame B가 둘 다 놓여 있고, 
+frame A의 ruler로 frame B를 기술할 수 있다
+
+책상 위에 투명 모눈자 A를 고정한다. 이것이 world frame이다.
+그 위에 작은 투명 모눈자 B를 하나 더 올린다. 이것이 character local frame이다.
+
+A ruler로 B ruler의 위치와 방향을 읽을 수 있다
+
+B origin은 A frame에서 어디인가?
+B basis direction 1은 A frame에서 어느 direction인가?
+B basis direction 2는 A frame에서 어느 direction인가?
+B basis direction 3은 A frame에서 어느 direction인가?
+
+---
+---
+---
+
+Local-to-World transform은 이렇게 말한다
+
+Local Frame의 origin은 World Frame에서 어디인가
+Local Frame의 basis direction들은 World Frame에서 어떤 direction인가
+
+---
+
+World-to-Local transform은 이렇게 말한다
+
+World Frame의 origin은 Local Frame에서 어디인가
+World Frame의 basis direction들은 Local Frame에서 어떤 direction인가
+
+---
+---
+---
+
+frame 1 coordinate로 적힌 같은 geometric point/vector를
+frame 2 coordinate로 다시 적는 번역
+
+---
+---
+---
+---
+---
+---
+---
+---
+
+입력 coordinate의 각 basis contribution을
+출력 coordinate 성분들로 어떻게 섞을지
+
+v = (3,4,5)
+v = 3 e1 + 4 e2 + 5 e3
+
+vM = 3 row1 + 4 row2 + 5 row3
+
+row1 = (10, 20, 30)
+
+input e1이 1만큼 들어오면,
+
+output e1 방향으로 10,
+output e2 방향으로 20,
+output e3 방향으로 30
+
+---
+
+e1을 넣어본 결과 = row1
+e2를 넣어본 결과 = row2
+e3을 넣어본 결과 = row3
+
+e1 M = row1
+e2 M = row2
+e3 M = row3
+
+---
+
+레시피의 양은 그대로 두고, 
+재료인 basis direction들을 다른 destination vector로 갈아끼우는 것
+
+vM
+= (x e1 + y e2 + z e3) M
+= x(e1M) + y(e2M) + z(e3M)
+= x row1 + y row2 + z row3
+
+---
+
+단, row들이 independent하지 않으면 
+새 basis direction set이 아니라 collapsed direction set이 된다.
+
+직교와 length 보존을 하려면 행렬이 특별해야 한다.
+
+rotation matrix는 row들이
+row1 · row2 = 0
+row1 length = 1
+row2 length = 1
+
+이런 행렬을 orthonormal matrix 또는 
+rotation/reflection을 포함해 orthogonal matrix
+
+M M^T = I
+
+---
+---
+---
+---
+
+대각선 성분은 더 일반적으로
+input basis direction이 변환 후에도 같은 output basis direction 쪽으로 얼마나 남는가
+
+[ a b
+  c d ]
+
+a
+input e1이 변환된 뒤 output e1 direction으로 남은 coordinate
+
+d
+input e2가 변환된 뒤 output e2 direction으로 남은 coordinate
+
+---
+
+[ cosine θ   sine θ
+ -sine θ    cosine θ ]
+
+output e1 direction으로 cosine θ만큼 남고, output e2 direction으로 sine θ만큼 새로 생긴다
+
+---
+
+u(a) = (cosine a, sine a)
+u(b) = (cosine b, sine b)
+
+이 둘은 각각 reference basis direction에서 a, b만큼 벌어진 direction
+
+u(a)와 u(b)는 서로 얼마나 같은 방향인가?
+
+u(a) · u(b)
+= cosine a cosine b + sine a sine b
+
+reference basis direction에서의 overlap
++
+perpendicular basis direction에서의 overlap
+
+
+그런데 두 unit direction 사이의 angle difference는 a-b다
+
+u(a) · u(b) = cosine(angle difference)
+
+---
+---
+---
+---
+---
+
+책상 위에 점 P 하나가 있다.
+투명 모눈자 A가 있다.
+투명 모눈자 B가 있다.
+
+P는 하나다.
+P_A는 A로 읽은 숫자다.
+P_B는 B로 읽은 숫자다.
+A_to_B matrix는 P_A를 P_B로 번역하는 사전이다.
+
+---
+
+geometric point P
+frame A로 읽으면 P_A
+frame B로 읽으면 P_B
+A_to_B transform은 P_A라는 숫자 기록을 P_B라는 숫자 기록으로 번역하는 사전
+
+---
+
+책상 위에 점 P가 하나 있다.
+이 점은 숫자가 아니다. 그냥 공간 안에 있는 실제 위치다.
+이제 책상 위에 투명 모눈자 A를 올린다.
+
+이 모눈자로 점 P를 읽으면 숫자가 나온다.
+
+P_A = (3, 2)
+
+A origin에서
+A x ruler 방향으로 3
+A y ruler 방향으로 2
+가면 P가 있다
+
+---
+
+이제 같은 책상 위에 투명 모눈자 B를 또 올린다.
+
+이 모눈자로 같은 점 P를 읽으면 
+
+P_B = (1, 5)
+
+---
+
+A_to_B transform
+
+A 언어로 적힌 P_A를
+B 언어로 적힌 P_B로 바꾸는 번역표
+
+P_A * A_to_B = P_B
+
+---
+---
+---
+
+B origin은 A frame으로 읽으면 어디인가?
+B x ruler는 A frame으로 읽으면 어떤 direction인가?
+B y ruler는 A frame으로 읽으면 어떤 direction인가?
+
+이 세 가지가 Frame B를 Frame A 언어로 설명하는 정보
+
+B origin in A = (5, 2)
+B x ruler in A = (0.866, 0.5)
+B y ruler in A = (-0.5, 0.866)
+
+B의 원점은 A 기준으로 (5,2)에 있고,
+B의 x ruler는 A 기준으로 30 degrees 방향이고,
+B의 y ruler는 A 기준으로 120 degrees 방향이다.
+
+---
+
+P_B = (3, 2)
+
+B origin에서
+B x ruler 방향으로 3
+B y ruler 방향으로 2
+가면 P가 있다
+
+---
+
+P_A
+= B origin in A
++ 3(B x ruler in A)
++ 2(B y ruler in A)
+
+---
+---
+---
+
+coordinate는 장소의 주소가 아니라, frame이 object에게 던진 질문에 대한 답변이다.
+
+Frame은 묻는다.
+
+너는 내 first basis action에 얼마나 응답하니?
+너는 내 second basis action에 얼마나 응답하니?
+너는 내 third basis action에 얼마나 응답하니?
+
+Vector는 답한다.
+
+(3,4,5)
+
+첫 번째 질문에는 3
+두 번째 질문에는 4
+세 번째 질문에는 5
+
+vector를 만들 때 basis vector는 “이 방향으로 가라”는 generator다.
+vector를 읽을 때 basis direction은 “이 방향에 얼마나 있나?”라는 detector다.
+
+row vector convention에서 row는 generator 쪽 얼굴이다.
+row 1 = source first generator가 target language에서 어떻게 실행되는가
+
+column은 detector 쪽 얼굴이다.
+column 1 = target first coordinate question이 source components를 어떻게 읽는가
+
+---
+
+geometric object
+
+P_local은 P에 대한 local의 증언
+P_world는 P에 대한 world의 증언
+LocalToWorld는 local 증언을 world 증언으로 번역하는 사전
+
+---
+
+row 1 = local e1 계정 1단위가 world 계정들에 어떻게 배분되는가
+row 2 = local e2 계정 1단위가 world 계정들에 어떻게 배분되는가
+row 3 = local e3 계정 1단위가 world 계정들에 어떻게 배분되는가
+
+---
+
+공간의 점이나 vector는 말 이전의 사물
+
+P_A = (3,2)
+은 “P의 본명”이 아니라
+Frame A language로 말한 P
+
+---
+
+row 1 = source word e1을 target language로 번역한 문장
+row 2 = source word e2을 target language로 번역한 문장
+row 3 = source word e3을 target language로 번역한 문장
+
+---
+
+공간의 object는 사건 현장에 있다.
+frame은 목격자(시점)가 서 있는 자리와 바라보는 방향이다.
+coordinate는 한 시점의 진술이다.
+
+같은 점 P를 두 시점이 본다.
+
+World witness: P is at (10, 3)
+Character witness: P is at (2, -1)
+
+어디에 서 있는가: origin
+어느 쪽을 앞이라고 부르는가: basis direction 1
+어느 쪽을 옆이라고 부르는가: basis direction 2
+어느 쪽을 위라고 부르는가: basis direction 3
+
+---
