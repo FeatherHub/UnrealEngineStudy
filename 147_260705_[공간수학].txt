@@ -1,0 +1,392 @@
+동작을 이어붙이는 것(합성)이 숫자 쪽에서는 곱하기로 대응
+
+R(α) 다음에 R(β) = R(α+β)  ⟺  두 행렬의 곱
+회전을 두 번 하는 것 = 각을 더하는 것 = 행렬을 곱하는 것
+
+각을 회전으로 보내는 θ ↦ R(θ)
+R(α+β) = R(α)·R(β)
+이 층이 다루는 대상은 각과 회전
+
+---
+
+준동형은 구조를 지키는 사상
+
+φ(a ∘ b) = φ(a) ⋆ φ(b)
+
+∘ = +, ⋆ = + (게다가 스칼라 곱까지 호환)이면 선형사상
+∘ = +, ⋆ = ×이면 지수형 사상이고, 원형은 지수함수 e^{a+b} = e^a · e^b
+
+---
+
+바깥 세계의 고유 연산이 곱셈(합성)
+
+---
+
+회전들의 군 SO(2)가 가진 연산은 ×(합성)
+
+각들은 (ℝ, +)에 살아 — α만큼 돌고 β만큼 더 돌면 각은 α+β로 더해지니까
+
+다리 역할의 사상은 어쩔 수 없이 각의 +를 회전의 ×로 번역
+
+---
+
+exp/log 이중성
+
+exp: (ℝ, +) → (양수, ×), 더하기를 곱하기로.
+log: (양수, ×) → (ℝ, +), 곱하기를 더하기로.
+
+---
+
+직선의 덧셈을 원의 회전(곱셈)으로 감는다
+직선에서 곧게 이어지던 파랑+빨강이, 원에서는 똑같은 파랑 호+빨강 호로 감겨
+
+직선의 α+β와 원의 e^{i(α+β)}
+하나는 더하고, 하나는 곱하고
+
+---
+
+각(로그) 좌표로 회전을 θ라 부르면, 합성은 각의 덧셈으로 보여 — α+β.
+
+행렬(지수) 좌표로 회전을 e^{iθ}나 행렬이라 부르면, 같은 합성이 곱으로 보여 — e^{iα}·e^{iβ}
+
+---
+
+모든 선형변환(행렬)의 대수에는 연산이 둘
+행렬 덧셈(+)과 행렬 곱(=합성, ×)
+회전들은 ×(합성)에는 닫혀 있지만 +에는 안 닫혀 있어(두 회전을 더하면 회전이 아니니까)
+
+---
+
+변환은 자기가 변형하는 대상보다 한 층 위에
+바깥 세계
+바깥 집합
+
+---
+
+하나의 벡터 속에 들어 있는 게 아니라 모든 벡터를 받아 처리하는 함수라서, 어떤 벡터의 바깥에 서 있어. 
+작용하는 쪽이 바깥, 작용받는 쪽이 안쪽
+
+---
+
+2×2 회전행렬 전체가 단 하나의 복소수 e^{iθ} = cos θ + i·sin θ로 접혀
+
+---
+
+e^{iθ}
+
+i의 거듭제곱은 i² = −1, i³ = −i, i⁴ = 1, i⁵ = i … 이렇게 4주기로 돌아
+
+---
+
+complex number z = x + i y
+는 사실상
+2D coordinate pair = (x, y)
+와 같은 data를 가진다
+
+x + i y는 point/vector representation + multiplication rule
+i² = -1
+
+---
+
+(a + i b)(x + i y) = (a x - b y) + i(a y + b x)
+
+(x, y) -> (a x - b y, b x + a y)
+
+2차원 vector를 scale + rotation시키는 transformation
+
+---
+
+cos, −sin
+sin, cos
+
+대각의 cos = 각 축이 제 방향을 얼마나 지키나, 
+비대각의 sin = 수직축으로 얼마나 새나
+
+---
+
+이 둘은 임의의 두 숫자가 아니라, length 1을 보존하는 두 coordinate다.
+cosine² θ + sine² θ = 1
+즉 회전 후에도 unit direction의 length가 1로 유지
+
+---
+
+θ = 0 degrees일 때 unit direction은 기준축
+기준축 성분 = 1
+수직축 성분 = 0
+
+기준축 성분은 처음에 1로 시작하는 함수여야 한다.
+수직축 성분은 처음에 0으로 시작하는 함수여야 한다
+
+그리고 angle이 조금 증가하면 무슨 일이 생기나?
+unit direction은 기준축에서 살짝 벗어난다.
+이때 새로 “태어나는” 성분은 수직축 성분이다.
+
+---
+
+|p|² = 1을 미분하면 p·p′ = 0 — 위치와 속도가 수직
+원 위의 운동은 언제나 제 반지름에 직각으로 나아가
+
+속도는 반지름에 수직
+
+화살의 속도는 제 위치를 90° 돌린 것, p′ = J p (J는 90° 회전, J² = −I)
+
+---
+
+화살이 기준축에 딱 겹치는 순간(θ=0)을 들여다봐. 
+그 순간 화살은 기준축에 완전히 얹혀 있어
+기준축 성분은 가득(1). 
+그런데 속도는 반지름에 수직이라 온전히 옆(수직축)을 향해
+
+수직축 성분은 지금 0이다. 그런데 속도가 전부 그쪽이라 변화율이 최대
+(0에서 가장 가파르게 솟는다)
+
+---
+
+unit circle 위에서 일정한 rotational speed로 움직이는 parameter
+
+속도
+angle을 조금 바꿨을 때 coordinate가 어떤 방향으로 변해야 하는가
+
+rotation은 position을
+tangent direction을 따라 basis coordinate를 계속 업데이트하는 문제
+
+---
+
+forward = (cosine θ, sine θ)
+
+이 direction을 조금 회전시키면, 변화는 forward direction 쪽으로 생기지 않는다.
+변화는 항상 forward direction에 perpendicular인 right direction 쪽으로 생긴다
+
+---
+
+원에 갇힌다는 것이 방정식을 낳는다
+
+가속도가 위치의 정반대. 멀리 나갈수록 딱 그만큼 되당겨지는 복원 고리
+
+---
+
+선형 성분 변화 = 직선 운동인데, 직선은 원을 많아야 두 점에서 만나
+원 위에 못 머물러
+
+1차식이든 다항식이든 실지수든 전부 ±∞로 달아나(유계가 아냐)
+
+그런데 운동은 |p| = 1에 영원히 갇혀 있어야 해
+
+---
+
+부호 하나가 진동과 폭주를 가른다
+
+J² = −I의 그 마이너스가 전부야. 
+
+만약 p′ = p(속도가 반지름 방향, 바깥)라면 f′ = f → eᶿ, 폭주. 
+
+그런데 p′ = J p, J² = −1이면 
+f″ = −f → 진동. 
+바깥으로 미는 +는 달아나고, 되당기는 −는 닫힌 고리를 만들어. 
+
+90°를 두 번 = 180° = 부호 뒤집기. 
+원이 닫히는 것 = 그 마이너스 = 진동 = cos·sin
+
+---
+
+좌표 = e^{cθ}·cos θ, e^{cθ}·sin θ. 
+c=0에서만 순수 cos·sin. 
+조금만 벗어나도 지수에 감싸여 원을 벗어난다.
+
+c를 0에서 살짝만 밀어봐. 완벽하던 원이 즉시 나선으로 풀려나가
+
+---
+
+출발점은 함수가 아니라 circle 위의 motion
+
+angle은 원래 “두 line 사이의 벌어짐”이지만
+unit circle에서는 unit circle 위를 걸어간 arc length
+
+unit circle 위에서 θ만큼 이동한 point
+그 point를 기준축 basis direction과 수직축 basis direction으로 읽으면 coordinate 두 개가 나온다.
+
+---
+
+circle 위를 걷는다는 것은 radius length를 보존한다
+radius length를 보존하려면 움직임은 radius direction으로 갈 수 없다
+움직임은 항상 radius direction에 대한 perpendicular direction이어야 한다
+
+---
+
+현재 direction = x 기준축 basis direction + y 수직축 basis direction
+
+그러면 그 순간의 회전 방향은
+
+-y 기준축 basis direction + x 수직축 basis direction
+
+---
+
+직각삼각형은 이미 회전
+빗변은 각 θ로 세운 반지름, 두 변은 그 반지름의 두 축 그림자
+
+삼각비와 회전 좌표는 한 물건의 두 의상
+
+---
+
+요구
+
+회전을 이어붙이면 각이 더해진다
+
+R(α) 다음 R(β) = R(α+β)
+각은 돌린 양이고, 양은 더해진다
+
+---
+
+기준축 e₁ = (1,0)을 θ만큼 돌리면 단위원 위 어딘가에 앉아. 
+그 점의 두 좌표를 그냥 C(θ), S(θ)라 부르자.
+
+C, S는 정체 모를 두 함수고, 아는 건 C² + S² = 1
+
+e₂ = (0,1)은 e₁을 90° 돌린 것이야. 그리고 2D 회전끼리는 교환해
+
+R(θ)e₂ = R(θ)(J e₁) = J(R(θ)e₁) = J(C, S) = (−S, C)
+
+[ C  −S ]
+[ S   C ]
+
+---
+
+R(α+β) = R(α)R(β)
+
+이걸 행렬 곱으로 적고 성분을 읽기만 하면 돼.
+
+[ C(α) −S(α) ] [ C(β) −S(β) ]
+[ S(α)  C(α) ] [ S(β)  C(β) ]
+
+왼쪽 열을 곱하면
+
+위 = C(α)C(β) − S(α)S(β)
+아래 = S(α)C(β) + C(α)S(β)
+
+그런데 이 왼쪽 열은 R(α+β)의 첫 열, 곧 (C(α+β), S(α+β))와 같아야 해
+
+C(α+β) = C(α)C(β) − S(α)S(β)
+S(α+β) = S(α)C(β) + C(α)S(β)
+
+---
+
+β로 미분해 β→0을 취하면 C′ = −S, S′ = C, 곧 C″ = −C
+
+연속·유계면 유일해가 cos·sin.
+
+---
+---
+---
+
+P(θ)를 읽는 순간,
+같은 그림이 coordinate language와 right triangle language를 동시에 갖는다.
+
+---
+
+angle a만큼 unit circle 위를 걸어간 point의 coordinate가 cosine a, sine a
+
+그 값을 구하는 방법은 여러 개
+
+triangle ratio, unit circle coordinate
+
+infinite series
+sine a = a - a³/3! + a⁵/5! - a⁷/7! + ...
+cosine a = 1 - a²/2! + a⁴/4! - a⁶/6! + ...
+
+polynomial approximation, table lookup, CORDIC algorithm
+
+---
+
+cos·sin
+초월함수
+
+다항식 관계 P(x, cos x) = 0도 성립하지 않아
+
+cos은 영점이 무한히 많은데(π/2 + kπ마다) 값은 유계라, 유한 차수의 대수식이 이 무한 진동을 흉내낼 수 없어
+
+---
+
+angle a를 조금 늘리면 point는 radius direction으로 움직이지 않는다. 
+unit circle 위에 남아야 하니까 tangent direction으로 움직인다.
+
+현재 point가
+(cosine a, sine a)
+
+이면 tangent direction은
+(-sine a, cosine a)
+
+---
+---
+
+왜 두 개냐면, 우리가 지금 말하는 rotation이 plane 안의 rotation이기 때문
+
+plane은 basis direction이 두 개
+
+reference basis direction
+perpendicular basis direction
+
+어떤 direction이 plane 안에서 회전하면, 그 direction은 이렇게 분해된다
+
+rotated unit direction = a reference basis direction + b perpendicular basis direction
+
+여기서 필요한 coordinate는 정확히 두 개다.
+그 두 coordinate에 붙은 이름이 바로 cosine θ, sine θ다
+
+---
+---
+---
+---
+---
+---
+---
+---
+
+“그림자”는 basis direction ruler에서 읽은 vector의 share다.
+
+---
+
+shadow coordinate가 negative라는 뜻은 
+vector가 basis direction의 opposite direction share를 가진다는 뜻
+
+---
+
+angle difference가 90 degrees이면 
+basis direction ruler에 남는 share가 0이다. 
+이것이 perpendicular relation
+
+---
+
+내적
+
+basis direction끼리는 서로 독립이다.
+
+왜 곱하냐?
+
+같은 basis direction 위에서 두 signed length가 같은 방향이면 positive contribution, 
+반대 방향이면 negative contribution, 
+둘 중 하나가 0이면 no contribution
+
+곱셈이 이 세 조건을 만족
+
+
+왜 더하냐?
+
+x basis direction, y basis direction, z basis direction은 서로 독립된 ruler
+각각의 alignment contribution을 누적
+
+---
+
+real number multiplication은 one-dimensional basis direction 위에서 scale과 flip만 할 수 있다.
+real number line에는 basis direction이 하나뿐
+
+× 1은 same direction 유지.
+× -1은 opposite direction으로 뒤집기.
+
+---
+
+임의의 angle rotation을 곱셈처럼 하고 싶으면 number 자체가 2개의 coordinate를 가져야 한다. 
+그것이 complex number
+i가 perpendicular basis direction 역할
+
+---
+---
