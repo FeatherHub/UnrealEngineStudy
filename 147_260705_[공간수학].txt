@@ -1080,3 +1080,158 @@ Character witness: P is at (2, -1)
 어느 쪽을 위라고 부르는가: basis direction 3
 
 ---
+---
+---
+
+row 1 [2 3]
+
+input frame의 첫 번째 basis vector가
+output frame의 first basis direction으로 2,
+output frame의 second basis direction으로 3
+보인다
+
+row 2 [4 5]
+
+input frame의 두 번째 basis vector가
+output frame의 first basis direction으로 4,
+output frame의 second basis direction으로 5
+보인다
+
+---
+---
+---
+
+row 1 direction = source x basis direction이 변형 후 바라보는 방향
+row 1 length    = source x basis direction unit step의 변형 후 길이
+row 1 · row 2 = 두 transformed basis direction이 직교를 유지했는지
+
+transformed source x basis direction = row 1 
+transformed source y basis direction = row 2 
+
+direction angle of transformed source x basis direction = atan2(b, a)
+direction angle of transformed source y basis direction = atan2(d, c)
+
+---
+
+atan (arc tan) = tan^-1
+
+tan      : angle -> ratio
+atan     : ratio -> angle
+
+tan (θ) = y / x
+atan (y / x) = θ
+
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+
+row 1과 row 2는 source basis direction들의 image, 
+즉 source basis direction들이 target frame에서 어떻게 보이는가
+
+source coordinate basis:
+[1 0]_Local, [0 1]_Local
+
+matrix rows:
+Local basis direction들이 World coordinate로 적힌 모습
+
+target coordinate basis:
+[1 0]_World, [0 1]_World
+
+---
+
+[a b]의 a,b
+는 source basis direction에 붙은 coefficient
+
+[c d], [e f] 안의 c,d,e,f
+는 target basis direction에 붙은 coefficient
+
+---
+---
+---
+---
+
+u · v = |u| |v| cosine θ
+
+여기서 |u|, |v|는 길이라서 음수가 될 수 없다.
+zero vector가 아니라면 둘 다 양수
+
+그래서 부호는 오직 이것이 결정
+cosine θ
+
+정규화하지 않아도
+
+positive length factor × positive length factor × cosine θ
+
+이므로, 길이는 값의 크기만 키우거나 줄이고 부호는 뒤집지 못한다.
+
+---
+---
+---
+
+e1 = 첫 번째 basis direction
+e2 = 두 번째 basis direction
+
+coordinate map을 만든다
+coordinate [x y] means:
+x e1 + y e2
+
+Coord(x, y) = x e1 + y e2
+어떤 숫자쌍 (x, y)을 넣으면 e1이 나오나?
+
+x e1 + y e2 = e1
+
+x = 1
+y = 0
+
+e1 = [1 0]
+
+---
+
+v = x b1 + y b2
+T(v) = T(x b1 + y b2)
+T(v) = x T(b1) + y T(b2)
+
+v가 b1을 x만큼, b2를 y만큼 섞은 vector라면
+T(v)는 T(b1)을 x만큼, T(b2)를 y만큼 섞은 vector다.
+
+T(b1)의 target coordinate = [m11 m12]
+T(b2)의 target coordinate = [m21 m22]
+
+T(b1) = m11 g1 + m12 g2
+T(b2) = m21 g1 + m22 g2
+
+이 네 숫자를 표로 모은 것이 행벡터 관습의 matrix
+
+[ m11 m12
+  m21 m22 ]
+
+T(v) 
+= x T(b1) + y T(b2)
+= x(m11 g1 + m12 g2) + y(m21 g1 + m22 g2)
+= (x m11 + y m21) g1 + (x m12 + y m22) g2
+
+[x m11 + y m21, x m12 + y m22]
+x[m11 m12] + y[m21 m22]
+
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+
+[a b] [ ix iy
+        jx jy ]
+= a[ix iy] + b[jx jy]
