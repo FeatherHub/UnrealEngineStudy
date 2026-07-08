@@ -1,0 +1,1966 @@
+UPackage* LoadPackageSync(FName Name)
+{
+  if (이미 로드됨) return 그것;                     // 메모
+  Header = Parse(Read(Name));                      // 지역변수
+  for (Import : Header) LoadPackageSync(Import);   // 재귀
+  껍데기 생성; 내용 채우기; PostLoad;                 // 본문
+  return Root;                                     // 리턴
+}
+
+---
+
+변환 1 — 비동기화: 제어 흐름의 물화
+
+요구: 아무도 기다리게 하지 마라. 
+방법: 함수를 기다림이 생기는 모든 지점에서 절단하고, 
+CPU가 공짜로 해주던 제어 흐름 프리미티브를 전부 자료구조로 물화한다
+
+동기 세계의 프리미티브        →  물화된 자료구조
+호출(call)                    →  PackageRequestQueue          (주문 큐잉)
+리턴(return)                  →  완료 델리게이트 + CompletedPackageRequests
+
+순차 실행( ; )                →  FEventLoadNode2 간선 + BarrierCount
+
+재귀 호출                     →  ImportPackagesRecursive + 패키지 간 간선
+
+프로그램 카운터               →  AsyncPackageLoadingState + ready queue(EventQueue)
+
+스택 프레임(지역변수)         →  FAsyncPackage2 (Desc·HeaderData·Exports·운송장·명단)
+스레드 정체성                 →  FAsyncLoadingThreadState2 (가방)
+
+---
+
+변환 2 — 부분 평가: 결정의 전진 배치
+
+요구: 런타임에는 꼭 필요한 결정만 남겨라
+방법: 미리 정할 수 있는 것을 전부 앞 단계로 옮긴다
+
+조립 순서(Create/Serialize 번들 테이프), 
+순환 참조의 해법(껍데기 먼저), 
+메모리 소요량(그래서 FAsyncPackageData가 단일 할당 가능), 
+존재 목록(FPackageStore 카탈로그)
+단계별 정책(EventSpecs: 무슨 함수를 어느 스레드에서)
+
+EDL이 런타임에 이벤트로 곡예하던 것을, 
+Zen 로더는 쿠커가 미리 컴파일해둔 테이프의 낭독으로 바꿨다
+
+---
+
+GT: LoadPackageAsync(이름)
+ │  호출의 물화 ①
+ ▼
+[PackageRequestQueue]──벨──▶ ALT: 번역(카탈로그 조회 ②) ── 원장에 이미? ──▶ 즉시 회신 ③
+ │                                    │ 없으면
+ │                                    ▼
+ │                          워크오더 생성 = 스택 프레임의 힙 이전 ① (크기는 쿠커가 계산 ②)
+ │                                    │ 발주
+ │                                    ▼
+ │                          [IoDispatcher] ─도착─▶ barrier 해제 ① → 준비 집합 투입
+ │                                    │
+ │                                    ▼
+ │                    테이프 재생: Create/Serialize (순서는 쿠킹 때 결정 ②)
+ │                    배선: 좌표→포인터 (창구 경유 원장 조회 ③)
+ │                    import 발견 = 재귀의 물화 ①: 새 워크오더 + 간선
+ │                                    │
+ │                                    ▼
+ │                    ALT PostLoad → [MainThreadEventQueue] ─▶ GT 승인 ③
+ │                                    │
+ ▼                                    ▼
+리턴의 물화 ①: 델리게이트(UPackage*) ◀── 공개: 테이프 제거 ③ → 원장 기입 ③
+                                      │
+                                      ▼
+                          [DeferredDeletePackages] → 프레임 파쇄 (만든 문맥에서 ①)
+ 
+---
+
+이름이 포인터가 될 때까지의 좌표 변환
+
+문자열→FPackageId→FPackageIndex→FPackageObjectIndex→UObject*
+
+---
+
+FAsyncLoadingThread2는 공장이고,
+FAsyncPackage2는 폭파된 함수의 스택 프레임이며, 
+큐들은 찢어진 call과 return
+
+---
+---
+---
+---
+---
+
+이름이 가리키는 것을, 이미 살아 움직이는 세계 안에, 단 한 번만, 아무도 멈추게 하지 않고 세우려면?
+
+사물들은 서로를 가리킨다 — 하나를 세우려면 그것이 가리키는 것들도 서 있어야 한다
+
+---
+
+나누어 잇는다 (재료가 느리므로) — 일을 기다림 없는 조각으로 자르고, 
+기다림 자체는 조각 사이의 간선으로 바꾼다
+조각이 흩어져도 일이 흩어지지 않도록 지역변수를 한 보관함에 모은다
+실행이란 준비된 조각을 집는 것의 반복
+
+---
+
+단 한 번만을 보장하는 길은 기억뿐이다. 
+끝난 것의 기억과 진행 중인 것의 기억. 
+같은 이름이 다시 오면 세우지 않고 기억을 준다
+
+---
+
+이름이 온다
+   │
+   ├─ 기억에 있다 ──────────▶ 그것을 준다              (적는다)
+   │
+   └─ 없다: 읽는다
+        ├─ 가리키는 것들을 같은 방식으로 세운다          (나누어 잇는다)
+        ├─ 좌표를 포인터로 잇는다
+        ├─ 세계의 법대로 마무리하고 가림막을 걷는다       (허락받는다)
+        └─ 기억에 적는다                              (적는다)
+
+---
+---
+---
+---
+---
+---
+
+이름이 온다
+   LoadPackageAsync() → FAsyncLoadingThread2::LoadPackageInternal()
+    │  호출의 물화: FAsyncLoadingThread2::PackageRequestQueue.Enqueue(FPackageRequest)
+    ▼
+ALT가 집는다
+   FAsyncLoadingThread2::Run() → FAsyncLoadingThread2::CreateAsyncPackagesFromQueue()
+    │
+    ├─ 기억에 있다 ──────────────▶ 그것을 준다
+    │    끝난 것의 기억:   FGlobalImportStore::FindPackageRef(FPackageId)
+    │    만드는 중의 기억: FAsyncLoadingThread2::AsyncPackageLookup
+    │                      → 기존 FAsyncPackage2에 합류 (RequestID만 추가)
+    │
+    └─ 없다: 읽는다
+         존재 번역:   FPackageStore 조회 — 없으면 QueueUnresolvedPackage()로 실패 회신
+         프레임 생성: FAsyncPackage2 생성 = FAsyncPackageData 할당 + FEventLoadNode2들 배선
+         발주:       FAsyncPackage2::StartLoading() → FIoBatch::ReadWithCallback() → FIoDispatcher
+         도착:       IO 완료 콜백 → FEventLoadNode2::ReleaseBarrier()
+                     → 0이면 Fire() → Spec->EventQueue->Push()      ← Spec의 출처가 EventSpecs
+         │
+         ├─ 가리키는 것들을 같은 방식으로 세운다
+         │    FAsyncPackage2::ImportPackagesRecursive()
+         │      의존 워크오더 생성 또는 합류
+         │      FGlobalImportStore::AddPackageRef()          ← 잔액 +1 (놓지 마라)
+         │      패키지 간 간선: FEventLoadNode2::DependsOn() / AddBarrier()
+         │
+         ├─ 좌표를 포인터로 잇는다
+         │    소비 루프: FAsyncLoadEventQueue2::PopAndExecute() → FEventLoadNode2::Execute() → Spec->Func
+         │      FAsyncPackage2::Event_ProcessPackageSummary()   헤더 → 좌표계(HeaderData)
+         │      FAsyncPackage2::Event_ProcessExportBundle()     테이프 재생:
+         │        FExportBundleEntry가 Create면 껍데기 생성 → Exports[i] 슬롯 기입
+         │        Serialize면 내용 채움 — 배선의 한 줄:
+         │          FExportArchive::operator<<(UObject*&)
+         │            → FPackageImportStore::FindOrGetImportObjectFromLocalIndex()
+         │            → FGlobalImportStore::FindPublicExportObject() / FindScriptImportObject()
+         │
+         ├─ 세계의 법대로 마무리하고 가림막을 걷는다
+         │    격리: 생성 시 EInternalObjectFlags::Async 마킹 + ConstructedObjects 기입
+         │    ALT 몫 마무리: FAsyncPackage2::Event_ExportsDone(), Event_PostLoadExportBundle()
+         │    GT 몫 마무리:  MainThreadEventQueue → FAsyncPackage2::Event_DeferredPostLoadExportBundle()
+         │      펌프: FAsyncLoadingThread2::TickAsyncLoadingFromGameThread()
+         │            → ProcessLoadedPackagesFromGameThread()
+         │    개장: ConstructedObjects 순회하며 Async 플래그 해제
+         │    리턴의 물화: FCompletedPackageRequest::CallCompletionCallbacks()
+         │                 → FLoadPackageAsyncDelegate(PackageName, UPackage*, Result)
+         │
+         └─ 기억에 적는다
+              계좌와 자산: FGlobalImportStore::AddPackageRef()로 열린 FLoadedPackageRef에
+                           PublicExportMap 기입 (남들이 찾아올 주소록)
+              역색인:     FGlobalImportStore::ObjectIndexToPublicExport (죽음의 통보 대비)
+              프레임 폐기: 마지막 사용자가 DeferredDeletePackages.Enqueue()
+                           → FAsyncLoadingThread2::ProcessDeferredDeletePackagesQueue() → delete
+
+세계가 부술 때 (죽음의 통보)
+   GC → NotifyUnreachableObjects() → FAsyncLoadingThread2::RemoveUnreachableObjects()
+      → 원장에서 해당 기억 말소
+
+지금 당장 필요할 때 (동기 요구)
+   FlushAsyncLoading(RequestID)
+      → GT가 TickAsyncLoadingFromGameThread()로 그 자리에서 직접 끝까지 소비
+
+---
+---
+---
+
+게임 스레드의 누군가가 LoadPackageAsync()를 부르면 
+그 호출은 FAsyncLoadingThread2::LoadPackageInternal()로 흘러드는데
+여기서 함수 호출이라는 행위 자체가 데이터로 바뀐다
+
+요청은 FPackageRequest라는 봉투에 담겨 
+FAsyncLoadingThread2::PackageRequestQueue에 놓이고, 
+벨이 울리고, 호출자는 제 갈 길을 간다. 
+
+---
+
+로딩 스레드는 FAsyncLoadingThread2::Run()의 상주 루프 속에서 그 봉투를 집는다. 
+CreateAsyncPackagesFromQueue()가 봉투를 열고 던지는 첫 질문은 만들까가 아니라 기억에 있는가다. 
+
+끝난 것들의 기억인 원장에 FGlobalImportStore::FindPackageRef()로 물어 
+이미 세워진 패키지라면 그것을 내주면 되고, 
+만드는 중인 것들의 현황판인 FAsyncLoadingThread2::AsyncPackageLookup에 걸리면 
+새 일을 벌이는 대신 진행 중인 FAsyncPackage2에 RequestID 하나를 얹어 합류시킨다. 
+
+---
+
+기억에 없을 때에야 비로소 읽는다. 
+FPackageStore가 이름을 존재로 번역해주고 — 번역이 실패하면 QueueUnresolvedPackage()가 실패 회신을 준비한다
+번역이 성공하면 프레임이 태어난다. 
+
+FAsyncPackage2의 생성이란 곧 동기 함수였다면 스택에 살았을 지역변수 전부를 힙으로 이주시키는 일이어서, 
+FAsyncPackageData 한 판 위에 FEventLoadNode2들이 미리 배선되고, 
+FAsyncPackage2::StartLoading()이 FIoBatch::ReadWithCallback()으로 FIoDispatcher에 바이트를 발주한다. 
+
+그리고 재귀가 물화된다. FAsyncPackage2::ImportPackagesRecursive()가 
+이 패키지가 가리키는 것들을 같은 방식으로 세우기 시작하면서, 
+원장에 FGlobalImportStore::AddPackageRef()로 잔액을 하나씩 올려 그들을 붙들고
+FEventLoadNode2::DependsOn()으로 패키지 사이에 간선을 건다. 
+
+---
+
+이제 기계가 돈다. 디스크에서 바이트가 도착하면 
+IO 콜백이 FEventLoadNode2::ReleaseBarrier()를 부르고, 
+카운터가 0에 닿은 노드는 Fire()되어 자기 Spec이 가리키는 큐로 들어간다
+
+그 Spec의 출처가 부팅 때 한 번 적어둔 라우팅표 EventSpecs다.
+로딩 스레드는 FAsyncLoadEventQueue2::PopAndExecute()로 준비된 노드를 집어 
+FEventLoadNode2::Execute()를 통해 Spec->Func를 실행하는데, 
+
+처음 오는 것은 FAsyncPackage2::Event_ProcessPackageSummary()
+헤더를 파싱해 이 패키지의 좌표계인 HeaderData를 세우는 일이다. 
+
+좌표계가 서면 FAsyncPackage2::Event_ProcessExportBundle()이 쿠커가 미리 녹음해둔 테이프를 재생한다. 
+FExportBundleEntry가 Create를 말하면 껍데기를 만들어 Exports[i] 슬롯에 앉히고, Serialize를 말하면 내용을 채우는데, 
+
+이 시스템 전체의 심장은 결국 그 안의 한 줄이다: FExportArchive::operator<<(UObject*&)가 바이트스트림의 좌표를 읽어,
+FPackageImportStore::FindOrGetImportObjectFromLocalIndex()를 거쳐, 
+FGlobalImportStore::FindPublicExportObject()나 FindScriptImportObject()가 내준 
+살아 있는 포인터를 프로퍼티 자리에 써넣는 순간 — 좌표가 포인터가 되는 순간
+
+---
+
+그러나 세워졌다고 끝이 아니다. 이 건물들은 남의 세계에 서 있고, 그 세계에는 법이 있다. 
+
+그래서 로더는 만드는 족족 EInternalObjectFlags::Async로 가림막을 치고 ConstructedObjects 명단에 적어두었다. 
+자기 관할에서 할 수 있는 마무리는 Event_ExportsDone()과 Event_PostLoadExportBundle()로 끝내지만, 
+본청에서만 치를 수 있는 의식은 MainThreadEventQueue로 넘긴다. 
+
+게임 스레드가 매 프레임 TickAsyncLoadingFromGameThread()에서 
+ProcessLoadedPackagesFromGameThread()를 돌리며 
+Event_DeferredPostLoadExportBundle()을 집행하고, 
+의식이 끝나면 명단을 순회하며 가림막을 걷는다. 
+
+그리고 맨 처음의 부름에 대한 답장 — FCompletedPackageRequest::CallCompletionCallbacks()가 FLoadPackageAsyncDelegate를 
+실행해 UPackage*를 건네는 것으로, 찢어졌던 리턴이 마침내 돌아온다.
+
+---
+
+남는 일은 적는 것뿐이다. 
+열려 있던 계좌 FLoadedPackageRef에는 남들이 찾아올 주소록인 PublicExportMap이 채워져 있고, 
+죽음의 통보에 대비한 역색인 ObjectIndexToPublicExport도 기입되어 있다. 
+
+쓸모를 다한 프레임은 마지막 사용자가 DeferredDeletePackages에 넣고, 
+로딩 스레드가 한가한 틈에 ProcessDeferredDeletePackagesQueue()로 파쇄한다. 
+워크오더는 죽고 건물은 남는다.
+
+---
+
+에필로그는 둘이다. 언젠가 세계가 그 건물을 부술 때 — 로더가 아니라 GC만이 부술 수 있다
+NotifyUnreachableObjects()로 부고가 날아들고, 
+RemoveUnreachableObjects()가 원장에서 해당 기억을 말소해 기록과 세계의 표류를 바로잡는다.
+
+그리고 누군가 지금 당장을 외칠 때 — FlushAsyncLoading(RequestID)
+게임 스레드는 답장을 기다리는 대신 소매를 걷고 TickAsyncLoadingFromGameThread()로 
+그 자리에서 큐를 직접 끝까지 소비한다. 
+비동기 기계 위에서 동기를 흉내 내는 방법은, 기다리는 것이 아니라 자기가 일꾼이 되는 것이다.
+
+---
+---
+---
+
+레벨을 전환했다. 이전 레벨의 액터들이 사라지면서 /Game/Props/Barrel의 메시를 아무도 참조하지 않게 됐다.
+어느 프레임에 GC가 돌고, 도달성 검사가 SM_Barrel과 그 패키지를 도달 불가로 판정한다. 
+GC는 이제 그 실물들을 부술 것이다
+
+문제는 로더의 원장이다. 
+FGlobalImportStore에는 아직 Barrel의 계좌가 있고, 
+PublicExportMap에는 SM_Barrel이 GUObjectArray 몇 번 슬롯에 있다는 주소가 적혀 있다. 
+
+GC가 실물을 부수고 그 슬롯이 재사용되면, 
+다음에 누군가 Barrel을 import할 때 원장이 죽은 주소(혹은 엉뚱한 새 입주자)를 내주게 된다
+기록과 실물의 표류
+
+그래서 GC는 부수기 전에 부고를 돌린다. 
+도달 불가 판정이 끝나면 그 목록을 NotifyUnreachableObjects()로 로더에 넘기고, 
+로더는 RemoveUnreachableObjects()에서 
+역색인(ObjectIndexToPublicExport)으로 죽는 실물 → 원장의 어느 줄을 
+O(1)로 찾아 그 기억을 지운다
+
+이 시점에 ALT는 GC 대기를 보고 스스로 멈춰 있다.
+결과: 다음에 같은 이름이 오면 기억에 없으므로 정상적으로 다시 세운다
+
+---
+
+감사인이 대조한다
+
+GC(감사인)는 주기적으로 실물 세계를 전수 조사(도달성 검사)
+
+기록 주체(로더)가 아닌 제3자가 정합성을 강제한다는 점이 감사의 요체다
+
+---
+
+로딩의 마지막 도장은 GT에서만 찍힌다
+
+Event_DeferredPostLoadExportBundle()과 완료 델리게이트 실행은 
+MainThreadEventQueue를 통해 
+GT의 TickAsyncLoadingFromGameThread() 안에서만 일어난다
+
+---
+
+로더는 두 외부 권력과 계약 관계
+수명은 GC의 관할
+공개는 GT의 관할
+
+---
+
+패키지 A와 B가 둘 다 C를 import하는데, C가 지금 반쯤 로드된 상태다. 
+B가 C를 요청하는 순간 원장만 있다면 — C는 아직 완료가 아니므로 없음으로 나오고, B는 C의 두 번째 로드를 시작해버린다
+
+완료된 결과의 기억(FGlobalImportStore)
+진행 중인 약속의 기억(FAsyncLoadingThread2::AsyncPackageLookup:TMap<FPackageId, FAsyncPackage2*>
+
+비동기 메모이제이션의 표준 형태
+값만 캐시하면 부족하고, 약속(진행 중인 future)도 캐시해야 동시 요청이 합쳐진다
+
+---
+
+PostLoad가 ALT 몫(Event_PostLoadExportBundle)과 
+GT 몫(Event_DeferredPostLoadExportBundle)으로 갈라져 있는 이유
+
+PostLoad는 로더의 코드가 아니라 
+각 클래스가 오버라이드한 임의의 유저 코드다. 
+임의의 코드는 임의의 것을 만질 수 있다 — 렌더 리소스 등록, 타이머, 다른 오브젝트 검색. 
+
+그런 코드를 ALT에서 돌리는 것은 일반적으로 불법이다(스레드 계약 위반). 
+그렇다고 전부 GT로 보내면 GT의 프레임 예산이 로딩에 잡아먹힌다.
+
+그래서 절충이 오브젝트 단위로 일어난다. 
+자기 PostLoad가 스레드에 안전하다고 스스로 선언한 클래스(IsPostLoadThreadSafe())의 것들은 ALT에서 미리 처리하고
+(Event_PostLoadExportBundle, 설정상 async postload가 켜져 있을 때)
+
+선언하지 않은 나머지만 GT행 컨베이어로 넘긴다(Event_DeferredPostLoadExportBundle)
+
+---
+---
+---
+
+격리 장치 — Async 플래그와 가시성 필터
+
+GT가 반쯤 된 오브젝트를 줍지 못하게 만든 그 가림막이
+
+---
+
+FGlobalImportStore
+전역 신원 → 살아 있는 포인터 사상의 유지
+해석기(resolver)의 데이터베이스
+
+그런데 그 내용물을 들여다보면 전부 export
+
+각 패키지가 공개한 것들(FLoadedPackageRef::PublicExportMap)
+C++ 태생 시민들(ScriptObjects).
+
+수요자(로딩 중인 패키지) 쪽에서 보면 import 해석기
+공급자(로드된 패키지) 쪽에서 보면 export 등기소
+
+---
+
+FPackageId
+패키지 경로 문자열을 정규화해 해시한 64비트 값 
+
+언제 어디서 계산해도 같은 패키지면 같은 값이 나온다
+쿠킹 타임에 미리 계산해 디스크에 구울 수 있고(런타임 문자열 비교 소멸)
+맵의 키로 쓸 수 있는 값 타입이 된다
+
+이것은 패키지의 내용도, 위치도, 상태도 아니다
+오직 그것임(identity)만을 가리키는 토큰
+
+좌표계 변환 사슬(문자열 → FPackageId → ... → 포인터)의 첫 정거장
+
+---
+
+FLoadedPackageRef
+
+같은 신원에 대해 지금 이 프로세스에서 어떤가를
+실물이 있는가(UPackage*), 몇 명이 붙들고 있는가(RefCount), 무엇을 제공하는가(PublicExportMap)
+
+이름의 Ref는 참조 계수되는 등록 항목
+
+---
+---
+---
+
+위상(topology)
+
+무엇이 몇 개 있고 무엇이 무엇에 앞서는가만 남기고, 
+언제·얼마나 걸리는가는 전부 지운 구조. 
+지하철 노선도
+역 사이의 연결 관계(위상)는 종이에 고정되어 있지만
+열차가 언제 지나가는지(시간)는 노선도에 없다
+
+패키지 내부의 위상
+
+노드가 몇 개인지(단계 수 × 번들 수)
+그들 사이의 선후 간선(summary가 번들 처리보다 앞, 번들 처리가 직렬화 완료보다 앞...)
+
+매 로드마다 같은 모양의 골조가 찍혀 나온다
+
+---
+---
+---
+
+Store는 장기 기록(원장·명부)
+Ref는 계수되는 등록 항목
+Map/Lookup은 색인
+Queue는 흐름
+Desc와 Spec은 불변 기술서
+State는 가변 진행 상태
+Node는 그래프 정점
+Entry는 표의 한 줄
+Header는 선두 메타
+Root는 트리의 뿌리
+
+---
+
+Notify-는 경계 밖에서 들어오는 통보(수신자 관점의 이름)
+Queue-는 지금 하지 않고 등록만, 
+Deferred-는 다른 시간·다른 문맥으로 이송됨, 
+Process-는 쌓인 것의 소비 루프, 
+Tick-은 프레임 주기의 시분할 진입점, 
+Flush는 쌓인 것을 그 자리에서 바닥까지라는 동기화 지점, 
+
+Event_는 호출되는 게 아니라 fire되는 함수라는 이벤트 구동 세계의 표식(EDL 유산). 
+
+컴파일러가 검사해주지 못하는 것들 — 스레드 문맥, 실패 의미론, 가변성, 소속 체제, 세대 — 을 
+이름의 형태론에 실어, 
+코드를 읽는 사람의 눈이 타입 시스템의 부족분을 메우게 한다
+
+---
+---
+---
+
+
+FGlobalImportStore 저장소의 존재 이유
+
+어떤 패키지의 직렬화가 자기 밖을 가리키는 좌표를 만났을 때
+그 전역 신원을 살아 있는 포인터로 바꿔주는 순간
+
+GlobalImportStore.FindPublicExportObject
+GlobalImportStore.FindScriptImportObject
+
+그 질문에 답하려면 무엇이 세워져 있는지 기억해야 하므로, 
+결과적으로 패키지들의 계좌부를 들고 있게 된 것
+
+완료된 것만이 아니라 로딩 중인 패키지의 계좌도 담고
+패키지에서 로드된 적 없는 스크립트 오브젝트 명부도 담고
+GC 대비 역색인도 담는다
+
+---
+---
+
+GT : LoadPackageAsync() → 주문서가 PackageRequestQueue에
+
+ALT: CreateAsyncPackagesFromQueue()
+       주문서 개봉 → FPackageStore로 이름 번역(존재 확정)
+       기억 조회(원장·현황판) → 없으면 워크오더 생성:
+         FAsyncPackageData 한 판 할당 + 노드 골조 배선
+         원장에 계좌 개설(AddPackageRef)
+
+ALT: FAsyncPackage2::StartLoading()
+       FIoBatch::ReadWithCallback(청크ID, 완료콜백) 발주  
+       상태 도장: WaitingForIo
+       이때 Package_ProcessSummary 노드의 barrier(1)를
+       완료콜백이 쥐고 있는 상태가 된다
+
+[여기서부터는 로더의 손을 떠남: IoDispatcher 스레드 → 백엔드 → 디스크 → 압축 해제]
+IO 완료 콜백 → ReleaseBarrier()                              ← 그 사건
+
+---
+---
+
+[IO 도착이 barrier 해제]
+Event_ProcessPackageSummary        (패키지당 1, ALT)
+  진입: 바이트가 메모리에 있다
+  하는 일: 헤더 파싱 → HeaderData 좌표계 수립, import 발견
+           → ImportPackagesRecursive로 의존 착공 + 패키지 간 간선
+  성립: 나는 내가 무엇이고 누구에게 기대는지 안다
+
+Event_DependenciesReady            (패키지당 1, ALT)
+  진입: 기대는 상대들이 필요한 단계에 도달했다 (그들의 barrier가 다 풀림)
+  성립: 이후의 생산은 외부 때문에 멈추지 않는다 — 관문 통과 선언
+
+Event_ProcessExportBundle          (번들당 1, ALT)
+  진입: 관문 통과 + 이 번들의 바이트 가용
+  하는 일: 테이프 재생 — Create는 껍데기를 Exports[i]에,
+           Serialize는 FExportArchive로 좌표→포인터 배선
+  성립: 이 번들의 오브젝트들이 존재하고 내용이 차 있다
+
+[모든 번들 완료 + 외부 읽기(벌크데이터) 정리가 barrier 해제]
+Event_ExportsDone                  (패키지당 1, ALT)
+  성립: 직렬화 완료의 공표 — 나를 import하며 기다리던
+        남들의 barrier가 여기서 풀린다 (패키지 간 동기화 지점)
+
+Event_PostLoadExportBundle         (번들당 1, ALT)
+  진입: 전체 직렬화 완료 (PostLoad 계약: 내 프로퍼티는 차 있다)
+  하는 일: 스레드세이프 선언한 오브젝트들의 PostLoad
+
+Event_DeferredPostLoadExportBundle (번들당 1, GT — MainThreadEventQueue행)
+  하는 일: 나머지 오브젝트들의 PostLoad, 본청 의식
+  성립: 이후 개장(플래그 해제)과 회신이 가능하다
+
+---
+
+Event_DependenciesReady
+
+A의 Event_ProcessPackageSummary()가 헤더를 읽고 알게 됐다
+나는 B와 C를 import한다
+
+그런데 A가 지금 바로 자기 내용을 채우기 시작하면, 
+직렬화 도중 B의 export를 찾는 순간 아직 없을 수 있다.
+
+그래서 A는 자기 Package_DependenciesReady 노드에 barrier를 건다
+B 몫 하나, C 몫 하나, 합계 2
+
+그리고 그 barrier의 해제선을 
+B와 C의 진행 지점(그들의 export가 세워지고 직렬화되는 지점)에 걸어둔다
+
+B가 거기 도달하면 A의 카운터가 2→1, C가 도달하면 1→0, 
+그 순간 Event_DependenciesReady가 fire된다
+
+이 문 앞은 밖을 기다리는 구간이고, 이 문 뒤는 다시는 밖 때문에 멈추지 않는 구간이다.
+
+---
+---
+
+Event_ExportsDone 
+
+모든 번들의 ExportBundle_Process 노드가 끝났고
+벌크데이터 외부 읽기까지 정리됐다
+번들들이 전부 합류하는 AND 게이트
+
+실질 노동은 거의 없다. 선언 이벤트
+
+상태 도장을 ExportsDone으로 넘기고, 
+원장의 내 계좌에 자산 목록 완비 표시를 하고(이제 이 계좌의 PublicExportMap은 완전하고 내용 확정이다)
+나에게 간선을 걸어둔 남들의 barrier를 푼다
+
+---
+
+Event_ProcessExportBundle 
+
+밖을 기다릴 일이 더는 없고 
+이 번들 구간의 바이트가 메모리에 있다
+
+쿠커가 구운 테이프를 앞에서부터 재생한다
+Barrel의 번들 테이프가 Create 0, Create 1, Create 2, Serialize 0, Serialize 1, Serialize 2라면
+
+Create i — ExportMap[i]에서 설계 한 줄을 읽는다(이름, 클래스 좌표, outer 좌표)
+클래스를 해석하고(/Script/Engine.StaticMesh — 창구 경유 원장 조회)
+NewObject로 껍데기를 세우고
+Exports[i].Object에 앉히고
+Async 플래그를 붙이고
+ConstructedObjects에 적는다
+
+Serialize i — FExportArchive를 이 export의 바이트 구간에 대고
+Exports[i].Object->Serialize(Ar)를 부른다
+리플렉션이 프로퍼티를 순회하고, 좌표를 만날 때마다 operator<<가 포인터로 배선한다 
+
+---
+
+Event_PostLoadExportBundle 
+
+엔진에서 Serialize는 방향 중립
+패키지가 ExportsDone에 도달
+모든 번들의 역직렬화가 끝났고 외부 읽기(벌크데이터)도 정리
+
+PostLoad 안에서 자기 프로퍼티를 읽으면 전부 차 있고, 가리키는 상대들은 존재한다.
+
+번들의 export들을 돌며 PostLoad를 부른다
+자기 클래스가 스레드 안전을 선언한(IsPostLoadThreadSafe()) 오브젝트만
+
+역직렬화된 원자료에서 파생 데이터를 재계산하거나, 
+구버전 데이터를 마이그레이션하거나, 
+런타임 캐시를 세우는 유저 코드
+
+안전 선언을 안 한 나머지 오브젝트들은 손대지 않고 GT행 컨베이어(Event_DeferredPostLoadExportBundle)로 넘긴다
+
+---
+---
+---
+---
+---
+
+import 처리란 실은 내 작업이 아니라 남의 작업의 발주다. 
+발주는 곧바로 끝나지만 그 완료는 한참 뒤에 온다
+
+---
+
+NewObject는 최소한 (클래스, outer, 이름)을 요구하고, 
+실제로는 그 클래스의 생성자를 돌리고 CDO의 디폴트 값을 새 인스턴스에 복사한다. 
+
+그런데 SM_Barrel의 클래스 UStaticMesh는 어디 있나? 
+/Script/Engine — 내 패키지 밖, 즉 import
+
+---
+---
+---
+
+FAsyncPackage2
+
+이 객체는 패키지가 아니다. 
+패키지(결과물)는 UPackage고, 
+이것은 패키지가 로드되는 과정이다
+
+작업 단위를 그 작업의 대상으로 부른다
+요리 과정 객체를 요리 이름으로 부르는 식
+
+정확한 독법은 async하게 로드되는 중인 패키지 하나에 대한 작업 단위
+
+---
+
+요청의 물화 = FPackageRequest(그리고 그 핸들 RequestID)
+워크오더 = FAsyncPackage2
+
+호출의 물화가 아니라 실행의 물화
+재귀 함수의 활성 레코드(스택 프레임) 하나가 객체가 된 것
+작업장의 관리 폴더
+
+---
+
+요청 N개에 워크오더 1개
+셋이 동시에 Barrel을 주문하면 주문서는 석 장이지만 폴더는 하나고, 
+석 장의 회신 주소가 그 폴더에 꽂힌다
+
+완료 회신: FLoadPackageAsyncDelegate — 요청자가 LoadPackageAsync()에 넘긴 완료 콜백
+워크오더의 FAsyncPackage2::CompletionCallbacks 배열에 꽂힌다
+
+진행 회신: FLoadPackageAsyncProgressDelegate
+
+식별표: RequestID
+동기적으로 기다리는 자(FlushAsyncLoading(RequestID))에게는 이 번호가 회신 주소 역할
+이 번호가 끝날 때까지라고 말할 수 있게 해주는 손잡이
+
+---
+
+FAsyncPackageData
+
+행동 없는 저장물
+
+필요한 총 페이지 수를 미리 알아서 한 권으로 제본한 뒤, 목차에 노드는 1~6쪽, 슬롯은 7~9쪽이라고 적어두는 것
+
+FAsyncPackage2(본체)는 로직과 고정 크기 멤버와 그 목차만 갖고
+제본된 종이 뭉치는 FAsyncPackageData가 든다
+
+TArray<FEventLoadNode2> Nodes;      
+TArray<FExportObject>   Exports;    
+TArray<FAsyncPackage2*> Imports;    
+
+---
+
+FGlobalImportStore는 프로세스 수명(공장의 원장)
+
+
+FPackageImportStore는 로드 수명(워크오더의 부품)
+패키지의 로컬 좌표(FPackageIndex, ImportMap의 몇 번째)
+
+---
+
+FGlobalImportStore
+
+A의 직렬화가 B의 SM_Rock을 가리키는 좌표를 만났다
+포인터를 어디서 구하나
+
+후보 1: 세계(GUObjectArray)를 이름으로 뒤진다
+수백만 오브젝트 선형 탐색
+로딩 중 오브젝트는 가시성 필터로 숨겨져 있어 보이지도 않는다
+
+후보 2: B의 워크오더(FAsyncPackage2)에게 물어본다
+그런데 B가 10분 전에 로드됐다면 그 워크오더는 이미 파쇄되고 없다
+워크오더는 로드 수명이고, 오브젝트는 그보다 오래 산다
+
+---
+
+가리키는 것은 지금 이 프로세스의 힙에 살아 있는 C++ 객체 인스턴스
+SM_Rock을 로드하면 메모리 어딘가, 이를테면 0x7f3a2c001200에 UStaticMesh 클래스의 인스턴스 하나가 앉는다
+버텍스 데이터 참조, LOD 설정, 이름을 든 진짜 객체
+
+스크립트 import라면 UClass 인스턴스(클래스도 오브젝트다)다. 포인터는 그 주소다
+
+그 주소는 이번 실행의 우연이다. 다음 실행에서는 0x7f99...일 것이다. 디스크에는 주소를 구울 수 없다. 
+
+그래서 디스크는 영원한 이름(패키지 ID + export 해시)을 굽고, 
+
+런타임의 어딘가에는 영원한 이름 → 이번 실행의 주소 대응표가 있어야 한다. 
+FGlobalImportStore가 바로 그 대응표
+
+이름은 안 바뀌지만 전화번호(주소)는 이사 때마다 바뀌는 세계의, 현재 번호부
+
+---
+
+기입(Create 시) = 새 입주자의 번호 등록
+조회(Serialize 시) = 번호 찾기
+잔액(RefCount) = 이 번호 쓰는 중이니 회선 끊지 마라
+GC 말소 = 사망자의 번호를 지워 번호부를 진실하게 유지
+
+실제로 적히는 것은 생 주소가 아니라 GUObjectArray의 슬롯 번호
+
+---
+
+t=0   B 로드 중, Event_ProcessExportBundle:
+      SM_Rock 생성 → 원장에 기입 (B,해시H)→포인터P          [쓰기]
+t=1   B의 워크오더 파쇄 — 기입은 남는다
+...
+t=9   A 로드 시작, ImportPackagesRecursive:
+      B는 이미 있음 → 착공 생략, 잔액만 +1          [수명]
+t=10  A의 직렬화가 (B,H)를 만남 → 원장 조회 → P        [읽기]
+...
+t=99  B가 도달 불가 → GC의 부고 → 원장에서 (B,H) 말소      [정합성]
+
+---
+
+번들은 패키지의 부분
+
+패키지는 무엇의 단위
+번들은 작업 순서의 단위
+
+패키지 = 이케아 박스 하나. 
+이름이 있고(/Game/Props/Barrel), 
+내용물 목록이 있고(export 3개), 
+다른 박스에 기대는 목록이 있다(import). 
+
+export = 박스 안의 부품들. 
+번들 = 조립 설명서의 단계 묶음 — 1~4단계(프레임 조립), 5~8단계(서랍 조립) 같은 구간
+
+쿠킹이 구운 것은 그 설명서
+
+부품별 미시 명령의 순서(부품 2 꺼내기=Create, 부품 2 조이기=Serialize — FExportBundleEntry 하나가 명령 한 줄)
+그 명령 열을 몇 개의 구간으로 자를지(번들 경계)
+각 구간이 쓸 재료가 디스크에서 연속이 되게 한 포장 순서
+
+---
+---
+---
+---
+---
+---
+---
+---
+
+동기 함수는 원래 다섯 가지 능력을 공짜로 가진다.
+
+call stack        누가 누구를 불렀는가
+local variables   중간 값은 어디에 사는가
+program counter   지금 어디까지 실행했는가
+return            결과는 누구에게 돌아가는가
+blocking wait     필요하면 멈춰 기다릴 수 있다
+
+---
+
+비동기 로더는 이 다섯 가지를 잃은 세계다
+잃어버린 동기 함수의 기관을 다시 만든 시스템
+
+call stack        → PackageRequestQueue, import dependency
+local variables   → FAsyncPackage2
+program counter   → AsyncPackageLoadingState, EventQueue
+return            → CompletedPackageRequest, completion delegate
+blocking wait     → BarrierCount, dependency edge
+
+---
+
+어느 순간 game thread에서 UStaticMesh*가 손에 들어왔다.
+그 포인터가 합법적으로 존재하려면, 이전에 무엇들이 반드시 일어났어야 하나?
+
+UStaticMesh*가 보인다
+
+→ async loading flag가 걷혔다
+→ game thread 마무리가 끝났다
+→ PostLoad가 끝났다
+→ Serialize가 끝났다
+→ Create로 껍데기가 먼저 만들어졌다
+
+→ export bundle tape가 실행됐다
+→ header 좌표계가 파싱됐다
+→ package bytes가 도착했다
+
+→ FPackageRequest가 work order로 바뀌었다
+→ LoadPackageAsync가 request를 queue에 넣었다
+
+---
+
+bytes 도착
+→ header를 읽을 수 있음
+
+header 파싱
+→ import와 export bundle tape를 알 수 있음
+
+import 준비
+→ export serialize 중 reference를 포인터로 이을 수 있음
+
+Create
+→ 서로 참조할 주소가 생김
+
+Serialize
+→ property 값과 hard reference가 채워짐
+
+PostLoad
+→ 값으로부터 파생되는 2차 상태가 완성됨
+
+game thread finalize
+→ user code에 공개 가능해짐
+
+---
+
+Package_ProcessSummary
+= bytes가 왔으니 header를 읽어도 된다
+
+ExportBundle_Process
+= header와 import가 준비됐으니 object를 만들고 채워도 된다
+
+ExportBundle_DeferredPostLoad
+= game thread에서만 가능한 마무리를 해도 된다
+
+---
+---
+---
+---
+
+UE 5.6의 ZenLoader(AsyncLoading2.cpp)
+
+FAsyncLoadingThread2 
+FRunnable + IAsyncPackageLoader 구현체
+
+FAsyncLoadingThread2::StartThread()가 
+FRunnableThread::Create(this, TEXT("FAsyncLoadingThread"))로 스레드를 띄운다
+
+---
+
+FIoDispatcher 
+별도 상주 스레드
+
+스레드명 IoDispatcher
+
+실제 디스크/컨테이너 IO는 여기서 백엔드로 내려간다
+
+요청/응답 서비스
+완료가 콜백으로 ALT에 역류하고, 
+완료 순서도 제출 순서가 아니라 우선순위와 디스크 사정을 따른다
+
+FIoDispatcher는 셰이더 라이브러리 등 다른 시스템도 쓰는 공용 인프라
+
+---
+
+ALT는 패키지 의미론 계층
+FIoDispatcher는 그 아래 청크 IO 계층
+
+---
+
+ALT는 선택적
+
+FAsyncLoadingThreadSettings::bAsyncLoadingThreadEnabled가 꺼지면 
+스레드 없이 같은 상태머신을 GT가 시분할로 돌린다
+
+참여 스레드별 실행 컨텍스트
+FAsyncLoadingThread2::GameThreadState:TUniquePtr<FAsyncLoadingThreadState2> 
+FAsyncLoadingThread2::AsyncLoadingThreadState:TUniquePtr<FAsyncLoadingThreadState2> 
+
+---
+
+FAsyncLoadingThread2::GlobalImportStore:FGlobalImportStore
+
+Packages:TMap<FPackageId, FLoadedPackageRef>
+로딩 중이거나 로딩 완료된 모든 패키지의 장부
+
+FLoadedPackageRef::PublicExportMap
+패키지별 PublicExportHash:uint64 → GUObjectArray 인덱스 매핑
+다른 패키지가 이 패키지를 import할 때 여기서 UObject*를 해석
+
+ScriptObjects:TMap<FPackageObjectIndex, UObject*> 
+initial load 때 등록된 네이티브 클래스/enum/CDO 전역 색인
+
+---
+
+GC가 unreachable 목록을 IAsyncPackageLoader::NotifyUnreachableObjects로 넘기면 
+ALT 루프가 FAsyncLoadingThread2::RemoveUnreachableObjects()로 장부를 청소
+
+---
+
+게임 스레드가 LoadPackageAsync를 호출하면 최종적으로 FAsyncLoadingThread2::LoadPackageInternal로 들어간다
+
+여기서 request id를 만들고, pending request 장부에 등록한 뒤, FPackageRequest를 만든다
+
+FPackageRequest 안에는 package path, custom package name, package flags, load flags, 
+Play In Editor instance id, priority, linker instancing context, 
+completion delegate, progress delegate, referencer 정보가 담긴다
+
+이것을 PackageRequestQueue에 넣고
+AltZenaphore.NotifyOne()으로 로딩 스레드를 깨운다
+
+---
+
+로딩 스레드는 Run 루프에서 깨어나 CreateAsyncPackagesFromQueue를 실행한다
+InitializeAsyncPackageFromPackageStore, StartLoading, FIoBatch 발행으로 넘어간다
+
+FIoDispatcher 완료가 FEventLoadNode2의 barrier를 풀고, 준비된 node가 EventQueue나 MainThreadEventQueue에 들어간다
+
+---
+
+ALT 스레드 생성을 왜 엔진 부팅이 끝난 뒤로 미루는가?
+
+부팅(initial load) 단계에서는 GT가 C++ 모듈을 로드하면서 UClass/UEnum/CDO 같은 스크립트 오브젝트를 대량으로 생성·등록한다. 
+
+로더도 같은 시기에 초기 패키지 로드와 스크립트 오브젝트 색인
+(FAsyncLoadingThread2::GlobalImportStore:FGlobalImportStore::ScriptObjects) 구축을 해야 하는데, 
+
+스레드가 둘이면 같은 오브젝트를 양쪽에서 만들거나 찾는 레이스가 생긴다. 
+
+FAsyncLoadingThread2::bThreadStarted의 주석이 정확히 이 얘기다
+부팅 중 GT가 만드는 오브젝트를 로더도 만들 수 있어서 부팅 후에야 시작한다
+
+그래서 로더는 부팅이 끝나면 FAsyncLoadingThread2::StartThread()가 FRunnableThread::Create()를 부른다. 
+
+부팅 중 로드가 아직 없는 CDO를 요구하는 경우를 위해 
+FAsyncLoadingThread2::PendingCDOs:TMap<UClass*, TArray<FEventLoadNode2*>>라는 GT 전용 대기 메커니즘도 따로 있다.
+
+---  
+
+렌더 코드는 함수 자체에 소속 스레드가 박혀 있다
+check(IsInRenderingThread())
+
+로더의 상태머신 함수들에는 그런 소속이 없다
+
+---
+
+스크립트 오브젝트
+
+/Script/Engine, /Script/ActionRoguelike 같은 /Script/ 패키지에 사는 것들
+
+C++ 모듈 로딩이 만들며 사실상 프로세스 수명 내내 살아 refcount가 무의미
+로더가 디스크에서 읽는 게 아니라, 모듈이 로드될 때 UHT가 생성한 코드(Z_Construct_UClass_AMyActor 류)가 만들어 등록
+
+AMyActor의 클래스 오브젝트 자체가 스크립트 오브젝트
+
+---
+
+전역 조회가 필요한 순간은 패키지 경계를 넘을 때뿐이고, 
+경계를 넘는 참조가 곧 import
+
+---
+
+FPackageObjectIndex의 종류 비트에 따라 
+
+ScriptImport면 전역 해시 한 방(FGlobalImportStore::FindScriptImportObject() → ScriptObjects:TMap<FPackageObjectIndex, UObject*>)
+PackageImport면 패키지 장부 → FLoadedPackageRef::PublicExportMap 2단 조회
+
+---
+
+TMpscQueue = Multi-Producer, Single-Consumer 큐
+생산자는 여럿이어도 되지만 소비자는 정확히 하나라는 사용 계약
+lock-free 큐
+소비자가 하나라는 가정 덕에 일반 MPMC 큐보다 싸게 구현
+
+FAsyncLoadingThread2::PackageRequestQueue:TMpscQueue<FPackageRequest>
+LoadPackageAsync()는 아무 스레드에서나 불릴 수 있지만 빼가는 쪽은 ALT 하나
+
+---
+
+FEventLoadNode2::BarrierCount:std::atomic<int32>
+
+이 노드가 실행되기 전에 끝나야 할 선행 조건의 남은 개수
+노드는 barrier 1개를 쥔 채 생성되고
+FEventLoadNode2::DependsOn(Other)나 AddBarrier()로 더 늘어난다
+
+FEventLoadNode2::ReleaseBarrier()는 이 카운터를 원자적으로 1 줄이고, 
+0이 되는 순간 FEventLoadNode2::Fire(), 즉 Spec->EventQueue->Push(this)로 노드를 실행 큐에 투입한다.
+
+---
+
+노드 실행이 끝나면 FEventLoadNode2::ProcessDependencies()가 
+자기에게 매달린 dependent들의 BarrierCount를 줄여 연쇄적으로 fire시킨다
+
+---
+
+로딩 중 생성된 오브젝트에는 
+EInternalObjectFlags::Async와 EInternalObjectFlags::AsyncLoadingPhase1 계열 플래그가 마킹
+
+이 플래그는 GC로부터 오브젝트를 보호하는 동시에, 
+FUObjectThreadContext::AsyncVisibilityFilter를 통해 
+StaticFindObject 계열 조회에서 걸러지게 해서 
+GT가 반쯤 직렬화된 오브젝트를 주워가지 못하게 한다.
+
+---
+
+직렬화가 끝나면 ExportBundle_DeferredPostLoad 노드들이 
+FAsyncLoadingThread2::MainThreadEventQueue로 넘어가고, 
+GT가 TickAsyncLoadingFromGameThread() 안에서 PostLoad()를 마저 돌린다
+
+완료 단계에서 AtomicallyClearInternalFlags(EInternalObjectFlags_AsyncLoading)류로 플래그가 걷히고,
+
+FAsyncLoadingThread2::FCompletedPackageRequest::CallCompletionCallbacks()가 GT에서 실행되어
+FLoadPackageAsyncDelegate(PackageName, UPackage*, Result) 인자로 포인터가 유저 코드에 도착한다
+
+---
+
+스핀
+
+조건이 참이 될 때까지 CPU를 태우며 반복 확인하는 것(busy-wait)
+스핀은 즉시 반응하지만 기다리는 내내 코어를 점유
+일이 올 확률이 높으면 스핀
+
+블로킹
+
+커널에 스레드를 재워달라고 요청하는 것(syscall → 컨텍스트 스위치)
+블로킹은 CPU 0%지만 재우고 깨우는 데 마이크로초 단위 비용 + 캐시 오염
+오래 기다릴 것 같으면 블로킹이 이득
+
+실전 프리미티브는 대부분 잠깐 스핀 후 블로킹 하이브리드
+
+---
+
+FZenaphore의 구현
+
+FZenaphoreWaiter::Wait()의 첫 호출은 자기를 대기자 리스트(FZenaphore::HeadWaiter)에 등록만 하고 즉시 리턴한다(SpinCount 0→1). 
+
+호출자인 ALT 루프는 그대로 한 바퀴 더 돌며 큐들을 재확인한다 — 이 한 바퀴가 스핀에 해당한다. 
+그래도 일이 없어 두 번째로 Wait()를 부르면 그제서야 WaitInternal()이 FEvent::Wait()로 커널 대기에 들어간다. 
+
+일감이 끊이지 않으면 두 번째 호출 전에 NotifyOne()이 도착하므로 syscall 없이 계속 도는 것
+
+---
+
+디스패치 = 이 사건에 어떤 코드를 실행할지 결정하는 행위
+테이블 = 그 결정을 if/switch 로직이 아니라 키로 인덱싱하는 배열로 표현한 것
+정적 = 배열 내용이 초기화 때 한 번 채워지고 런타임에 안 바뀐다
+
+C++ vtable(타입별 가상함수 테이블)
+인터럽트 벡터 테이블
+컴파일러가 switch를 바꿔놓는 점프 테이블
+
+---
+
+FAsyncLoadingThread2::EventSpecs는 
+키가 로딩 단계(EEventLoadNode2 값)이고 
+값이 (핸들러 함수 포인터, 대상 큐 포인터, 즉시실행 플래그)인 테이블
+
+코드가 테이블에 고정되어 있고 큐에는 데이터(노드)만 흐른다
+로딩 파이프라인 전체 정책을 한 곳에서 읽을 수 있다
+
+---
+
+Event(이벤트 구동) + Load(로딩 도메인) + Node(그래프의 노드)
+
+로딩이 절차(함수 호출 사슬)가 아니라 의존성 DAG로 모델링되어 있다는 것
+
+패키지마다 고정된 위상의 노드들이 생성되고
+EEventLoadNode2가 그 목록
+Package_ProcessSummary, Package_DependenciesReady, Package_ExportsSerialized
+export bundle당 ExportBundle_Process, ExportBundle_PostLoad, ExportBundle_DeferredPostLoad
+
+---
+
+무엇이 실행되어야 하는가를 실행 주체에서 분리해 놓은 자기완결적 기술서
+
+로더의 FAsyncLoadEventSpec
+공유되는 불변 정의
+단계당 1개만 존재하고 수만 개의 노드가 포인터로 공유
+Flyweight 패턴
+가변 인스턴스 상태는 FEventLoadNode2가 든다
+
+반면 GAS는 UGameplayEffect(에셋, 불변 정의)가 정의 쪽이고, 
+FGameplayEffectSpec은 적용 시점에 레벨·매그니튜드·컨텍스트를 구워 넣은 가변 인스턴스 스냅샷
+
+실행과 분리된 기술 객체는 경계를 넘길 수 있다 
+로더에선 스레드 경계(어느 스레드가 pop하든 Spec만 보면 됨), 
+GAS에선 네트워크 경계(Spec을 직렬화해 예측·복제)
+
+불변-공유물 ↔ 가변-인스턴스 축
+
+---
+---
+---
+---
+---
+
+디스크 세계의 가능성 목록을 메모리 세계의 현실로 바꾸는 변환기
+자료구조는 이 변환의 어느 지점을 담당하느냐에 따라 다섯 부류로 나뉜다
+
+기술서(무엇을 할지, 불변)
+
+작업물(변환 진행 상태, 로드 수명)
+
+인프라(실행과 통신의 기계, 프로세스 수명)
+
+장부(변환 결과의 영속 색인, 프로세스 수명)
+
+이웃(로더가 소유하지 않되 협약으로 묶인 외부 정본들)
+
+---
+
+수명 척도가 세 개
+
+요청 수명(큐를 통과하는 동안) < 로드 수명(NewPackage→DeferredDelete) < 프로세스 수명
+
+---
+
+진리 원천이 두 개
+
+디스크 진리(FPackageStore — 무엇이 존재할 수 있는가)
+메모리 진리(FGlobalImportStore — 무엇이 지금 세워져 있는가)
+
+---
+
+프로세스 수명 ── FAsyncLoadingThread2                        오케스트레이터, 프로세스당 1
+   ├─ 정책    EventSpecs : TArray<FAsyncLoadEventSpec>       단계→(핸들러,큐) 불변 테이블
+   ├─ 통신    PackageRequestQueue : TMpscQueue<FPackageRequest>      GT들 → ALT
+   │          EventQueue           : FAsyncLoadEventQueue2           ALT가 소비
+   │          MainThreadEventQueue : FAsyncLoadEventQueue2           GT가 소비
+   │          DeferredDeletePackages / ExternalReadQueue : TMpscQueue  → ALT
+   │          AltZenaphore : FZenaphore,  MainThreadWakeEvent        깨우기 벨
+   ├─ 컨텍스트 GameThreadState / AsyncLoadingThreadState : FAsyncLoadingThreadState2
+   ├─ 장부    GlobalImportStore : FGlobalImportStore
+   │          ├─ Packages : TMap<FPackageId, FLoadedPackageRef>
+   │          │    └─ FLoadedPackageRef::PublicExportMap, RefCount
+   │          ├─ ScriptObjects : TMap<FPackageObjectIndex, UObject*>
+   │          └─ ObjectIndexToPublicExport : TMap<int32, FPublicExportKey>
+   ├─ 진행색인 AsyncPackageLookup : TMap<FPackageId, FAsyncPackage2*>
+   │          PendingRequests, RequestIdToPackageMap, 카운터들
+   └─ 이웃(비소유 참조) IoDispatcher : FIoDispatcher&,  PackageStore : FPackageStore&
+
+---
+
+로드 수명 ── FAsyncPackage2                                  워크오더, 로딩 중 패키지당 1
+   ├─ Desc : FAsyncPackageDesc2                              확정된 작업지시서, 불변
+   ├─ Data : FAsyncPackageData                               단일 할당 블록
+   │    ├─ FEventLoadNode2[ 패키지 단계들 + 번들당 단계들 ]     스케줄링 원자들
+   │    └─ Exports : FExportObject[]                         export 슬롯: UObject* + 상태비트
+   ├─ HeaderData : FAsyncPackageHeaderData                   파싱된 디스크 헤더(NameMap/ImportMap/ExportMap)
+   ├─ SerializationState                                     FIoRequest 핸들 — IO 진행 상태
+   ├─ ImportStore : FPackageImportStore                      전역 장부에 대한 이 패키지 시점의 창구
+   ├─ ConstructedObjects : TArray<UObject*>                  이 로드가 만든 것들 — 나중 플래그 청소 명단
+   ├─ LinkerRoot : UPackage*                                 결과물의 뿌리 — 가리킬 뿐 소유하지 않음
+   └─ AsyncPackageLoadingState : EAsyncPackageLoadingState2  상태머신 위치
+
+---
+
+기술서 부류 — 불변이고, 그래서 공유되거나 경계를 넘을 수 있다.
+
+FPackageRequest
+GT가 던지는 주문 봉투
+이름이 문자열 수준이고 아직 미해석
+수명은 큐를 통과할 때까지
+
+ALT가 열어서 FAsyncPackageDesc2로 승격시킨다
+FAsyncPackageDesc2는 이름 해석이 끝나 FPackageId가 확정된 작업지시서
+FAsyncPackage2의 불변 신원 역할
+
+FAsyncLoadEventSpec은 공정 정의
+이 단계는 이 함수로, 이 큐에서
+단계당 1개를 모든 노드가 공유
+
+FPackageStore는 디스크 세계의 카탈로그
+PackageId를 넣으면 존재 여부와 헤더 메타를 돌려주는 읽기 전용 진리 원천
+
+---
+
+작업물 부류 — 가변이고, 소유자가 명확하며, 로드가 끝나면 사라진다
+
+FAsyncPackage2는 워크오더이자 나머지 작업물 전부의 소유자다
+한 패키지 로드의 모든 일시 상태가 여기 모인다
+
+FEventLoadNode2는 스케줄링의 원자
+준비 판정은 자신의 barrier 카운터가, 실행 정책은 Spec이, 전달은 큐가 맡는 분업 구조의 한가운데 있다
+
+FAsyncPackageHeaderData는 디스크 헤더를 메모리에 세운 것으로, 
+직렬화가 참조하는 좌표계(NameMap, ImportMap, ExportMap)
+
+FExportObject는 export 하나의 슬롯
+아직 없음/생성됨/실패/필터됨 상태와 UObject*를 든다
+
+FExportArchive는 직렬화 동안만 존재하는 번역 렌즈
+바이트스트림의 좌표(FPackageIndex)를 포인터로 바꾼다
+
+FPackageImportStore는 전역 장부를 이 패키지의 ImportMap 문맥으로 감싼 창구
+
+---
+
+인프라 부류 — 프로세스 수명의 기계.
+
+FAsyncLoadingThread2는 컴포지션 루트이자 FRunnable로, 시스템 그 자체의 이름
+
+FAsyncLoadingThreadState2는 참여 스레드의 신분증 겸 도구벨트
+코드가 스레드 소유가 아니라 상태 소유가 되게 하는 장치
+
+FAsyncLoadEventQueue2는 노드 컨베이어로, 
+소유 스레드 지정을 통해 실행 장소를 데이터로 표현
+
+TMpscQueue류는 다수 생산·단일 소비 계약의 우편함
+FZenaphore와 MainThreadWakeEvent는 호출벨
+
+---
+
+장부 부류 — 시스템의 기억
+
+FGlobalImportStore는 메모리 세계의 원장
+지금 무엇이 세워져 있고, 로딩 중인 누가 누구에게 빚(참조)을 지고 있는가
+
+FLoadedPackageRef는 그 원장의 계좌 한 줄
+패키지의 존재, public export 명부(PublicExportMap), 참조 수(RefCount)
+
+ScriptObjects는 디스크 태생이 아닌 C++ 태생 시민의 별도 명부
+
+---
+
+이웃 부류 — 소유하지 않되 협약으로 묶인 것들.
+
+GUObjectArray는 정본 도시
+로더는 여기에 건설만 하고 소유하지 않는다
+
+FIoDispatcher는 조달처
+요청은 FIoBatch로 내려가고 완료는 콜백으로 역류한다
+
+GC는 철거반이자 장부 감사인
+unreachable 목록을 넘겨 장부를 청소시키고
+수집 중에는 ALT를 정지시키는 협약이 있다
+
+---
+
+(1) 주문            (2) 조달        (3) 생산
+GT ─FPackageRequest→ ALT ─FIoBatch→ IoDispatcher ─완료콜백·ReleaseBarrier→ ALT
+                      │
+                      └ FEventLoadNode2 그래프 실행: 헤더 파싱 → export 생성·직렬화
+                        생성물은 GUObjectArray(공유 정본)에 직접, 기록은 GlobalImportStore에
+
+
+(4) 공개                                    (5) 반납·청소
+ALT ─MainThreadEventQueue(DeferredPostLoad)→ GT ─DeferredDeletePackages→ ALT
+ALT ─CompletedPackageRequests(델리게이트)──→ GT
+GC  ─NotifyUnreachableObjects──────────────→ ALT (장부 청소)
+
+---
+---
+---
+
+큐는 흐름을 잠시 저장으로 바꿔 생산자와 소비자를 시간적으로 분리하는 완충기
+
+저장 구조의 관심사는 조회·갱신·정합성
+흐름 구조의 관심사는 순서·방향·배압
+
+---
+
+소유는 수명 책임을 동반하고 트리를 이룬다
+참조는 접근 경로만 주고 그래프를 허용하는 대신 dangling 위험을 낳는다
+
+---
+
+명부
+질문: 누가 존재하는가
+골격은 키→신원
+연산은 등재·말소·조회
+불변식은 중복 없음.
+
+FGlobalImportStore::ScriptObjects
+
+잔액도 부속 기록도 없이 존재와 소재만 답한다
+
+---
+
+카탈로그
+질문: 무엇이 가능한가
+골격: 키→기술(스펙)이되 실물은 없음
+조회와 획득(주문)이 별개 연산
+불변식 — 카탈로그에 있다고 재고에 있는 게 아니다
+
+FPackageStore
+FPackageId를 넣으면 헤더 메타가 나오지만 
+오브젝트 획득은 로드라는 별도 행위
+
+---
+
+잔액은 역사의 요약이다
+총량만 남고 개별 거래는 잊힌다
+
+FLoadedPackageRef::RefCount
+refcount는 누가 참조하는지 모른다
+요약성 — 참조 누수 디버깅이 어려운 이유가 바로 이 망각
+
+잔액 0 전엔 패키지를 장부에서 지울 수 없다
+(로딩 중인 누군가의 import 대상은 살아있어야 한다)
+
+---
+
+정본
+
+질문: 표상들이 충돌하면 누가 이기는가
+골격: 여러 표상 중 단 하나의 권위, 나머지는 전부 파생물
+
+GUObjectArray가 정본
+
+정본이 하나뿐이면 정합성 작업은 기록↔정본 대조 하나로 끝난다
+
+---
+
+주문서
+고객 언어로 쓰인 미검증 요청
+FPackageRequest 
+
+작업지시서
+내부 언어로 번역·확정된 불변 문서
+작업에 부착되어 함께 이동
+FAsyncPackageDesc2
+
+---
+
+라우팅표(공정 정의)
+
+공정 k는 기계 Q에서 작업 F로
+
+---
+
+컨베이어
+
+실리는 것은 재공품(데이터)이지 작업자(코드)가 아니며, 
+벨트의 끝이 어느 작업장인지 고정되어 있다
+
+FAsyncLoadEventQueue2 두 대가 각각 ALT 작업장과 GT 작업장으로 이어진다
+
+---
+
+우편함(TMpscQueue)
+
+다수 발신·단일 수신과 놓고 떠나기(fire-and-forget)
+
+벨(FZenaphore)
+
+내용 없는 사건 — 데이터가 아니라 각성만 전달한다
+
+---
+
+컴포지션 루트
+
+DI 용어
+객체 그래프가 조립되는 장소이자 소유 트리의 뿌리
+
+뿌리의 수명 = 시스템의 수명
+뿌리의 멤버 목록 = 시스템의 목차
+
+FAsyncLoadingThread2
+
+---
+
+색인
+원장(1차 기록)
+
+---
+
+창구
+
+FPackageImportStore는 FGlobalImportStore 조회에 자기 패키지의 ImportMap 문맥을 부분 적용해둔 것
+수학적으로는 커링된 함수
+
+---
+
+[카탈로그 FPackageStore]           [조달처 FIoDispatcher]
+        │ 무엇이 가능한가                    │ 바이트 납품(콜백)
+        ▼                                  ▼
+주문서 ─▶ 접수·번역 ─▶ 작업지시서 ─▶  공장(ALT): 라우팅표 EventSpecs
+                                      컨베이어 EventQueue, 재공품 FAsyncPackage2
+        │ 건설(직접)                        │ 기입
+        ▼                                  ▼
+   [도시 = 정본 GUObjectArray] ◀── 대조 ──▶ [원장 FGlobalImportStore]
+        ▲                                  ▲
+        └────── 감사인 겸 철거반 GC ── 말소 통보 ┘
+   입주 허가: GT 준공검사 (MainThreadEventQueue → 델리게이트)
+
+---
+---
+---
+
+FAsyncLoadingThread2
+
+공장 건물이자 오케스트레이터
+컴포지션 루트
+시스템 전체를 객체 하나로 물화한 것
+소유 트리의 뿌리
+스레드 본체(FRunnable)와 로더 공개 계약(IAsyncPackageLoader)의 결합체
+
+하위 전부의 조립과 수명 지배
+외부 세계와의 유일한 계약 창구
+LoadPackage, FlushAsyncLoading, GT Tick
+
+객체는 엔진 초기화 때 항상 생기고, 
+스레드는 부팅 후 StartThread()에서 선택적으로 붙는다
+시스템은 필수, 병렬성은 옵션
+
+IAsyncPackageLoader 구현이라는 점은
+세대 교체(legacy↔zen)를 위한 플러그인 소켓
+
+---
+
+FAsyncLoadingThread2::EventSpecs:TArray<FAsyncLoadEventSpec>
+
+라우팅표. 공정 k는 기계 Q에서 작업 F로
+
+로딩은 여러 단계로 진행된다
+헤더 읽기, 오브젝트 만들기, PostLoad
+단계마다 정해야 할 게 두 가지다: 무슨 함수를 실행하나, 어느 스레드에서 실행하나
+
+규칙은 벽에 붙인 안내판 한 장에만 적고, 티켓에는 자기가 몇 번째 단계인지만 적는다
+
+enum EPhase { Wash, Dry, Fold, NumPhases };
+
+struct FPhaseRule                       // FAsyncLoadEventSpec에 해당
+{
+  void (*Func)(FShirt*);                // 이 단계에서 할 일
+  FQueue* Queue;                        // 이 단계를 처리할 작업장(스레드)
+};
+
+FPhaseRule Rules[NumPhases] =           // FAsyncLoadingThread2::EventSpecs에 해당
+{
+  { &DoWash, &BackroomQueue },          // 세탁 — 뒷방(ALT)
+  { &DoDry,  &BackroomQueue },          // 건조 — 뒷방(ALT)
+  { &DoFold, &CounterQueue  },          // 개기 — 카운터(GT)
+};
+
+struct FTicket                          // FEventLoadNode2에 해당
+{
+  FShirt* Shirt;
+  EPhase  Phase;                        // 표의 몇 번째 줄인지만 안다
+};
+
+void Fire(FTicket* T)    { Rules[T->Phase].Queue->Push(T); }   // 준비되면 지정 작업장으로
+void Execute(FTicket* T) { Rules[T->Phase].Func(T->Shirt); }   // 작업장에서 꺼내면 지정 함수로
+
+---
+
+FAsyncLoadingThread2::PackageRequestQueue:TMpscQueue<FPackageRequest>
+
+접수 우편함
+다대일 합류점(fan-in)
+여러 스레드의 의도를 한 줄로 세우는 요청의 직렬화 장치
+임의 스레드의 LoadPackageAsync()와 ALT 사이의 유일한 주문 통로
+봉투는 미해석 주문서 FPackageRequest
+
+호출자 문맥(임의 락 상태, 임의 스레드)에서 로더 문맥으로 실행을 이송한다
+벨(AltZenaphore)과 쌍을 이뤄 데이터와 각성을 분리
+
+---
+
+FAsyncLoadingThread2::EventQueue:FAsyncLoadEventQueue2
+
+struct FDepletableQueue                  // FAsyncLoadEventQueue2에 해당
+{
+  std::atomic<FTicket*> Inbox;           // 공용 투입함 — 아무나 꽂는다
+  FTicket*             MyTray = nullptr; // 소비자 전용 트레이
+
+  void Push(FTicket* T);                 // 아무 스레드나: Inbox에 원자적으로 건다
+
+  FTicket* Pop()                         // 소유 스레드만 부른다는 계약
+  {
+    if (!MyTray)
+      MyTray = Inbox.exchange(nullptr);  // 꽂힌 것 전부 떼오기 — 경쟁은 이 1회
+    return TakeHead(MyTray);             // 이후는 내 트레이에서 경쟁 없이
+  }
+};
+
+---
+
+FAsyncLoadingThread2::MainThreadEventQueue:FAsyncLoadEventQueue2
+
+GT 본청으로 이어지는 컨베이어
+GT에서만 합법인 마무리(DeferredPostLoad)의 전용 통로
+GT는 매 프레임 시간 예산 안에서 시분할로 소비한다
+MainThreadWakeEvent와 쌍을 이뤄 Flush 중 잠든 GT를 깨운다
+
+---
+
+FAsyncLoadingThread2::DeferredDeletePackages:TMpscQueue<FAsyncPackage2*>
+
+워크오더 객체 FAsyncPackage2는 GT와 ALT가 둘 다 만진다
+다 쓴 쪽이 그 자리에서 delete하면 문제가 생긴다
+
+해법은 도서관 반납함
+이용자는 책을 서가에 직접 꽂지 않고, 반납함에 넣기만 한다
+정리는 항상 사서가 한가할 때 몰아서 한다
+
+void GameThread_DoneWith(FAsyncPackage2* P)
+{
+  if (--P->RefCount == 0)
+    DeferredDeletePackages.Enqueue(P);        // 넣고 끝 — GT 비용은 이게 전부
+}
+
+void AsyncThread_WhenIdle()                    // ALT 루프의 한가한 틈
+{
+  FAsyncPackage2* P;
+  while (DeferredDeletePackages.Dequeue(P))
+  {
+    Ledger.ReleaseRef(P->Id);                  // 계좌 잔액 차감 — 원장 주인이 하니 락 불필요
+    delete P;                                  // 파괴는 오직 여기서만
+  }
+}
+
+부수는 코드가 여러 스레드에 흩어져 있으면 그 모든 지점이 서로를 의식해야 하지만, 
+부수는 지점을 한 스레드로 몰면 그 걱정이 통째로 사라진다
+
+네이티브 힙 객체
+FAsyncPackage2
+
+---
+
+FAsyncLoadingThread2::ExternalReadQueue:TMpscQueue<FAsyncPackage2*>
+
+외주 대기실
+로더 관할 밖 IO(벌크데이터 외부 읽기)를 기다리는 패키지들의 주차장
+직렬화는 끝났지만 외부 읽기가 미완인 패키지를 논블로킹으로 치워둔다
+ALT는 다른 일감이 완전히 마를 때만 여기서 블로킹 대기한다
+Run() 루프의 마지막 선택지
+
+---
+
+FAsyncLoadingThread2::GameThreadState
+AsyncLoadingThreadState:FAsyncLoadingThreadState2
+
+같은 로딩 코드를 설정에 따라 ALT가 돌리기도 하고 GT가 돌리기도 한다
+실행에 필요한 나에 관한 정보를 전부 가방 하나에 담아 인자로 넘긴다
+함수는 네가 누구든, 가방에 든 대로 일한다
+
+struct FWorkerBag                     // FAsyncLoadingThreadState2에 해당
+{
+  double TimeBudget;                  // 시간 예산
+  TArray<FTicket*> ExecutingStack;    // 지금 실행 중인 티켓 스택
+  bool bMayTouchLoaderData;           // 출입증
+};
+
+void DoPhase(FWorkerBag& Bag)         // 누가 부르든 같은 코드
+{
+  if (Bag.TimeBudget <= 0) return;    // 검사도 내 가방 기준
+  ...
+}
+
+// 배치(캐스팅)만 다르다:
+FWorkerBag AltBag  { /* 예산 무제한, 출입증 있음 */ };   // AsyncLoadingThreadState
+FWorkerBag GameBag { /* 예산 5ms,   출입증 없음 */ };    // GameThreadState
+
+---
+
+FAsyncLoadingThread2::GlobalImportStore:FGlobalImportStore
+
+import 해석의 종착지
+중복 로드 방지의 근거
+GC와의 수명 협상 창구
+
+정본(GUObjectArray)과 분리된 기록이므로 감사 프로토콜(unreachable 통보)이  딸려온다
+
+---
+
+FGlobalImportStore::Packages:TMap<FPackageId, FLoadedPackageRef>
+FLoadedPackageRef::PublicExportMap, RefCount
+
+---
+---
+---
+---
+---
+
+FAsyncPackage2
+
+진행 중인 변환(디스크 패키지→메모리 오브젝트들)의 물화
+로드 수명 세계의 컴포지션 루트
+상태머신의 주체, DAG 노드들의 고향
+
+자체 참조 계수로 수명을 관리
+마지막 사용자가 반납함(DeferredDeletePackages)에 넣는다
+
+---
+
+FAsyncPackage2::Desc:FAsyncPackageDesc2
+
+번역 완료된 불변 신원(누구를, 어떤 우선순위로, 어떤 플래그와 PIE 문맥에서)
+로드 전 과정에 요청 문맥을 부착하고, 완료 통지 때 회신 주소가 된다
+가변·다수인 요청(RequestID들)과 불변·단일인 신원을 분리했기에 
+여러 요청이 한 지시서에 합류할 수 있다
+
+---
+---
+---
+
+순서 제약의 그래프
+Directed Acyclic Graph
+
+패키지 내부 간선 (공정 순서)
+IO도착 ─▶ [P:ProcessSummary] ─▶ [P:ExportBundle_Process] ─▶ [P:ExportsSerialized] ─▶ [P:PostLoad] ─▶ [P:DeferredPostLoad]
+
+패키지 사이 간선 (import 의존)
+[Q:ExportsSerialized] ─────▶ [P:ExportBundle_Process]      (P가 Q를 import하므로)
+
+---
+
+FEventLoadNode2 
+노드가 담는 것은 그 단계의 스케줄링 상태
+순서쌍 (어느 패키지, 어느 단계)
+FEventLoadNode2::Package, FEventLoadNode2::Spec(단계 종류)
+
+일의 재료 FAsyncPackage2
+일의 코드 Spec->Func
+
+---
+---
+---
+
+한 줄 세우기(사슬)는 모든 두 작업이 비교 가능하다는 뜻
+임의의 a, b에 대해 a가 먼저거나 b가 먼저거나
+제약들은 전순서(total order)가 아니라 부분순서(partial order)를 이룬다
+부분순서를 그림으로 그린 것이 DAG
+
+합류(fan-in) — P가 Q와 R을 둘 다 import하면:
+    Q:직렬화완료 ──┐
+                  ├──▶ P:ExportBundle_Process     (P는 둘 다 기다림 — barrier 2개)
+    R:직렬화완료 ──┘
+
+분기(fan-out) — Q를 P와 S가 둘 다 import하면:
+                  ┌──▶ P:ExportBundle_Process
+    Q:직렬화완료 ──┤
+                  └──▶ S:ExportBundle_Process     (Q 하나의 완료가 여럿을 풀어줌)
+
+---
+
+위상 정렬(topological sort)
+
+모든 간선을 존중하는(간선 u→v가 있으면 u가 v보다 앞에 오는) 한 줄 세우기를 찾는 것
+부분순서를 위반 없이 전순서로 펴는 작업
+
+Kahn의 알고리즘은 진입차수(들어오는 간선 수) 카운터를 두고, 
+0인 정점들을 준비 집합에 넣고, 
+하나 꺼내 처리할 때마다 이웃의 카운터를 깎는 식으로 정렬을 소비하면서 만든다
+
+---
+---
+---
+
+[IO 대기]                      기다리는 것: 바이트 (디스크)
+   ▼
+Package_ProcessSummary         헤더 파싱 — 좌표계(NameMap/ImportMap/ExportMap) 확보,
+   │                           import 목록 발견 → 의존 패키지 로드를 즉시 발주
+   ▼
+[의존 대기]                    기다리는 것: 남의 패키지의 진행
+   ▼
+ExportBundle_Process (번들마다) 오브젝트 껍데기 생성(Create) + 내용 채우기(Serialize)
+   ▼
+[외부 읽기 대기]              기다리는 것: 벌크데이터 등 외부 IO
+   ▼
+Package_ExportsSerialized     직렬화 완료 선언 — 나를 import하는 남들이 기다리던 지점
+   ▼
+ExportBundle_PostLoad         스레드세이프한 PostLoad (ALT에서)
+   ▼
+ExportBundle_DeferredPostLoad GT 전용 PostLoad — 실행 스레드가 바뀌는 경계
+   ▼
+Finalize → Complete           공개: Async 플래그 해제, 델리게이트, GC 클러스터
+   ▼
+DeferredDelete                워크오더 자체의 폐기
+
+---
+---
+---
+---
+---
+
+패키지 P = /Game/Props/Barrel
+
+내용물(export)
+[0] UStaticMesh SM_Barrel
+[1] BodySetup
+[2] NavCollision
+
+남의 것(import)
+/Script/Engine의 StaticMesh 클래스(스크립트)
+/Game/Materials/M_Wood의 머티리얼(패키지)
+
+FAsyncPackage2 — 산산조각 난 함수의 지역변수 보관함
+
+---
+
+// 동기 세계의 가상 코드
+UPackage* LoadPackageSync(FName Name)
+{
+  FHeader Header   = ParseHeader(ReadFile(Name));    // 지역변수
+  TArray<UObject*> Exports;                          // 지역변수
+  for (auto& E : Header.ExportMap) Exports.Add(NewObject(...));
+  for (auto& E : Header.ExportMap) SerializeInto(Exports[i]);
+  for (auto* O : Exports) O->PostLoad();
+  return RootPackage;                                // 반환값
+}
+
+지역변수들은 스택 프레임에 살고, 함수가 끝나면 사라진다
+비동기 세계에서는 이 함수가 수십 개의 이벤트 조각으로 찢겨 여러 스레드에서 띄엄띄엄 실행된다
+스택 프레임이 살아남을 수 없다
+
+그래서 지역변수 전부를 힙 객체 하나로 옮긴 것 
+FAsyncPackage2
+
+본질은 손으로 만든 코루틴 프레임
+멤버는 전부 저 동기 함수의 무언가가 피난 온 것
+
+---
+
+FAsyncPackage2::Desc:FAsyncPackageDesc2
+함수 인자의 피난처
+
+동기 함수라면 인자였을 것들
+호출 시점에 확정되고, 실행 중 절대 안 바뀐다
+여권과 여행 일정의 관계
+
+---
+
+Barrel에서: Desc.UPackageId = hash(/Game/Props/Barrel)
+Desc.Priority, 그리고 회신 주소들
+
+---
+
+FAsyncPackage2::Data:FAsyncPackageData
+지역변수들을 한 판에 재단
+
+동기 함수의 지역 배열들(노드, export 슬롯, import 목록)을 피난시키되
+조각조각 new하지 않고 한 번의 할당에 몰아넣는다
+
+할당 3번, 해제 3번, 메모리 사방에 흩어짐
+Nodes   = new FEventLoadNode2[6];
+Exports = new FExportObject[3];
+Imports = new FAsyncPackage2*[2];
+
+FAsyncPackageData 방식 — 개수를 전부 미리 아니까 한 판
+
+uint8* Block = Malloc(6*sizeof(노드) + 3*sizeof(슬롯) + 2*sizeof(포인터));
+Nodes   = TArrayView<FEventLoadNode2>(Block + 0,   6);   // 전부 view 
+Exports = TArrayView<FExportObject>  (Block + ..., 3);   // 실소유자는 블록 하나
+
+---
+
+FEventLoadNode2[...] — 함수 본문을 찢은 조각들의 실행 예약표
+
+동기 함수의 각 구문 블록(파싱하고, 만들고, 채우고, 후처리하고)이 찢겨 나온 조각들
+
+패키지 단계 노드 3(Package_ProcessSummary, Package_DependenciesReady, Package_ExportsSerialized)
+번들 1개 × 번들 단계 3(ExportBundle_Process, ExportBundle_PostLoad, ExportBundle_DeferredPostLoad) = 6개
+
+Data 블록에 placement-new로 미리 박힌다
+
+---
+
+동기 세계에선 코드 위치가 곧 진행 상태였지만(이 줄에 왔으면 다 만들어진 것), 조각난 세계에선 슬롯마다 명시적 상태가 필요하다
+
+비었음 / 껍데기 생성됨 / 내용 채워짐 / 실패 / 필터됨(서버 전용이라 클라에선 안 만듦 같은 경우)
+
+---
+
+FAsyncPackage2::SerializationState
+
+동기 함수라면 열린 파일 핸들이었을 것
+비동기 세계에선 발주해놓고 잊지 않기 위한 증빙이 필요
+
+FIoRequest 핸들을 쥐고 있으면 취소할 수 있고(로드 캔슬 시), 상태를 물을 수 있고, 도착한 버퍼를 받을 곳이 있다
+Barrel에서는 ExportBundleData 청크 읽기 요청 하나가 여기 걸려 있고, 
+이 요청의 완료 콜백이 바로 Package_ProcessSummary 노드의 barrier를 풀어주는 손이다
+
+---
+
+FAsyncPackage2::ImportStore:FPackageImportStore
+
+전역 원장(FGlobalImportStore)에 물어보려면 
+매번 내 ImportMap과 import 패키지 목록을 첨부해야 하는데, 그걸 미리 묶어둔 것
+
+---
+
+FAsyncPackage2::AsyncPackageLoadingState:EAsyncPackageLoadingState2
+
+동기 함수라면 지금 몇 번째 줄을 실행 중인가는 CPU의 프로그램 카운터가 공짜로 알려줬다
+함수를 찢는 순간 그 정보가 증발하므로, 명시적 변수로 피난시킨 것이다
+
+---
+---
+---
+---
+---
+
+모듈 로드는 code package 로드이고, Blueprint load는 content package 로드
+
+Default__AMyActor는 C++ constructor 결과다
+
+반면 BP에서 MeshResource를 바꾼 값은 Default__BP_MyActor_C에 들어간다
+
+Blueprint CDO는 Default__AMyActor를 부모 template으로 삼아 먼저 복사받고
+그 다음 BP package에 저장된 property delta를 deserialize해서 덮어쓴다
+
+---
+
+level package를 로드하다가 actor export의 class reference 때문에 BP_MyActor_C package가 필요해진다
+
+그러면 loader가 /Game/.../BP_MyActor package를 로드하고
+그 안에서 BP_MyActor_C와 Default__BP_MyActor_C를 만든 뒤 CDO 본문을 serialize한다
+
+그때 MeshResource hard reference가 UStaticMesh*로 해석되어 Blueprint CDO 필드에 들어간다
+
+---
+
+LoadPackageAsync
+현재 설치된 IAsyncPackageLoader를 얻어서 LoadPackage를 호출
+Zen Loader 경로라면 실체는 FAsyncLoadingThread2
+
+FAsyncLoadingThread2::LoadPackage
+completion delegate를 TUniquePtr<FLoadPackageAsyncDelegate>로 감싼 뒤
+FAsyncLoadingThread2::LoadPackageInternal로 들어간다
+
+request id 생성
+RequestId = IAsyncPackageLoader::GetNextRequestId();
+AddPendingRequest(RequestId);
+
+LoadPackageAsync가 request id를 반환하자마자 
+user code나 engine code가 FlushAsyncLoading(RequestId)를 부를 수 있다
+
+그 다음 FPackageRequest가 만들어진다
+이 레코드에는 package path, custom package name, package flags, load flags 등이 들어간다
+
+그리고 이 레코드가 FAsyncLoadingThread2::PackageRequestQueue에 들어간다
+PackageRequestQueue.Enqueue(FPackageRequest::Create(...));
+
+AltZenaphore.NotifyOne()이 async loading thread를 깨운다
+
+잠들어 있던 FAsyncLoadingThread2::Run loop는 깨어나서 
+CreateAsyncPackagesFromQueue를 호출하고, FPackageRequest를 FAsyncPackage2 작업 단위로 바꾼다
+
+---
+---
+---
+
+FLoadPackageAsyncDelegate(
+    const FName& PackageName,
+    UPackage* LoadedPackage,
+    EAsyncLoadingResult::Type Result
+)
+
+int32 RequestId = LoadPackageAsync(
+    TEXT("/Game/Characters/BP_MyActor"),
+    FLoadPackageAsyncDelegate::CreateLambda(
+        [](const FName& PackageName, UPackage* LoadedPackage, EAsyncLoadingResult::Type Result)
+        {
+            if (Result == EAsyncLoadingResult::Succeeded)
+            {
+                UObject* Object = StaticFindObject(
+                                      UStaticMesh::StaticClass(),
+                                      Package,
+                                      TEXT("SM_Rock")
+                                  );
+            }
+        }));
+  
+FStreamableManager나 TSoftObjectPtr<UStaticMesh>는 
+경로가 /Game/Props/Rock/SM_Rock.SM_Rock까지 포함되어 있으므로, 
+패키지 로드 뒤에 그 오브젝트까지 찾아서 UStaticMesh* 형태로 돌려주는 상위 API
+“asset path → package load → object find → typed pointer”를 한 번에 감싸는 사용자 코드용 층
+
+---
+---
+---
+
+UPROPERTY(EditDefaultsOnly)
+TSoftObjectPtr<UStaticMesh> RockMeshAsset;
+
+안에는 이것이 들어 있다
+/Game/Props/Rock/SM_Rock.SM_Rock
+
+이 값은 아직 UStaticMesh*가 아니다.
+
+RockMeshAsset.Get()은 이미 메모리에 올라와 있을 때만 UStaticMesh*를 돌려준다.
+로드되어 있지 않으면 nullptr이다.
+
+---
+
+FStreamableManager는 그 좌표를 실제 로딩 요청으로 바꾸는 관리자
+
+TSharedPtr<FStreamableHandle> RockMeshLoadHandle;
+
+void AMyActor::LoadRockMesh()
+{
+    FStreamableManager& StreamableManager = UAssetManager::GetStreamableManager();
+
+    RockMeshLoadHandle = StreamableManager.RequestAsyncLoad(
+        RockMeshAsset.ToSoftObjectPath(),
+        FStreamableDelegate::CreateWeakLambda(
+            this,
+            [this]()
+            {
+                UStaticMesh* LoadedMesh = RockMeshAsset.Get();
+
+                if (LoadedMesh && MeshComponent)
+                {
+                    MeshComponent->SetStaticMesh(LoadedMesh);
+                }
+            }));
+}
+
+---
+
+TSoftObjectPtr<UStaticMesh>
+= /Game/Props/Rock/SM_Rock.SM_Rock 좌표 보관
+
+RockMeshAsset.ToSoftObjectPath()
+= FStreamableManager가 이해하는 FSoftObjectPath로 꺼냄
+
+async loading thread
+= package 생성, export 생성, import 해석, UStaticMesh 생성
+
+game thread completion
+= FStreamableDelegate 실행
+
+RockMeshAsset.Get()
+= 이미 올라온 /Game/Props/Rock/SM_Rock.SM_Rock 을 찾아 UStaticMesh* 반환
+
+---
+
+FStreamableHandle
+
+요청 상태를 보고, 취소하고, 완료된 asset을 꺼내고, 
+active인 동안 loaded asset을 memory에 붙드는 역할
+
+---
+
+취소, 진행률, loaded asset 보관, 여러 asset 묶기 같은 “요청 객체”가 필요하면 FStreamableManager와 FStreamableHandle 쪽
+
+---
+---
+---
+---
+---
+---
+
+
+
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
