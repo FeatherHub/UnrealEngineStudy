@@ -1637,6 +1637,10 @@ FEventLoadNode2::Package, FEventLoadNode2::Spec(단계 종류)
 
 ---
 
+실제로 일어난 실행의 역사는 그 부분순서가 허락하는 수많은 선형화 가운데 하나
+
+---
+
 위상 정렬(topological sort)
 
 모든 간선을 존중하는(간선 u→v가 있으면 u가 v보다 앞에 오는) 한 줄 세우기를 찾는 것
@@ -1945,22 +1949,170 @@ active인 동안 loaded asset을 memory에 붙드는 역할
 ---
 ---
 
+비유는 도메인의 그럴듯함이 아니라 법칙 체크리스트로 검증해야 한다
 
+하나의 공유 세계에 같은 이름은 하나만 선다
+사물이 남의 사물의 공개 접점을 가리키므로 조립에 순서가 강제된다
+완성의 기억과 진행 중의 기억이 있어 중복 요청이 합류한다
+재료는 비동기로 도착한다(발주와 납품)
+조립 순서는 현장이 아니라 사전에 계산되어 있다
+격리 → 승인 → 공개의 의식이 있고 요청자에게 회신이 간다
+철거는 내가 아닌 다른 권력이 하되, 그 소식이 기록을 갱신한다
+
+---
+
+방문객이 기차역 세트를 신청서로 접수하면(주문함 PackageRequestQueue + 벨) 
+사무장이 두 장부부터 본다. 
+
+도시 등록부(FGlobalImportStore) — 이미 서 있으면 위치를 알려주고 끝
+작업 현황판(AsyncPackageLookup) — 누가 이미 조립 중이면 새로 시작하지 않고 
+그 폴더에 완성 엽서 주소(FLoadPackageAsyncDelegate)만 꽂는다
+
+둘 다 아니면 폴더(FAsyncPackage2)가 열린다
+폴더 표지가 확정 신청서(Desc)이고, 
+안에는 이 세트 전용 서류 한 묶음이 미리 재단되어 들어간다(FAsyncPackageData)
+
+창고(FIoDispatcher)에 부품을 발주하는데, 레고답게 부품은 번호 봉지로 온다
+봉지 하나가 번들이다: 설명서의 해당 구간에서 쓸 부품만 담아 그 순서로 포장된 것.
+
+봉지가 도착할 때까지 이 폴더의 작업 티켓(FEventLoadNode2)은 클립(barrier)에 물려 있고
+도착 순간 클립이 풀려 작업 트레이(EventQueue)에 떨어진다
+
+---
+
+조립은 설명서(FExportBundleEntry 테이프) 낭독이다
+설명서는 레고 본사(쿠커)가 이미 순서를 다 계산해 인쇄했다
+이 단계는 부품 꺼내 틀 잡기(Create), 이 단계는 결합하기(Serialize). 
+서로 맞물리는 두 서브 조립체는 틀을 둘 다 먼저 잡고 나중에 끼우라고 적혀 있다
+
+순환 참조의 해법이 현장 판단이 아니라 인쇄물에 있다
+
+부품의 금형과 규격 카탈로그는 본사가 공급하는 것이라 동호회가 만들 일이 없다
+그게 ScriptObjects다(클래스는 금형, CDO는 견본품)
+
+---
+
+그러다 설명서가 말한다
+이 벽은 광장 세트의 3번 스터드에 결합
+
+광장은 남의 세트고, 스터드는 광장이 외부에 공개한 접점 — public export다
+광장이 도시에 없으면 사무장이 광장 폴더를 하나 더 열고
+(아무도 신청 안 했어도 — 재귀)
+
+등록부의 광장 계좌에 사용 중 도장(AddPackageRef)을 찍고
+내 결합 티켓의 클립을 광장의 완성 선언에 걸어둔다
+
+광장이 Event_ExportsDone — 내 스터드 다 나왔다 — 를 선언하는 순간 클립이 풀리고
+결합이란 등록부에서 광장 3번 스터드의 이번 전시 좌표를 찾아 끼우는 것이다
+
+---
+
+레이터(GT)만이 최종 점검(DeferredPostLoad)을 하고 천을 걷는다
+매일 정해진 순회 시간(TickAsyncLoadingFromGameThread)에
+
+천이 걷히면 엽서들이 발송되고(CallCompletionCallbacks)
+폴더는 파쇄함(DeferredDeletePackages)으로 간다
+
+---
+
+관리인(GC)이 주기적으로 방문객 동선이 닿지 않는 구역을 걷어내는데
+걷어내기 전에 반드시 사무장에게 철거 목록을 보낸다(NotifyUnreachableObjects)
+등록부에서 그 좌표들을 삭선해야 다음 신청 때 유령 좌표를 내주지 않으니까
+
+---
+
+도시 테이블                   GUObjectArray (정본, 유일 세계)
+전시 규약: 세트당 하나        같은 이름 = 같은 사물
+도시 등록부 (이름→이번 좌표)  FGlobalImportStore
+작업 현황판                   AsyncPackageLookup (합류)
+신청서 / 완성 엽서            FPackageRequest / FLoadPackageAsyncDelegate
+폴더 / 폴더 표지              FAsyncPackage2 / Desc
+작업 티켓 + 클립              FEventLoadNode2 + BarrierCount
+작업 트레이                   EventQueue (준비된 것만)
+설명서 (본사 인쇄)            FExportBundleEntry 테이프 (쿠킹)
+번호 봉지                     번들 청크 (디스크 연속 구간)
+창고                          FIoDispatcher
+스터드 (공개 접점)            PublicExportMap의 public export
+금형·규격 카탈로그            ScriptObjects (클래스, CDO)
+사용 중 도장                  ::RefCount
+천                            EInternalObjectFlags::Async
+큐레이터의 순회·개장          GT의 Tick, DeferredPostLoad, 공개
+관리인 + 철거 목록            GC + NotifyUnreachableObjects
+파쇄함                        DeferredDeletePackages
+급행 카운터                   FlushAsyncLoading
 
 ---
 ---
 ---
+
+FAsyncLoadingThread2::AsyncPackageLookup:TMap<FPackageId, FAsyncPackage2*>
+
+패키지 ID를 넣으면 진행 중인 폴더(워크오더) 자체를 돌려주는 맵
+
+착공 직전 CreateAsyncPackageInternal 계열에서 FindRef(UPackageId)로 이미 폴더가 있나를 보고
+있으면 생성을 접고 합류한다(델리게이트 꽂기, 간선 걸기, 우선순위 승계)
+
+착공 직후 — Add(UPackageId, Package)로 등재. 
+완료 시 — Remove()로 말소
+
+---
+
+FGlobalImportStore
+
+접수 때 — FindPackageRef()로 이미 완공됐나를 확인(그럼 폴더 자체가 필요 없다).
+직렬화 한복판에서 — 매 좌표마다 FindPublicExportObject()/FindScriptImportObject()로 포인터 조회(가장 뜨거운 경로)
+export 생성 때 — 기입
+GC 통보 때 — 말소
+
+---
+
+FAsyncLoadingThread2::EventSpecs:TArray<FAsyncLoadEventSpec>
+
+단계당 한 장, 전 세트 공유. 벽에 붙은 공정 안내판이다
+
+---
+
+FAsyncPackage2::Desc:FAsyncPackageDesc2
+
+누가 시켰나 — RequestID(외부 LoadPackage 호출마다 고유 번호)
+PackageReferencer(누구 때문에 생겼나 — 추적용)
+
+import 태생 폴더의 RequestID는 INDEX_NONE
+신청서 없는 폴더의 표식
+
+UPackageId(메모리에 세울 UPackage의 ID, 추적 키)
+PackageIdToLoad(디스크에서 읽을 패키지의 ID)
+보통 같지만 인스턴싱이면 갈라진다
+/Game/Map을 /Game/UEDPIE_0_Map이라는 이름으로 짓는다
+InstancingContext가 그때 import 이름들을 리매핑하는 규칙표
+
+---
+
+FAsyncPackageData
+
+struct FAsyncPackageData
+{
+  uint8* MemoryBuffer0;                          // 실소유 원단(할당 블록)
+
+  TArrayView<FExportObject>    Exports;          // export 슬롯들 (호실 상태판)
+  TArrayView<FAsyncPackage2*>  ImportedAsyncPackages; // 내가 기대는 이웃 폴더들
+  TArrayView<FEventLoadNode2>  ExportBundleNodes;     // 번들 티켓들
+};
+
 ---
 ---
 ---
+
+쿠킹된 게임의 로딩 경로에는 FLinkerLoad가 아예 등장하지 않는다
+
+FLinkerLoad는 의미론 + 실행론(스택 재귀가 곧 스케줄러)을 한 몸에 가진 구세대 전체
+ALT2도 의미론(FExportArchive, 헤더 파싱) + 실행론(노드·큐)을 다 가진 신세대 전체
+
 ---
----
----
----
----
----
----
----
----
----
----
+
+LoadPackageAsync / FlushAsyncLoading             ← 공용 API
+IAsyncPackageLoader (GPackageLoader가 지목)      ← 라우터 — 갈아끼우는 소켓
+
+[ 이 칸의 후보들: FAsyncLoadingThread(구), FAsyncLoadingThread2(현), FEditorPackageLoader ]
+
+FIoDispatcher / 파일·pak IO                      ← 진짜 하위 레이어
