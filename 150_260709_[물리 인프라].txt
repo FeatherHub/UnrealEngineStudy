@@ -1,0 +1,1367 @@
+게임플레이 (게임 스레드)
+
+UPrimitiveComponent                         
+  BodyInstance:FBodyInstance                // 이 컴포넌트가 시뮬레이션하는 강체 1개
+  ├ UStaticMeshComponent
+  ├ USkeletalMeshComponent                  // 다수의 바디, UPhysicsAsset이 구동
+  └ UShapeComponent
+      ├ UBoxComponent / USphereComponent / UCapsuleComponent
+
+UPhysicsConstraintComponent
+  ConstraintInstance:FConstraintInstance    // 두 바디 사이의 조인트
+
+UPhysicsHandleComponent                     // 바디를 스프링으로 잡아 끌기 (grab)
+URadialForceComponent                       // 폭발형 임펄스/힘
+UPhysicsThrusterComponent                   // 방향성 힘
+UPhysicsSpringComponent                     // 레이캐스트 스프링 (서스펜션)
+UPhysicalAnimationComponent                 // 스켈레탈 메시에서 애니메이션과 시뮬레이션 블렌드
+APhysicsVolume                              // 중력/유체 마찰을 덮어쓰는 영역
+
+---
+
+셋업/에셋 (직렬화 데이터)
+
+UBodySetupCore // 의존성 최소 슬라이스
+  BoneName:FName
+  PhysicsType:TEnumAsByte<EPhysicsType>
+  CollisionTraceFlag:ECollisionTraceFlag      
+
+UBodySetup
+  AggGeom:FKAggregateGeom               // 단순 충돌 프리미티브 모음
+  PhysMaterial:UPhysicalMaterial*
+
+USkeletalBodySetup     // UPhysicsAsset 안의 뼈 하나에 해당하는 바디
+
+FKAggregateGeom
+  SphereElems:FKSphereElem[]
+  BoxElems:FKBoxElem[]
+  SphylElems:FKSphylElem[]                  // 캡슐 (SPHere + cYLinder)
+  ConvexElems:FKConvexElem[]
+  TaperedCapsuleElems:FKTaperedCapsuleElem[]
+  LevelSetElems:FKLevelSetElem[]
+  (전부 FKShapeElem 파생)
+
+UPhysicsAsset                               // 래그돌/관절 바디 정의
+  SkeletalBodySetups:USkeletalBodySetup[]
+  ConstraintSetup:UPhysicsConstraintTemplate[]
+
+UPhysicsConstraintTemplate -> DefaultInstance:FConstraintInstance
+
+UPhysicalMaterial                           // Friction, Restitution, Density
+
+---
+
+런타임 인스턴스 (게임 스레드 브리지)
+
+FBodyInstance                                // 시뮬레이션되는 바디 1개의 게임 스레드 뷰
+  BodySetup:UBodySetup*                      // 지오메트리 출처
+  OwnerComponent:UPrimitiveComponent*
+  ActorHandle:FPhysicsActorHandle            // = Chaos::FSingleParticlePhysicsProxy*
+
+  PhysMaterialOverride:UPhysicalMaterial*
+
+  bSimulatePhysics / bEnableGravity          // 비트플래그
+  MassInKgOverride / LinearDamping / AngularDamping
+
+FConstraintInstance : FConstraintInstanceBase
+  ConstraintHandle:FPhysicsConstraintHandle
+  ProfileInstance:FConstraintProfileProperties  // 선형/각 리밋, 드라이브, 파손
+
+---
+
+씬 (게임 스레드 조정자, UWorld 소유)
+
+FChaosScene
+  SceneSolver:Chaos::FPhysicsSolver*          
+  SolverAccelerationStructure:ISpatialAccelerationCollection*  // GT측 가속구조 복사본(쿼리용)
+
+FChaosEngineInterface                          // 정적 브리지: CreateActor / ReleaseActor ...
+
+FPhysicsActorHandle / FPhysicsConstraintHandle / FPhysicsShapeHandle 
+
+---
+
+Chaos::FSingleParticlePhysicsProxy             // 바디 단위 마샬링 엔드포인트
+  GTParticle:Chaos::FGeometryParticle*         // GT 뷰
+  Handle:Chaos::FGeometryParticleHandle*       // PT 뷰 (SOAs 안)
+
+Chaos::FChaosMarshallingManager
+  producer/consumer 더블버퍼 → FPushPhysicsData(DirtyPropertiesManager)  // GT→PT 푸시
+  (PT→GT는 결과 버퍼 → OnSyncBodies)
+
+---
+
+Chaos 솔버 코어 (물리 스레드)
+
+Chaos::FPBDRigidsSolver: Chaos::FPhysicsSolverBase
+  Particles:FParticlesType
+  MEvolution:TUniquePtr<FPBDRigidsEvolution>
+
+Chaos::FPBDRigidsEvolutionGBF: Chaos::FPBDRigidsEvolutionBase
+  JointConstraints:FPBDJointCombinedConstraints
+  SuspensionConstraints:FPBDSuspensionConstraints
+  CharacterGroundConstraints:FCharacterGroundConstraintContainer
+  CollisionConstraints:FCollisionConstraints
+
+  AdvanceOneTimeStep()
+
+---
+
+FPBDRigidsSOAs                                 // 모빌리티별 SoA 합성
+  StaticParticles:FGeometryParticles / KinematicParticles
+  DynamicParticles:FPBDRigidParticles / GeometryCollectionParticles
+  (+ Disabled·Resim 그림자)
+
+---
+
+입자 (게임 스레드):
+Chaos::TGeometryParticle
+  └ TKinematicGeometryParticle
+      └ TPBDRigidParticle                     // 속도/질량/관성/힘 추가
+
+입자 핸들 (물리 스레드):
+Chaos::TGeometryParticleHandle
+  └ TKinematicGeometryParticleHandle
+      └ TPBDRigidParticleHandle
+          └ TPBDRigidClusteredParticleHandle  // 파편/클러스터 (Chaos Destruction)
+
+지오메트리:
+Chaos::FImplicitObject                        // 부호거리 형상 베이스
+  ├ FSphere / TBox / FCapsule / FConvex
+  ├ FHeightField                              // 랜드스케이프
+  ├ FTriangleMeshImplicitObject               // 복합/정적 메시 충돌
+  ├ FLevelSet
+  └ 래퍼: TImplicitObjectScaled, TImplicitObjectTransformed, FImplicitObjectUnion
+
+충돌 검출:
+  브로드페이즈: Chaos::TAABBTree
+  내로우페이즈: Chaos::GJK / EPA
+  Chaos::FPBDCollisionConstraint              // 해석된 접촉
+
+Chaos::FChaosPhysicsMaterial                  // 솔버측 마찰/반발
+
+---
+
+FBodyInstance 
+
+강체역학의 rigid body
+질량분포와 트랜스폼을 갖고 동역학에 참여하는 물리적 강체
+
+Instance 는 공유 정의인 UBodySetup 을 런타임에 구체화한 실체 하나
+
+---
+
+정의 쪽 UBodySetup ↔ 인스턴스 쪽 FBodyInstance
+정의 쪽 UPhysicsConstraintTemplate ↔ 인스턴스 쪽 FConstraintInstance
+
+정의 쪽은 에디터에서 저작하고 직렬화되며 여러 곳이 공유하는(flyweight) UObject
+인스턴스 쪽은 런타임 전용, 가변 상태(현재 트랜스폼·속도·솔버 핸들)를 담고 액터마다 하나씩
+
+---
+
+Handle 
+
+소유하거나 직접 조작하지 않는 자원에 대한 불투명한 참조 토큰
+소유 시스템의 API에 넘겨 간접적으로 조작
+
+FPhysicsActorHandle 
+실제로는 Chaos::FSingleParticlePhysicsProxy* 지만 게임플레이 코드는 불투명하게 취급
+
+여기서 Actor는 물리 씬의 actor로, PhysX 어휘(PxActor)에서 물려받은 말
+물리 씬에 놓이는 개체(
+
+---
+
+SoA 안정 참조로서의 핸들
+배열이 압축·재배치돼도 유효하도록, 행 포인터 대신 핸들을 든다
+
+Chaos::FGeometryParticleHandle
+TParticleHandleBase::ParticleIdx
+
+실체가 밑에서 이동·교체될 수 있으니 
+안정적이고 불투명한 대리자를 든다
+
+---
+
+Geometry 
+
+충돌 형상
+질량과 동역학이 배제된 순수 공간적 형태
+공간 안에 어떤 모양으로 놓여 있다는 사실
+어떻게 움직이고 얼마나 무겁게 반응하는가와는 분리된 축
+
+---
+
+FImplicitObject 
+
+Implicit 은 음함수(암시적) 표면 표현
+
+형상을 φ(x) = 0 을 만족하는 점집합으로 정의한다
+S = { x ∈ ℝ³ : φ(x) = 0 }
+여기서 φ는 부호거리라 안쪽은 φ < 0, 바깥은 φ > 0
+
+정점·모서리·면을 나열하는 explicit(메시) 표현의 반대다
+
+모든 파생 형상이 φ를 제공하기 때문에 
+Chaos::GJK/EPA/레이캐스트/오버랩이 형상 종류와 무관하게 동일 인터페이스로 돈다
+
+---
+
+Chaos에서 Particle 은 솔버가 적분하는 근본 시뮬 단위를 뜻한다
+PBD(Position Based Dynamics)와 입자 기반 시뮬 계보에서는 솔버가 움직이는 모든 것이 입자
+
+Chaos는 강체·클로스·파괴·필드를 입자와 제약(particle + constraint)이라는 통일 어휘로 다루고
+강체는 여기에 회전 상태·관성·형상을 추가로 얹은 입자
+Chaos::TPBDRigidParticle
+
+엔진 어휘 body와 솔버 어휘 particle 사이의 번역은 
+Chaos::FSingleParticlePhysicsProxy 가 담당
+
+---
+
+Kinematics 는 힘·질량을 언급하지 않고 운동만 기술한다
+위치·속도·가속도
+
+Dynamics 는 힘과 질량이 운동을 일으키는 인과를 다룬다
+뉴턴-오일러, 토크·관성
+
+입자 계층이 이 구분을 층으로 쌓는다
+
+---
+
+Chaos::TGeometryParticle 은 형상과 트랜스폼만
+
+Chaos::TKinematicGeometryParticle 은 여기에 선속도 V, 각속도 W를 더한다
+운동이 외부에서 규정되며 힘으로 바뀌지 않는다
+
+Chaos::TPBDRigidParticle 은 질량 M과 힘·임펄스를 더한다
+운동이 힘 적분과 제약 해석에서 창발한다.
+
+---
+
+Chaos::TPBDRigidClusteredParticle
+파괴·파편, Geometry Collection
+
+Chaos::FPBDGeometryCollectionParticle
+
+---
+
+particle 종류의 수 = 솔버가 지원하는 서로 다른 동역학적 역할의 수
+
+---
+
+kinematic 바디는 dynamic 바디를 밀지만 
+dynamic에 의해 밀리지 않는다
+(사실상 무한 질량)
+
+UE 모빌리티로는 Static / Kinematic(Movable이되 시뮬 off, 애니메이션·코드로 구동)
+Simulated(시뮬 on, 힘 구동)에 대응
+
+Kinematic 층은 주어진 속도를 적분만 하고
+Dynamics는 힘→가속도→운동을 푼다
+
+---
+
+Core 접미는 모듈·의존성 축
+
+모듈들은 DAG를 이루고, 
+모듈 M은 자기 의존 폐포 안의 모듈 타입만 참조할 수 있다
+
+데이터 슬라이스
+의존성 최소 슬라이스
+
+링크 의존성·모듈 경계를 관리한 흔적
+
+UBodySetupCore 는 PhysicsCore 모듈에, UBodySetup 은 Engine 모듈에 산다
+
+---
+
+Solver가 하는 일은 운동방정식·제약의 집합을 받아 그것을 만족하는 상태를 찾는 것
+
+Chaos에서는 운동방정식(뉴턴-오일러)에 제약(비관통 접촉 φ ≥ 0, 조인트 C(x) = 0)을 얹고, 
+힘을 적분해 임시 운동을 낸 뒤 
+위치·속도를 반복 보정해 
+모든 제약이 만족될 때까지 = 수렴할 때까지 돌린다. 
+
+Chaos::FPBDRigidsSolver 는 위치 수준에서 풀고 속도를 역산한다.
+형식으로 쓰면 동역학 x_{t+1} = integrate(x_t, F) 아래에서 C(x) = 0(부등식 포함)을 만족하는 x를, 
+닫힌형이 아니라 반복법(Gauss-Seidel 계열의 projected iteration)으로 
+잔차가 작아질 때까지 찾는 것
+
+제약 해석은 위치와 힘을 평형을 향해 이완시킨다
+
+---
+
+함수 f: ℝ³ → ℝ 의 level set은 f(x) = c 를 만족하는 점집합
+φ를 3D 격자에 샘플링해 저장하는 구체 구현
+
+ImplicitObject는 암시적 표면이라는 일반 개념
+LevelSet은 φ를 닫힌형 수식이 아니라 격자 샘플로 저장한 특수 구현
+
+구는 해석적 φ = |x − c| − r 을 갖지만 LevelSet은 표로 된 φ를 갖는다
+해석적 프리미티브로 표현할 수 없는 임의·유기적 형상(파편, 스키닝된 형상)에 쓴다
+
+---
+---
+---
+---
+---
+
+게임 스레드(GT)는 UWorld::Tick 안에서 
+물리를 TG_StartPhysics(킥)와 TG_EndPhysics(회수) 두 지점으로 감싸고
+
+그 사이 TG_DuringPhysics 에서 게임플레이가 시뮬레이션과 겹쳐 돈다
+실제 계산은 물리 스레드(PT)에서 비동기로 진행된다
+
+---
+
+void UPrimitiveComponent::OnRegister()
+{
+  UActorComponent::CreatePhysicsState()
+}
+
+void UPrimitiveComponent::OnCreatePhysicsState()
+{
+  FBodyInstance::InitBody()
+}
+
+void FBodyInstance::InitBody()
+{
+  FChaosEngineInterface::CreateActor()                  // Chaos::FSingleParticlePhysicsProxy + 입자 생성
+  FPhysScene_Chaos::AddActorsToScene_AssumesLocked()    // 프록시를 SceneSolver 에 등록
+}
+
+---
+
+void UWorld::Tick()
+{
+  UWorld::SetupPhysicsTickFunctions()          // Start/End 틱함수를 TG_StartPhysics/TG_EndPhysics 에 장전
+  UWorld::RunTickGroup(TG_StartPhysics)        // -> FStartPhysicsTickFunction::ExecuteTick
+  UWorld::RunTickGroup(TG_DuringPhysics)       // 게임플레이 틱이 시뮬과 겹쳐 실행
+  UWorld::RunTickGroup(TG_EndPhysics)          // -> FEndPhysicsTickFunction::ExecuteTick
+}
+
+void FStartPhysicsTickFunction::ExecuteTick()
+{
+  FPhysScene_Chaos::StartFrame()
+}
+
+void FPhysScene_Chaos::StartFrame()
+{
+  // GT 쪽 dirty 상태를 PT 로 마샬링
+  async FGraphEventRef SolverEvent = Chaos::FPBDRigidsSolver::AdvanceAndDispatch_External(Dt)   // PT 시뮬 킥
+}
+
+---
+
+void async Chaos::FPBDRigidsSolver::AdvanceSolverBy()
+{
+  Chaos::FPBDRigidsEvolutionGBF::AdvanceOneTimeStep()   // 서브스텝마다 1회
+  Chaos::FPBDRigidsSolver::BufferPhysicsResults()       // 결과를 GT용 더블버퍼에 기록
+}
+
+void Chaos::FPBDRigidsEvolutionGBF::AdvanceOneTimeStepImpl()
+{
+  Integrate()                                  // 힘/중력 -> 속도 -> 임시 위치
+  ComputeIntermediateSpatialAcceleration()     // 브로드페이즈 (Chaos::TAABBTree)
+  DetectCollisions()                           // 내로우페이즈 GJK/EPA -> 접촉 제약 생성
+  CreateConstraintGraph()                      // 접촉+조인트를 그래프로
+  CreateIslands()                              // 상호 제약된 바디를 독립 아일랜드로 분할
+  ApplyConstraints()                           // 아일랜드별 반복 solve: 위치 투영 후 속도 해석
+}
+
+---
+
+void FEndPhysicsTickFunction::ExecuteTick()
+{
+  FPhysScene_Chaos::EndFrame()
+}
+
+void FPhysScene_Chaos::EndFrame()
+{
+  await SolverEvent                            // PT 태스크 완료를 기다림 (동기점)
+  FChaosScene::SyncBodies()                    // -> FPhysScene_Chaos::OnSyncBodies()
+}
+
+void FPhysScene_Chaos::OnSyncBodies()
+{
+  // dirty 프록시마다:
+  FBodyInstance <- particle handle 트랜스폼      // 해석 결과를 GT 뷰로 복사
+  UPrimitiveComponent 트랜스폼 갱신 (컴포넌트 이동)
+  // hit/overlap 이벤트, wake/sleep 통지 발행
+}
+
+---
+---
+---
+
+동기 트레이스는
+솔버를 전진시키지 않고, 호출 스레드에서 즉시·블로킹으로 씬의 가속구조를 읽기만 한다
+
+---
+
+hourglass 구조
+
+위는 넓다 — LineTrace/Sweep/Overlap × Single/Multi/Test × ByChannel/ByObjectType/ByProfile 조합
+
+TSceneCastCommon 하나의 스켈레톤으로 모였다가
+FGenericChaosSQAccelerator → 단일 TSQVisitor → ISpatialAcceleration 로 허리에서 좁아진다
+
+아래는 다시 넓다
+FImplicitObject 하위 형상들과 여러 가속구조
+
+---
+
+다형성을 위는 컴파일타임, 아래는 런타임으로 배치
+
+위쪽 축(쿼리 종류, 결과 모드)은 호출 지점에서 이미 알고, 유한하고 작으며, 초당 수천 번 도는 핫패스
+
+그래서 TSceneCastCommon<ESweepOrRay, ESingleMultiOrTest> 와 Traits::SceneTrace 처럼 템플릿 트레이트로 
+컴파일타임에 특수화해 분기·디스패치 비용을 0으로 만들고 인라이닝을 연다
+
+아래쪽 축(형상 타입, 어느 파티클)은 씬에 무엇이 있느냐에 따라 런타임에만 정해지고 개방적이라, 
+FImplicitObject 와 ISpatialVisitor 의 가상 함수로 런타임 디스패치
+
+닫히고 알려진 축은 템플릿, 열리고 런타임인 축은 vtable
+
+---
+
+싼 것 먼저, 비싼 것 나중
+
+Chaos::TAABBTree 의 AABB 테스트로 후보를 쳐내고(브로드페이즈)
+살아남은 것만 Chaos::FImplicitObject::Raycast 의 정확한 SDF 교차로 넘긴다(내로우페이즈)
+
+PreFilter 는 내로우페이즈 전에 채널로 싸게 컷하고
+PostFilter 는 히트 성립 후에만 정밀 판정한다
+
+---
+
+쿼리 엔진은 찾기만 하고 정책은 호출자가 준다
+
+판정 정책은 ICollisionQueryFilterCallbackBase
+수집·종료 정책은 FSQHitBuffer(WantsSingleResult, bContinue)
+
+---
+
+FPhysicsInterface/FGenericPhysicsInterface 정적 파사드가 
+UWorld 를 Chaos에서 떼어 놓아, 
+게임플레이는 Chaos를 알지 못한다
+
+이 seam은 vtable이 아니라 컴파일타임 typedef라 런타임 교체는 못 한다
+
+---
+
+RaycastSingle 부터 Visit 까지 소스는 열 몇 단으로 깊지만 
+대부분 템플릿·인라인이라 최적화 후 평평해진다
+
+---
+---
+---
+
+한 쿼리의 고정된 선택(ray냐 sweep냐 overlap이냐, single이냐 multi냐 test냐)을 
+static 멤버·typedef 묶음으로 실어 나른다
+
+TSceneCastCommon
+   Traits::SceneTrace, 
+   Traits::GetHitFlags, 
+   Traits::GetHits, 
+   Traits::SingleMultiOrTest, 
+   Traits::GeometryQuery
+
+---
+
+Scene Query
+SQ
+
+FGenericChaosSQAccelerator, 
+TSQVisitor, 
+FSQHitBuffer
+
+물리 엔진의 두 서비스 중 하나
+
+바디를 전진시키는 시뮬레이션(솔버)이 아니라, 
+시뮬레이션 없이 공간을 묻는 쪽(레이캐스트·스윕·오버랩)
+
+SQ 타입들은 물리의 읽기 측면
+앞의 시뮬 흐름(솔버·진화)은 쓰기 측면
+
+---
+
+Accelerator
+
+Chaos::ISpatialAcceleration
+Chaos::TAABBTree
+
+모든 바디를 일일이 테스트(O(n))하는 대신 
+광선이 빗나가는 서브트리를 통째로 건너뛰게 해 
+쿼리를 빠르게(대개 O(log n)) 만드는 자료구조
+
+FGenericChaosSQAccelerator
+그 구조를 감싸 히트 버퍼·필터와 함께 씬 쿼리를 구동하는 어댑터
+
+---
+
+Filter
+
+쿼리가 이 shape에 관심이 있는지
+있다면 막는지(Block) 스치는지(Touch) 무시하는지
+
+---
+
+Visit
+
+공간 순회가 도달한 후보마다 불러 주는 연산
+
+제어의 역전
+루프의 주인은 가속구조(순회 순서·가지치기를 결정)이고, 
+페이로드 작업만 방문자로 콜백한다. 
+
+Visit 은 일반 순회 안으로 쿼리별 행동이 주입되는 이음매이고, 
+반환값으로 방문자가 순회를 조종한다
+
+visit은 구조의 각 원소를 차례로 찾아간다는 뜻이며, 
+여기선 공간 가지치기 덕에 
+모든 원소가 아니라 광선이 닿을 수 있는 부분집합에만 불린다.
+
+---
+---
+---
+
+FPhysScene(= FPhysScene_Chaos : FChaosScene
+
+SolverAccelerationStructure:Chaos::ISpatialAccelerationCollection*
+
+정본 라이브 구조는 솔버의 진화(PT)에 있고
+FChaosScene::CopySolverAccelerationStructure() 가 매 프레임 그걸 씬의 GT측 멤버로 복사해 낸다
+
+---
+
+FPhysScene 은 UWorld 당 하나
+UWorld::PhysicsScene:FPhysScene*
+UWorld::CreatePhysicsScene() 로 만든다
+
+스레드로 보면 FPhysScene 은 게임 스레드 객체
+GT에서 생성·소유되고 
+그 공개 API(StartFrame/EndFrame, AddActorsToScene, 트레이스)가 전부 GT 틱 안에서 불린다
+
+---
+
+UWorld::CreatePhysicsScene
+  SceneSolver = ChaosModule->CreateSolver()
+
+AChaosSolverActor 는 자기 것을 액터 등록 시 만든다.
+
+소유는 FChaosSolversModule 이 수명을 쥔다
+
+---
+
+큰 파괴 시뮬이 월드 메인 솔버와 분리된 자기 솔버에서 자기 반복수·스레딩으로 돌고 독립적으로 멈추거나 컬링된다
+솔버 수 = 원하는 독립 시뮬 섬의 수
+
+---
+
+씬은 그걸 SceneSolver 로 참조만 한다. 
+
+PT는 이 솔버의 내부 상태(진화, 파티클 핸들)에서 돌지 FPhysScene 위에서 돌지 않는다. 
+
+그래서 소유가 둘로 나뉜다 — UWorld 는 GT측 씬을, FChaosSolversModule 은 PT가 굴리는 솔버를 소유한다. 
+FPhysScene = GT 소유, 시뮬 상태 = 모듈 소유·PT 구동, 둘 사이를 마샬링이 잇는다.
+
+---
+
+retained mode
+파티클·바디 집합, 제약, 솔버, 가속구조를 프레임을 가로질러 지속 보유
+dirty 갱신으로 증분 변경
+
+---
+
+StartFrame(TG_StartPhysics)에서 dirty해진 GT측 상태를 PT로 푸시한다
+
+프레임 시작에 마샬링 시스템(Chaos::FChaosMarshallingManager::AddDirtyProxy)이 
+dirty 프록시들을 FPushPhysicsData 묶음으로 모은다
+
+역방향 PT → GT는 EndFrame 의 OnSyncBodies 결과 회수
+
+---
+---
+---
+
+RendererScene.cpp 의 변경 경로
+check(IsInRenderingThread())/check(IsInParallelRenderingThread())
+GT는 FScene 내부를 직접 안 쓰고 커맨드로만 건드린다
+
+FPhysScene 은 오직 PT가 수정하는 게 아니다
+FPhysScene 은 GT affine 조정자이고 GT가 직접 수정한다
+
+---
+---
+---
+
+Evolution
+동역학계의 시간 전개
+지배 방정식 아래에서 상태 x(t) → x(t+dt) 로 앞으로 나아가게 하는 사상
+
+FPBDRigidsEvolutionGBF 는 강체계를 시간으로 전진시키는 객체
+AdvanceOneTimeStep: Integrate → DetectCollisions → ApplyConstraints
+
+---
+
+affinis(ad 향하여 + finis 경계·끝)
+
+경계에서 맞닿은, 관련된, 인척인
+경계를 매개로 한 맺음·귀속
+
+스레드 affinity
+어떤 자원·연산이 특정 스레드에 묶여 있다
+그 스레드와 인척 관계다
+
+스레드 국한(thread-confinement) 동시성 모델
+상태를 스레드별로 분할해 각 조각에 홈 스레드를 주고, 
+그 밖의 접근은 직접 쓰지 않고 커맨드·마샬링으로 넘긴다
+
+세밀한 락을 곳곳에 거는 공유 메모리 모델이 아니라, 
+소유·메시지 패싱으로 경합을 없애는 규율
+
+---
+
+GT 파티클(TGeometryParticle, 게임플레이가 읽고 쓰는 외부 뷰)
+PT 핸들(TGeometryParticleHandle, 솔버가 적분하는 내부 뷰)
+
+FSingleParticlePhysicsProxy
+GT는 원하는 상태를 GT 파티클에 쓰고 PT는 결과를 PT 핸들에 쓰는데, 
+프록시가 dirty 플래그를 지고 데이터를 양방향으로 라우팅
+
+---
+
+FPBDRigidsSolver 
+
+ChaosModule->CreateSolver(..) 로 한 번 만들어져 씬·월드 수명 내내 지속
+파티클 SoA·진화·제약 컨테이너·아일랜드·가속구조를 프레임을 가로질러 증분 유지
+
+---
+---
+---
+
+FPBDRigidsSolver 가 MEvolution:FPBDRigidsEvolutionGBF 를 소유하고, 
+파티클 SoA(FPBDRigidsSOAs)도 솔버가 소유해 진화에 참조로 주입
+
+솔버는 바깥 조정자(스레딩 모드, GT↔PT 마샬링, 결과 풀·보간, 서브스텝, 되감기 버퍼, 이벤트)
+진화는 안쪽 시뮬 커널로 소유·참조한 상태 위에서 실제 한 스텝(AdvanceOneTimeStep)
+
+솔버가 서브스텝마다 진화의 AdvanceOneTimeStep 를 호출한다
+
+---
+
+되감기
+
+지연된 권위 서버 상태가 도착했을 때 클라 예측과 어긋나면, 
+클라이언트는 서버가 확정한 상태로 되감아 
+
+정정된 입력으로 다시 앞으로 재시뮬(resim)해 따라잡아야 한다. 
+이걸 하려면 과거 상태·입력 이력(FRewindData)을 저장해 롤백·재생할 수 있어야 한다
+
+SoA에 resim 그림자(ResimStaticParticles/ResimDynamicParticles)가 있고
+솔버에 GetRewindData·ConditionalApplyRewind_Internal 이 있다
+
+---
+---
+---
+
+시뮬 도메인별로 Solver+Evolution 쌍
+어떤 종류의 물질·연속체를 모델링하는가
+
+자유도(DOF), 이산화 방식, 구성 법칙(변형에 어떻게 저항하나)
+데이터 표현(트랜스폼 SoA 대 입자 대 사면체 대 격자)
+제약 종류
+
+강체는 바디당 6 DOF(위치+방향), 변형 없음, 뉴턴-오일러 + 접촉·조인트
+클로스/소프트는 표면 메시 위 입자당 3 DOF, 부피 없음, 질량-스프링/PBD 신장·굽힘
+플레시는 사면체 메시 정점당 3 DOF, FEM 연속체 탄성(corotated/Neohookean 변형 에너지)
+유체는 고정 위상 없는 연속체로 격자·입자가 속도·밀도를 나르고 이류+압력 투영으로 푼다
+
+---
+
+강체, retained
+FPBDRigidsSolver + FPBDRigidsEvolutionGBF
+요소는 강체 입자(FPBDRigidsSOAs: 정적/키네마틱/동적/클러스터)
+
+
+강체, immediate
+FPBDMinEvolution
+전용 async 솔버 없이 직접 쓰이는 최소 강체 진화로
+ImmediatePhysics(RigidBody 애님 노드 등)가 소규모 자족 시뮬에 쓴다.
+
+
+클로스/소프트
+FClothingSimulationSolver 
+FPBDEvolution(고전 Softs PBD 진화)과 신형 SoftsEvolution
+요소는 소프트 입자 + 스프링·벤딩·충돌 제약
+
+
+디포머블/플레시
+FDeformableSolver
+NewtonEvolution 
+요소는 사면체 메시 정점
+
+
+스모크/유체
+SmokeEvolution
+직접 구동
+요소는 유체 격자·입자
+
+---
+
+강체 도메인 안에서는 모빌리티별(정적/키네마틱/동적)로 진화를 나누지 않는다
+하나의 강체 진화가 FPBDRigidsSOAs 안의 모든 강체 파티클 종류를 모빌리티로 구분해 다룬다
+파티클 능력 격자(Geometry/Kinematic/Rigid/Clustered)는 한 도메인 안의 축이고,
+쌍은 도메인 단위
+
+---
+
+FPhysicsSolverEvents 
+EventPreSolve
+EventPreBuffer
+EventPostSolve
+EventTeardown
+
+AddPreBufferCallback 등으로 구독을 받는다
+
+솔버 스텝 사이클의 고정된 국면 알림점
+다른 시스템이 그 지점에 코드를 얹는(전진 전 힘 주입, 전진 후 결과 읽기 등)
+
+모든 솔버가 이걸 상속한다
+FPhysicsSolverBase : FPhysicsSolverEvents
+
+FDeformableSolver : FPhysicsSolverEvents 는 직접
+
+---
+
+충돌(OnHit)·breaking(파괴)·trailing·sleeping 같은 시뮬 생성 게임플레이 이벤트는
+별도 시스템인 FEventManager(GetEventManager)가 버퍼링·디스패치한다
+
+---
+
+FTickFunction::bRunOnAnyThread 는 기본 false
+
+워커 스레드로 가는 건 옵트인
+병렬 애니메이션 평가, 클로스 
+
+규율
+
+자기·소유 데이터만 만지고 나머지는 읽기 전용으로 취급하며, 
+공유 상태 변경은 GT로 미룬다
+
+FTickFunction::AddPrerequisite
+
+A→B 의존을 선언하면 그래프가 둘을 직렬화해 동시 실행을 막는다
+
+---
+
+TG_PrePhysics 는 물리가 돌기 전에 해야 할 것(힘·입력 세팅, 이번 프레임 물리 상태 준비)을 놓는 자리
+pre-step 세계를 보고, 
+
+TG_PostPhysics 는 이번 프레임 물리 결과가 필요한 것(시뮬된 위치에 반응, 시뮬된 본에 붙이기, 충돌 결과 읽기)을 놓는 자리
+post-step 세계를 본다
+
+TG_DuringPhysics 는 이번 결과에 무관한 것을 시뮬과 겹쳐 돌리는 자리
+
+---
+
+틱 그룹 배리어를 안 따르는 리더
+게임 틱과 무관하게 아무 때나 쿼리
+
+오디오 스레드, 
+async 물리 컨텍스트
+
+---
+
+FScene 
+  FScenePrimitiveOctree PrimitiveOctree
+  TScenePrimitiveArray<FPrimitiveBounds> PrimitiveBounds
+
+CPU 프러스텀 컬링은 이 PrimitiveBounds 배열을 병렬 태스크로 훑는다
+바운드를 프러스텀 6평면에 SIMD로 쓸어 테스트하는 방식
+
+---
+
+FPhysScene 
+  Chaos::ISpatialAccelerationCollection/TAABBTree
+
+렌더 프리미티브 ≠ 물리 바디
+
+충돌 없는 렌더 대상
+반대로 렌더 안 되는 물리 바디
+
+컬링은 렌더 바운드+컬 거리+섀도 메타
+물리는 충돌 바운드
+
+---
+
+타임라인
+물리 중심
+TG_PrePhysics, TG_StartPhysics, TG_DuringPhysics, TG_EndPhysics, TG_PostPhysics
+TG_PostUpdateWork, TG_LastDemotable, TG_NewlySpawned,
+
+---
+---
+---
+
+파티클(상태)은 세계의 공유 진실원
+솔버가 GT↔PT로 마샬하고, 되감기가 기록하고, 가속구조·SQ가 참조
+여러 시스템이 만진다
+
+높은 층(솔버)이 소유해 진화에 주입하고, 진화는 여러 소비자 중 하나일 뿐
+
+반면 제약은 진화가 매 스텝 생성한다(CollisionDetector 가 만든다). 
+그리고 특정 GBF solve와 결합돼 있다(매니폴드 레이아웃, 워밍, 아일랜드 통합).
+진화 밖에서 그 접촉을 필요로 하는 데가 없다.
+알고리즘 내부 작업 구조라 생성·사용되는 자리에서 소유
+
+규칙은 공유·외부소유 상태는 주입, 
+알고리즘 생성·특화 작업 데이터는 내부 소유
+
+---
+
+공간 가속구조
+
+FSpatialAccelerationCollisionDetector(브로드페이즈)가 쓰는 내부 가속구조
+PT 라이브본은 솔버·진화 안에서 유지
+시뮬 스텝 동안 갱신·재빌드
+
+GT 복사본은 FChaosScene::SolverAccelerationStructure
+쿼리(SQ)가 읽는 외부본
+
+---
+
+UPrimitiveComponent
+UPhysicsConstraintComponent
+UWorld
+
+FBodyInstance
+FConstraintInstance
+UBodySetup
+
+FPhysicsInterface
+FPhysicsActorHandle
+IPhysicsProxyBase
+
+FPhysScene_Chaos
+
+Chaos::FPBDRigidsSolver
+Chaos::FPBDRigidsEvolutionGBF
+
+---
+
+UPrimitiveComponent
+  물리 몸체 FBodyInstance를 사용하는 컴포넌트
+  force, impulse, velocity, collision 설정 요청
+
+UPhysicsConstraintComponent
+  두 UPrimitiveComponent 사이의 연결 관계 표현
+
+---
+
+물리 설계 데이터
+
+UBodySetup
+  collision geometry 설계
+  simple collision과 complex collision 데이터
+  기본 physical material
+
+UPhysicalMaterial
+  friction
+  restitution
+  density
+
+UPhysicsAsset
+  Skeletal Mesh의 body 구성
+  body 사이의 constraint 구성
+
+---
+
+FBodyInstance
+  생성된 개별 물리 몸체의 Engine 측 상태
+  simulate physics
+  mass
+  damping
+  collision response
+  physical material override
+  Chaos 물리 객체 handle
+
+FConstraintInstance
+  생성된 개별 constraint의 Engine 측 상태
+  연결할 body
+  constraint frame
+  linear motion과 angular motion
+  limit과 drive
+
+UBodySetup 설계도 
+FBodyInstance는 생성된 Instance
+
+---
+---
+---
+
+FPhysicsInterface
+  Engine 요청을 Chaos 연산으로 변환
+
+FPhysicsActorHandle
+  Chaos::FSingleParticlePhysicsProxy* 형식 별칭
+
+Chaos::FSingleParticlePhysicsProxy
+  Game Thread particle
+  Physics Thread particle handle
+  양쪽 상태 전달
+
+FJointConstraintPhysicsProxy
+  Game Thread joint constraint
+  Physics Thread joint constraint 전달
+
+---
+---
+---
+
+타입 별칭
+컴파일 시점 치환 메커니즘
+
+using FPhysicsActorHandle = Chaos::FSingleParticlePhysicsProxy*;
+
+typedef FPhysScene_Chaos FPhysScene;
+
+typedef FPhysicsConstraintReference_Chaos FPhysicsConstraintHandle;
+
+typedef FPhysicsShapeReference_Chaos FPhysicsShapeHandle;
+
+---
+
+typedef FPhysInterface_Chaos FPhysicsInterface;
+
+FPhysInterface_Chaos
+  : FGenericPhysicsInterface
+  : FChaosEngineInterface
+
+---
+
+FGenericPhysicsInterface
+  line trace
+  sweep
+  overlap
+  scene collision query
+
+FChaosEngineInterface
+  physics actor 생성과 제거
+  shape 부착
+  transform과 velocity 변경
+  force와 impulse 적용
+  constraint 생성과 제거
+  physical material 연결
+
+---
+
+void FBodyInstance::AddForce()
+{
+  FPhysicsInterface::AddForce_AssumesLocked();
+}
+
+---
+
+bool UWorld::LineTraceSingleByChannel()
+{
+  FPhysicsInterface::RaycastSingle(World);
+}
+
+bool UWorld::SweepSingleByChannel()
+{
+  FPhysicsInterface::GeomSweepSingle(World);
+}
+
+bool UWorld::OverlapMultiByChannel()
+{
+  FPhysicsInterface::GeomOverlapMulti(World);
+}
+
+전달받은 UWorld를 통해 FPhysScene에 접근
+
+---
+
+UWorld 공개 API
+
+Line Trace / Sweep / Overlap
+×
+Test / Single / Multi
+×
+ByChannel / ByObjectType / ByProfile
+                ↓
+        filter 표현 통일
+                ↓
+FPhysicsInterface canonical collision query
+
+---
+
+FPhysicsInterface
+
+RaycastTest / RaycastSingle / RaycastMulti
+GeomSweepTest / GeomSweepSingle / GeomSweepMulti
+GeomOverlapBlockingTest / GeomOverlapAnyTest / GeomOverlapMulti
+                ↓
+        공통 template 구현
+                ↓
+TSceneCastCommon
+GeomOverlapMultiHelper 
+                ↓
+Chaos low-level collision query
+
+---
+
+RaycastSingle       TSceneCastCommon<Raycast, Single>
+RaycastMulti        TSceneCastCommon<Raycast, Multi>
+GeomSweepTest       TSceneCastCommon<Sweep, Test>
+GeomSweepSingle     TSceneCastCommon<Sweep, Single>
+
+---
+---
+---
+
+렌더 추출은 게임 세계의 외양 투영(그릴 것 + 트랜스폼 + 컬링)
+물리 추출은 게임 세계의 동역학 투영
+부딪힐 것 + 포즈 + 속도 + 질량 + 물리 머티리얼 + 필터 + 제약
+
+---
+
+1 충돌 지오메트리 — FImplicitObject
+    해석적 프리미티브: 구(중심·반지름) / 박스(범위) / 캡슐
+    컨벡스, 삼각형 메시, 하이트필드
+
+2 포즈 
+    X:위치,  R:회전
+
+3 속도 
+    V:선속도,  W:각속도   (+ 이전 포즈 P,Q — CCD·속도 산출용)
+
+4 질량 특성
+    M:질량 / InvM,   I:관성텐서 / InvI
+    CenterOfMass / RotationOfMass
+
+5 물리 머티리얼 — FChaosPhysicsMaterial
+    Friction, StaticFriction, Restitution, Density,
+    Linear/AngularEtherDrag, Sleep 임계, FrictionCombineMode/RestitutionCombineMode
+
+6 충돌 필터·정체성 (렌더 가시성·relevance의 대응) — FCollisionFilterData
+    쿼리 채널 / 시뮬 채널 / 채널별 응답(Block·Overlap·Ignore)
+
+7 제어 플래그·튜닝
+    모빌리티(정적/키네마틱/동적 → 파티클 서브클래스), 중력 on/off,
+    LinearDamping/AngularDamping, CCD, 슬립 설정, 충돌 그룹, 질량 오버라이드
+
+8 제약·관계 — 조인트
+    FPBDJointSettings(리밋·드라이브·파손) + 두 파티클 핸들
+
+---
+
+충돌 지오메트리 - 삼각형 메시
+오목 가능
+정점 + 삼각형 인덱스 + BVH
+복합 충돌용
+동적 시뮬 바디가 될 수 없다
+
+별도로 쿠킹
+
+메시 에셋이 IInterface_CollisionDataProvider::GetPhysicsTriMeshData(정점+인덱스+면별 머티리얼)로 
+충돌 삼각형 데이터를 내주고
+
+그게 쿡 타임에 UBodySetup::TriMeshGeometries(Chaos::FTriangleMeshImplicitObject — 자기 정점 배열 + 인덱스버퍼 + FTrimeshBVH)로
+구워져 CookedFormatData 에 저장
+
+정점이 메시에서 유래하되(렌더 메시, 전용 저해상 충돌 메시, Use Complex As Simple)
+별도 카피
+
+---
+
+1 충돌 지오메트리
+   원천: UPrimitiveComponent → BodyInstance → BodySetup
+   수정: 메시 교체 시 바디 재생성, 컴포넌트 스케일 시 TImplicitObjectScaled로 리스케일
+
+2 포즈 X,R
+   원천: GetComponentTransform()
+   수정 (양방향, 매 프레임):
+     PT→GT: 시뮬 바디는 솔버가 새 X,R 계산 → OnSyncBodies → 컴포넌트가 시뮬을 따라감
+     GT→PT: SetWorldLocation / MoveComponent (키네마틱), 텔레포트 → 파티클에 직접 기록
+
+3 속도 V,W
+   원천: 시뮬이 적분으로 산출. 스폰 초기 속도.
+   수정 (양방향):
+     PT→GT: 매 스텝 V,W 갱신 → GetPhysicsLinearVelocity로 읽음
+     GT→PT: SetPhysicsLinearVelocity/AngularVelocity, AddImpulse/AddForce
+
+4 질량 특성 M,I,CoM
+   원천: 지오메트리 + 밀도(물리 머티리얼)에서 생성 시 계산 (UBodySetup 질량 계산 / 파티클 UpdateMassProperties)
+   수정: 오버라이드만 — MassInKgOverride, CoM 넛지, 관성 스케일
+
+5 물리 머티리얼
+   원천: UPhysicalMaterial (BodySetup.PhysMaterial / BodyInstance.PhysMaterialOverride) → 솔버측 FChaosPhysicsMaterial
+   수정: 런타임 오버라이드 교체(SetPhysMaterialOverride)
+
+6 충돌 필터
+   원천: 컴포넌트 충돌 설정(채널/응답/프로파일) → 셰이프별 FCollisionFilterData
+   수정: SetCollisionResponseToChannel/ProfileName/Enabled → 필터 재푸시
+
+7 제어 플래그·튜닝
+   원천: BodyInstance 설정 (bSimulatePhysics→모빌리티, 중력, Damping, CCD, 슬립)
+   수정: SetSimulatePhysics / SetEnableGravity / SetLinearDamping / Wake·Sleep → 파티클에 푸시
+
+8 제약·조인트
+   원천: UPhysicsConstraintComponent → FConstraintInstance (두 바디 + 조인트 프로파일), 또는 UPhysicsAsset(래그돌)
+   수정: 컴포넌트와 함께 생성·파괴, 드라이브/리밋 변경·파손 시 재푸시
+
+---
+
+GJK
+Gilbert–Johnson–Keerthi
+
+두 볼록 도형이 겹치나를 한 점 문제로 바꾼다
+민코프스키 차 A ⊖ B = { a − b : a∈A, b∈B }
+이 차집합이 원점 0 을 품는 것
+
+차집합 전체를 짓지 않고 서포트 함수 — 방향 d로 가장 먼 점 — 만 쓴다
+support(d) = support_A(d) − support_B(−d)
+
+원점을 향해 방향을 잡아 서포트 점을 하나씩 모아 
+심플렉스(3D에선 최대 사면체)를 키우며 그게 원점을 가두는지 본다 
+
+가두면 겹침, 더는 원점에 못 다가가면 분리
+
+원점을 도형-차의 잘 고른 몇 점으로 가둘 수 있나? 
+
+---
+
+EPA
+Expanding Polytope Algorithm
+얼마나 깊이 파고들었나(관통 깊이·접촉 노멀)
+
+GJK가 원점을 가둔 그 심플렉스를 다면체로 삼아
+원점에 가장 가까운 면에 서포트 점을 더해
+부풀리길 반복해 차집합 경계에서 원점에 가장 가까운 점으로 수렴한다
+
+그 점까지 거리가 관통 깊이, 방향이 밀어낼 노멀이다
+
+겹친 상태에서 원점에서 풍선을 불어 표면에 가장 얕게 닿는 곳을 찾는 것
+가장 적게 밀어내 떼는 방향·깊이
+
+둘 다 서포트 함수 덕에 볼록에서만 성립한다
+그래서 Chaos 지오메트리는 볼록 조각이어야 하고, 
+오목한 트라이메시는 삼각형 단위(각 삼각형은 볼록)로 처리
+
+---
+
+단순 충돌
+
+프리미티브 집합(FKAggregateGeom — 구·박스·캡슐·컨벡스)
+형상을 거칠게 근사
+볼록 조각이라 부피·관성 있음
+동적 시뮬 가능
+
+---
+
+복합 충돌은
+
+실제 형상을 면 단위로 정확히 표현
+오목 가능·부피 없음·비쌈
+동적 바디는 될 수 없다
+
+단순은 볼록 GJK 몇 번, 복합은 BVH 순회 + 삼각형별 테스트
+
+---
+
+메시 에셋은 두 기하 표현을 가진다
+
+그릴 렌더 지오메트리
+부딪힐 충돌 지오메트리
+
+---
+
+게임이 바디를 옮길 때 새 포즈를 파티클에 쓰는 방식이 둘
+
+키네마틱 타깃은 목표 트랜스폼을 세팅하면 솔버가 서브스텝 동안 거기로 옮기며 그 변위에서 속도를 산출한다
+플랫폼을 키네마틱 타깃으로 옮기면 솔버가 그 이동에서 속도를 추론한다
+그 속도 덕에 플랫폼과 위 물체의 접촉면이 움직이고 있어, 마찰·접촉으로 물체가 함께 실려 간다 
+반대로 플랫폼을 텔레포트(속도 없이 직접 기록)하면 접촉면 속도가 0이라 위 물체를 안 나르고, 플랫폼만 밑에서 이동
+
+
+직접 기록은 텔레포트로, 파티클의 X,R을 곧장 새 포즈로 세팅하되 속도를 산출하지 않는다 
+즉시 순간이동, 중간과 상호작용 없음
+이동에서 속도를 추론하지 않고 즉시 옮긴다
+
+---
+
+애니메이션 포즈는 스켈레톤의 뼈 트랜스폼들의 집합 
+
+물리 포즈는 강체 하나(파티클)의 월드 트랜스폼 X,R 
+
+---
+
+보통 캐릭터는 애님이 포즈를 몰고 물리 바디(충돌 캡슐·바디)는 키네마틱으로 애님 뼈를 따라간다
+물리가 따르는 쪽
+
+래그돌은 반대로 물리가 몰아, 시뮬된 바디 트랜스폼이 뼈 트랜스폼으로 되써져 애님 포즈를 덮는다
+
+피지컬 애니메이션(UPhysicalAnimationComponent)은 그 중간
+물리 바디를 애님 타깃으로 드라이브해 둘을 블렌드
+
+---
+---
+---
+
+파티클 자체(상태 X,R,V,W,M,I를 지닌 것)는 점 같은 상태 운반자라 부피가 없다
+대신 지오메트리(FImplicitObject)를 참조하고 그 지오메트리가 형상·부피를 준다
+
+질량·관성(M,I)은 그 지오메트리의 부피 + 밀도에서 유도
+파티클에 스칼라·텐서로 저장
+
+파티클은 동역학(질량·관성·속도를 가진 점), 
+지오메트리는 형상(부피)을 담고, 
+
+강체 = 파티클(동역학) + 지오메트리(형상)
+
+---
+
+Geometry 파티클(정적) = 트랜스폼(X,R) + 지오메트리 참조 — 어디에 놓인 형상
+
+Kinematic 파티클 = + 속도(V,W) — 규정 속도로 움직이는 형상
+
+PBDRigid 파티클(동적) = + 질량(M,InvM) + 관성(I,InvI) + 질량 중심 + 힘·토크 축적기 — 힘에 반응하는 형상
+
+---
+
+물리를 단순 셰이프에 얹고 
+메시는 시각 전용(NoCollision 또는 QueryOnly)으로 둔다. 
+이벤트도 그 셰이프에서 발생시킨다
+
+---
+
+bWeldSimulatedBodies
+컴포넌트 트리가 다중 셰이프 단일 바디(셰이프 여럿 가진 파티클 하나)가 돼 
+취지상 aggregate에 가까워진다
+
+FKAggregateGeom 은 하나의 UBodySetup 안에 프리미티브가 여럿
+한 바디의 충돌이 프리미티브 합집합
+
+---
+
+FKAggregateGeom 저작
+
+스태틱 메시 에디터의 Collision 메뉴에서 단순 충돌 프리미티브(박스·구·캡슐)를 얹으면 
+메시 UBodySetup::AggGeom 에 저장
+
+코드로는 UBodySetup::AggGeom 에 FKBoxElem·FKSphereElem 을 넣어 만든다
+(프로시저럴 메시)
+
+---
+
+Sleep
+
+정지한 동적 바디를 능동 시뮬에서 빼는 최적화
+
+속도가 임계 아래로 일정 시간 유지되면 바디를 재우고
+잠든 바디는 매 스텝 적분·해석하지 않아 CPU를 아낀다
+
+무언가 닿거나 힘이 가해지거나 같은 아일랜드의 이웃이 움직이면 깬다
+
+FChaosPhysicsMaterial::SleepingLinearThreshold·SleepCounterThreshold 가 재우는 기준
+아일랜드 단위로 잠들고 깬다(접촉으로 묶인 무리가 함께)
+
+---
+
+파티클과 형상을 분리한 이유
+
+동역학(X,R,V,W,M,I)은 매 서브스텝 적분·해석이 만지는 핫 데이터로 촘촘한 SoA 루프를 돈다
+SIMD용 평탄 컬럼
+형상(SDF)은 충돌 검출 때만 읽는 콜드·읽기전용이다
+
+
+공유·플라이웨이트
+
+똑같은 상자 100개가 박스 FImplicitObject 하나를 공유
+파티클은 작고 인스턴스별 가변
+
+
+형상은 대체로 불변 저작·쿠킹 데이터
+파티클 상태는 매 프레임 변한다
+
+---
+
+Continuous Collision Detection
+CCD
+
+일반 충돌 검출은 프레임의 양 끝 상태만 검사한다.
+물체가 한 프레임 동안 벽을 완전히 통과하면, 시작점과 끝점 어디에서도 겹치지 않아 충돌을 놓친다
+tunneling
+
+CCD는 두 포즈 사이의 이동 경로를 sweep하여 최초 접촉 시점 TOI(Time of Impact)을 찾는다
+
+---
+
+FKAggregateGeom
+FKShapeElem(FKSphereElem·FKBoxElem·FKConvexElem)
+
+FImplicitObject 
+FSphere·TBox·FCapsule·FConvex·FTriangleMeshImplicitObject
+
+---
+---
+---
+
+파티클 위치는 어디서 도출
+
+InitBody에서
+UPrimitiveComponent::GetComponentTransform() 에
+CoM 오프셋을 적용해 파티클 X,R로 넣는다
+
+되쓰기
+시뮬 → 파티클(새 X,R) → OnSyncBodies 가 파티클을 읽어 → 소유 UPrimitiveComponent 트랜스폼을 갱신(CoM 오프셋을 되돌려)
+
+---
+
+using FPhysicsActorHandle = Chaos::FSingleParticlePhysicsProxy*;
+  GTParticle:Chaos::FGeometryParticle*         // GT 뷰
+  Handle:Chaos::FGeometryParticleHandle*       // PT 뷰 (SOAs 안)
+
+FBodyInstance::GetUnrealWorldTransform() 은 파티클(ActorHandle)에서 포즈를 읽어 오는 뷰
+
+---
+---
+---
+
+void UWorld::RunTickGroup(TG_StartPhysics)
+{
+  // 태스크그래프가 이 그룹의 FStartPhysicsTickFunction::ExecuteTick 을 실행
+}
+
+void FStartPhysicsTickFunction::ExecuteTick()
+{
+  m_Target:UWorld->StartPhysicsSim()
+}
+
+void UWorld::StartPhysicsSim()
+{
+  m_PhysicsScene:FPhysScene_Chaos->StartFrame()
+}
+
+void FChaosScene::StartFrame()
+{
+  // GT dirty 상태를 마샬링 producer 버퍼에 채움 (game→physics 채비)
+  m_SceneSolver:FPBDRigidsSolver->AdvanceAndDispatch_External(Dt: FReal)   // async 물리 태스크 디스패치, FGraphEventRef 반환
+}
+
+━━━━━━ GT │ PT 경계 — 아래는 물리 스레드 태스크 ━━━━━━
+
+void FPhysicsSolverAdvanceTask::DoTask()      // 디스패치된 async 태스크가 PT에서 실행
+{
+  m_Solver:FPBDRigidsSolver->ProcessPushData()     // 마샬된 GT dirty를 PT 파티클로 소비 = 물리세계로 넘어옴
+  m_Solver:FPBDRigidsSolver->AdvanceSolverBy(SubStep: FSubStepInfo)
+}
+
+void FPBDRigidsSolver::AdvanceSolverBy(SubStep: FSubStepInfo)
+{
+  m_MEvolution:FPBDRigidsEvolutionGBF->AdvanceOneTimeStep(Dt: FReal)   // 적분 → 충돌검출 → 제약 해석
+  BufferPhysicsResults()                                     // 결과를 GT용 더블버퍼에
+}
