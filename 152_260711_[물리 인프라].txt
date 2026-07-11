@@ -1,0 +1,1253 @@
+FChaosResultsManager
+결과 보간
+
+FChaosInterpolationResults::Prev:FPullPhysicsData*, Next:FPullPhysicsData*
+Alpha:FRealSingle
+
+---
+
+GT에서는 하나의 물체가 하나의 객체로 존재한다.
+
+FPBDRigidParticle
+
+PT에서는 하나의 물체가 다음 둘로 분해된다.
+
+FPBDRigidParticleHandle
+>-- FPBDRigidParticles의 특정 row
+
+FPBDRigidParticles
+o-- 모든 rigid particle의 위치 배열
+o-- 모든 rigid particle의 속도 배열
+o-- 모든 rigid particle의 질량 배열
+o-- 모든 rigid particle의 관성 배열
+...
+
+---
+
+즉 PT의 논리적 Particle은 다음 조합이다.
+
+PT Logical Particle
+= SOA 저장소의 한 row
++ 그 row를 가리키는 ParticleHandle
+
+---
+
+GT 객체형 Particle
+PT Persistent Handle
+PT SOA 저장소
+
+FGeometryParticle
+FGeometryParticleHandle
+FGeometryParticles
+
+FKinematicGeometryParticle
+FKinematicGeometryParticleHandle
+FKinematicGeometryParticles
+
+FPBDRigidParticle
+FPBDRigidParticleHandle
+FPBDRigidParticles
+
+FGeometryDynamicCollection
+FPBDGeometryCollectionParticleHandle
+TPBDGeometryCollectionParticles
+
+---
+
+TGeometryParticle<T, d>
+└─ TKinematicGeometryParticle<T, d>
+   └─ TPBDRigidParticle<T, d>
+
+3차원 Runtime alias
+
+FGeometryParticle
+└─ FKinematicGeometryParticle
+   └─ FPBDRigidParticle
+
+---
+
+객체 단위 상태 보유
+
+TGeometryParticle
+EParticleType = Static
+o-- FParticlePositionRotation
+o-- FParticleNonFrequentData
+o-- FShapeInstanceProxyArray
+o-- FDirtyChaosPropertyFlags
+>-- IPhysicsProxyBase
+
+---
+
+GT Particle
+개별 속성이 TChaosProperty로 감싸져 있다.
+
+GT Particle의 속성 변경
+→ TChaosProperty::MarkDirty
+→ Proxy를 Dirty Set에 추가
+→ GT→PT 전송 대상으로 등록
+
+---
+
+TGeometryParticle
+o-- TChaosProperty<FParticlePositionRotation>
+o-- TChaosProperty<FParticleNonFrequentData>
+
+---
+---
+---
+
+TParticleHandleBase<T, d>
+└─ TGeometryParticleHandleImp<T, d, bPersistent>
+   └─ TKinematicGeometryParticleHandleImp<T, d, bPersistent>
+      └─ TPBDRigidParticleHandleImp<T, d, bPersistent>
+         └─ TPBDRigidClusteredParticleHandleImp<T, d, bPersistent>
+            └─ TPBDGeometryCollectionParticleHandleImp<T, d, bPersistent>
+
+bPersistent = true일 때의 alias
+
+FGeometryParticleHandle
+└─ FKinematicGeometryParticleHandle
+   └─ FPBDRigidParticleHandle
+      └─ FPBDRigidClusteredParticleHandle
+         └─ FPBDGeometryCollectionParticleHandle
+
+---
+
+FPBDRigidParticleHandle
+>-- FPBDRigidParticles
+>-- ParticleIdx
+
+GetV()
+{
+    return PBDRigidParticles->GetV(ParticleIdx);
+}
+
+SetP(...)
+{
+    PBDRigidParticles->SetP(ParticleIdx, ...);
+}
+
+Typed row cursor
+= 어떤 SOA인가
++ 몇 번째 row인가
++ 그 row를 어떤 Particle 타입으로 해석할 것인가
+
+---
+
+Persistent Handle
+파괴될 때 해당 SOA row 제거
+TGeometryParticleHandles에 장기 저장
+Persistent Handle의 소멸자는 GeometryParticles->DestroyParticle(ParticleIdx)를 호출
+
+Transient Handle
+
+---
+
+TGeometryParticlesImp
+o-- UniqueIdx[]
+o-- persistent Handle reference[]
+>-- GT GeometryParticle[]
+>-- PhysicsProxy[]
+o-- Shapes[]
+o-- Bounds[]
+>-- Constraint Handle[]
+o-- Graph Node[]
+
+---
+---
+---
+
+FBodyInstance
+>-- FSingleParticlePhysicsProxy
+
+FSingleParticlePhysicsProxy
+o-- FGeometryParticle               
+>-- FGeometryParticleHandle
+
+FGeometryParticle
+>-- FSingleParticlePhysicsProxy
+
+FGeometryParticleHandle
+>-- FGeometryParticles
+>-- ParticleIdx
+
+FGeometryParticles의 해당 row
+>-- FGeometryParticle
+>-- FSingleParticlePhysicsProxy
+>-- FGeometryParticleHandle
+
+---
+---
+---
+
+FSingleParticlePhysicsProxy
+└─ TThreadedSingleParticlePhysicsProxyBase<true>
+   └─ FRigidBodyHandle_External
+
+FSingleParticlePhysicsProxy
+└─ TThreadedSingleParticlePhysicsProxyBase<false>
+   └─ FRigidBodyHandle_Internal
+
+동일한 Proxy 메모리를 서로 다른 API 타입으로 해석하는 overlay
+내부의 Read()와 Write()는 bExternal에 따라 대상을 바꾼다
+
+FRigidBodyHandle_External
+>-- GT FGeometryParticle
+
+FRigidBodyHandle_Internal
+>-- PT FGeometryParticleHandle
+
+bExternal
+    ? Lambda(GetParticle_LowLevel())
+    : Lambda(GetHandle_LowLevel());
+
+---
+---
+---
+
+UPrimitiveComponent::BodyInstance:FBodyInstance
+값 멤버
+
+컴포넌트가 존재하면 바디 인스턴스도 무조건 존재
+시뮬레이션 여부, 충돌 설정 여부에 관계 없이 존재 
+"물리 상태가 있는가"는 이 값의 존재가 아니라 그 안의 핸들이 유효한가로 갈립니다
+
+---
+
+FBodyInstance::ActorHandle:FPhysicsActorHandle
+FPhysicsActorHandle = Chaos::FSingleParticlePhysicsProxy* 
+
+"Actor"라는 이름은 PhysX 어휘 PxActor(물리 씬에 놓이는 개체)의 잔재
+
+---
+
+뉴턴-오일러 분해
+
+병진은 질량중심이라는 대표점의 점역학(F = m·a)으로
+회전은 그 점 주위의 오일러 방정식(τ = I·ω̇ + ω × Iω)으로 분리
+
+강체는 "점 + 자세 + 관성텐서"를 가진 확장된 점
+부피·형상은 파티클이 아니라 참조된 지오메트리(FImplicitObject)가 담당
+
+---
+
+FBodyInstance 1 : 프록시 1 : PT 파티클 1 
+
+컴포넌트:바디 = 1:N (스켈레탈)
+바디:셰이프 = 1:N (FKAggregateGeom 합집합 — 바디는 하나, 형상은 여럿)
+바디 없는 파티클 (Geometry Collection 파편 — FBodyInstance 를 거치지 않고 프록시 하나가 파티클 무리를 관리)
+강체가 아닌 파티클 (클로스의 버텍스 파티클)
+
+---
+---
+---
+
+FJointConstraint
+
+FJointConstraintPhysicsProxy
+
+FPBDJointConstraintHandle
+
+FPBDJointCombinedConstraints → FPBDJointConstraints
+
+Joint 전용 container solver
+
+---
+
+FSuspensionConstraint
+
+FSuspensionConstraintPhysicsProxy
+
+FPBDSuspensionConstraintHandle
+
+FPBDSuspensionConstraints
+
+indexed container solver
+
+---
+
+FCharacterGroundConstraint
+
+FCharacterGroundConstraintProxy
+
+FCharacterGroundConstraintHandle
+
+FCharacterGroundConstraintContainer
+
+전용 character solver
+
+---
+
+GT 계열
+
+FConstraintBase
+├─ FJointConstraint
+├─ FSuspensionConstraint
+└─ FCharacterGroundConstraint
+
+FConstraintBase
+o-- EConstraintType
+o-- FDirtyChaosPropertyFlags
+>-- IPhysicsProxyBase
+
+PT 대응
+
+FPBDJointConstraintHandle
+FPBDSuspensionConstraintHandle
+FCharacterGroundConstraintHandle
+
+---
+
+Proxy 계보
+
+IPhysicsProxyBase
+├─ FJointConstraintPhysicsProxy
+├─ FSuspensionConstraintPhysicsProxy
+└─ FCharacterGroundConstraintProxy
+
+---
+
+FJointConstraintPhysicsProxy
+o--FJointConstraint
+o--FPBDJointConstraintHandle
+>-- original PT particle pair
+
+---
+---
+---
+
+FJointConstraintPhysicsProxy
+└─ TThreadedJointConstraintPhysicsProxyBase<true>
+   = FJointConstraintHandle_External
+
+FJointConstraintPhysicsProxy
+└─ TThreadedJointConstraintPhysicsProxyBase<false>
+   = FJointConstraintHandle_Internal
+
+External 호출은 FJointConstraint로, 
+Internal 호출은 FPBDJointConstraintHandle로 라우팅
+
+---
+---
+---
+
+FConstraintHandle
+├─ FIndexedConstraintHandle
+│  └─ TIndexedContainerConstraintHandle<TContainer>
+│     ├─ FPBDJointConstraintHandle
+│     ├─ FPBDSuspensionConstraintHandle
+│     ├─ FPBDPositionConstraintHandle
+│     ├─ FPBDRigidSpringConstraintHandle
+│     └─ FPBDRigidDynamicSpringConstraintHandle
+│
+└─ FIntrusiveConstraintHandle
+   └─ TIntrusiveConstraintHandle<TConstraint>
+      ├─ FCharacterGroundConstraintHandle
+      └─ FPBDCollisionConstraintHandle
+         └─ FPBDCollisionConstraint
+
+---
+
+PT Container / Storage 계보
+
+FPBDConstraintContainer
+├─ FPBDIndexedConstraintContainer
+│  └─ TPBDIndexedConstraintContainer<TDerived>
+│     ├─ FPBDSuspensionConstraints
+│     ├─ FPBDPositionConstraints
+│     ├─ FPBDRigidSpringConstraints
+│     └─ FPBDRigidDynamicSpringConstraints
+│
+├─ FPBDJointConstraints
+├─ FPBDCollisionConstraints
+└─ FCharacterGroundConstraintContainer
+
+---
+---
+---
+
+UWorld::PhysicsScene:FPhysScene*
+UWorld::CreatePhysicsScene
+
+---
+
+FChaosScene 
+
+SolverAccelerationStructure:ISpatialAccelerationCollection*)
+쿼리용 사본
+
+정본은 FPBDRigidsEvolutionBase::InternalAcceleration:FAccelerationStructure*)에 살고, 
+CopySolverAccelerationStructure 가 매 프레임 복사해 옵니다
+
+---
+
+FChaosScene::SceneSolver:FPhysicsSolver* 
+
+수명의 주인은 FChaosSolversModule (CreateSolver/DestroySolver)
+
+---
+
+씬에 사는 것은 프록시 자체가 아니라 번역 테이블
+
+FPhysScene_Chaos::PhysicsProxyToComponentMap: <IPhysicsProxyBase*, UPrimitiveComponent*>
+FPhysScene_Chaos::ComponentToPhysicsProxyMap
+
+프록시의 생성은 FBodyInstance(InitBody)가 지휘하고, 등록처는 솔버
+
+---
+---
+---
+
+Integrate(P/Q 예측)
+브로드/미드/내로우페이즈가 collision constraint 를 생산
+
+Island
+Island Group 별로 병렬 실행
+
+---
+
+Integrate 직후의 파티클 상태는 제약을 무시한 자유 운동 예측(P, Q)
+"Island 를 실행한다" = 그 Island에 연결된 구속 동역학 문제를 반복법으로 푸는 것
+예측 상태를 법칙을 만족하는 상태로 교정
+
+---
+
+FPBDIslandManager
+섬 구성
+Island 는 "제약이 이미 존재해야" 만들 수 있는 구조물
+
+FPBDIslandGroupManager             
+
+FPBDIslandGroupManager::BuildGroups 가 활성 아일랜드들을 작업량 기준으로 그룹에 배분
+FPBDIslandGroupManager::Solve 가 그룹들을 병렬로 돌립니다(그룹 간 병렬, 그룹 안 순차)
+
+---
+
+그룹 하나의 실행체가 FPBDIslandConstraintGroupSolver: FPBDConstraintGroupSolver 
+
+FPBDConstraintGroupSolver::SolverBodyContainer
+FSolverBody 보관소
+
+FPBDConstraintGroupSolver::ConstraintContainerSolvers
+제약 종류별 작업반
+FPBDCollisionContainerSolver, TPBDJointContainerSolver, FCharacterGroundConstraintContainerSolver
+
+최하층에 실제 수치 커널
+FPBDCollisionSolver, FPBDJointSolver
+
+---
+
+Gather→누적→Scatter→커밋의 사이클
+
+반복 중의 보정은 SOA 가 아니라 FSolverBody(이번 솔브 전용 작업복)에 누적되고
+Scatter 단계에서 SOA 의 예측 칼럼 P/Q 와 V/W 로 돌아간 뒤
+스텝 말미의 ParticleUpdatePosition 이 P/Q 를 확정 칼럼 X/R 로 커밋
+
+---
+
+Gather 
+
+솔브 전용 밀집 표현으로 복사·변환하는 단계
+SOA 는 전역 레이아웃이라 아일랜드-로컬 반복 루프에는 접근 패턴이 나쁘고, 
+반복 중 만질 데이터만 밀집시키는 게 캐시에 유리
+
+---
+
+FPhysicsSolverBase::MarshallingManager:FChaosMarshallingManager
+
+BackingPullBuffer:FPullPhysicsData[]
+PullDataQueue:FPullPhysicsData*[]
+
+FPhysicsSolverBase::PullResultsManager
+
+---
+---
+---
+
+FSingleParticlePhysicsProxy
+o-- FGeometryParticle               
+>-- FGeometryParticleHandle
+o-- FPhysicsObject
+
+TGeometryParticle
+o-- TChaosProperty<FParticlePositionRotation>
+o-- TChaosProperty<FParticleNonFrequentData>
+
+---
+
+FPhysicsObject
+= { Proxy, BodyIndex, BodyName }
+
+---
+
+Geometry Collection
+
+Proxy 1
+Body  N
+
+FGeometryCollectionPhysicsProxy
+├─ GT Particle[0...N]
+├─ PT Handle[0...N]
+└─ FPhysicsObject[0...N]
+
+따라서 Proxy 하나만으로는 다음을 구별할 수 없다.
+
+이 Geometry Collection의 3번 bone/body
+이 Geometry Collection의 17번 bone/body
+
+---
+---
+---
+
+class SingleItemWarehouse
+{
+    Item Item;
+};
+
+class MultiItemWarehouse
+{
+    Item Items[100];
+};
+
+어떤 시스템이 “특정 물건”을 가리키고 싶다.
+그래서 공통 주소표를 만든다
+
+struct ItemReference
+{
+    Warehouse* Warehouse;
+    int Slot;
+    string Name;
+};
+
+{ 작은 창고 A, 칸 없음, "상자" }
+
+{ 대형 창고 B, 37번 칸, "오른쪽 바퀴" }
+
+---
+
+ItemReference             FPhysicsObject
+
+Warehouse             →   Physics Proxy
+Slot                  →   BodyIndex
+Name                  →   BodyName
+Item                  →   Particle
+
+---
+
+GeometryCollectionProxy
+├─ 벽 조각 0
+├─ 벽 조각 1
+├─ 벽 조각 2
+├─ ...
+└─ 벽 조각 500
+
+PhysicsObject A
+{
+    Proxy = GeometryCollectionProxy,
+    BodyIndex = 12,
+    BodyName = "Brick_12"
+}
+
+PhysicsObject B
+{
+    Proxy = GeometryCollectionProxy,
+    BodyIndex = 93,
+    BodyName = "Brick_93"
+}
+
+---
+---
+---
+
+class ItemInterface
+{
+public:
+    float GetWeight(ItemReference Ref);
+    Position GetPosition(ItemReference Ref);
+
+    void Move(ItemReference Ref, Position NewPosition);
+    void AddLoad(ItemReference Ref, float Load);
+};
+
+ItemInterface Interface;
+
+Interface.Move(BoxA, {10, 0});
+Interface.Move(BoxB, {20, 0});
+
+BoxA가 작은 창고의 유일한 물건이고, 
+BoxB가 대형 창고의 37번 물건이어도 호출 형식은 같다.
+
+---
+
+Item* Resolve(ItemReference Ref)
+{
+    switch (Ref.Warehouse->Type)
+    {
+    case SingleWarehouse:
+        return Ref.Warehouse->GetOnlyItem();
+
+    case MultiWarehouse:
+        return Ref.Warehouse->GetItem(Ref.Slot);
+    }
+}
+
+void ItemInterface::Move(ItemReference Ref, Position P)
+{
+    Item* Item = Resolve(Ref);
+    Item->Position = P;
+}
+
+---
+
+ItemReference     -> FPhysicsObject
+Warehouse         -> Physics Proxy
+Slot              -> BodyIndex
+Item              -> Particle
+ItemInterface     -> FPhysicsObject Interface
+Resolve           -> FPhysicsObject::GetParticle<Id>()
+
+---
+---
+---
+
+접촉은 실제로는 점이 아니라 면
+
+그런데 솔버는 점 단위로만 제약을 풀 수 있으므로
+그 면을 소수의 대표점으로 샘플링한 것이 접촉 매니폴드
+그 원소 하나가 매니폴드 점
+
+FContactPoint
+FManifoldPoint
+
+FPBDCollisionConstraint 하나가 셰이프 쌍당 최대 4점의 매니폴드를 가집니다
+
+---
+
+조인트란 두 바디 사이 6개 상대 자유도(병진 3 + 회전 3) 각각을 어떻게 다룰지의 명세
+
+축마다 세 가지 motion type
+Locked (자유도 제거, 등식 제약)
+Free (방치)
+Limited (범위 안에서는 자유, 경계에서만 발동)
+
+joint 의 종류란 사실 6개 축에 대한 motion type 조합의 별명
+
+Hinge = "회전 1축만 Free, 나머지 5축 Locked"
+
+---
+
+리밋은 수동적·조건부 제약
+
+문 힌지에 0°~110° 리밋을 걸면 
+그 범위 안에서는 제약이 아예 활성화되지 않고, 
+경계에 닿는 순간에만 부등식 제약(C ≥ 0)으로 밀어냅니다
+
+---
+
+드라이브는 능동적 성분, 모터
+
+위치/각도(또는 속도)를 정해두면 강성·감쇠 파라미터로 목표를 향한 힘·토크를 만들어냅니다
+Physical Animation
+
+---
+
+Proportional-Derivative controller
+
+제어 이론의 기본 장치
+목표와 현재의 오차(error)에 비례해 출력을 내는 기계
+
+F = K_p · e + K_d · ė
+
+P(비례) 항은 "멀수록 세게 당겨라" — 물리적으로 스프링(강성 k)과 동형
+D(미분) 항은 "빠르게 접근 중이면 브레이크를 걸어라" — 물리적으로 damper(감쇠 c)와 동형
+
+P만 있으면 목표를 지나쳐 영원히 진동하고, D가 그 진동을 죽입니다
+
+즉 PD 제어기 = 스프링–댐퍼
+
+---
+
+Physical Animation
+
+"e = 애님 포즈 − 물리 포즈"를 넣은 PD 제어기
+
+---
+---
+---
+
+아일랜드의 노드는 동적 파티클만
+그런데 간선(제약)의 한쪽 끝은 키네마틱/정적 파티클일 수 있습니다
+
+정적 바닥 하나에 서로 떨어진 스택 100개가 전부 닿아 있어도, 
+바닥이 연결성을 전파하지 않기 때문에 100개의 독립 아일랜드가 유지
+
+Island에서 키네마틱은 전도체가 아니라 절연체로 작동
+
+---
+
+Sleeping 판정 재료
+
+속도 기반 에너지가 머티리얼 임계값(FChaosPhysicsMaterial::SleepingLinearThreshold 등) 아래로 
+카운터 시간만큼 유지
+
+단위는 아일랜드
+
+섬 전체가 합의해야 잠들고
+FPBDIslandManager::UpdateSleep 이 집행
+
+정지 상태는 동역학의 고정점이라 계산을 건너뛰어도 결과가 동일하다는 보장 위에서만 잠재웁니다
+
+---
+---
+---
+
+hard constraint 는 C(x) = 0 을 정확히 강제
+soft constraint 는 같은 식 C(x) = 0 을 목표로 두되 유한한 강성으로만 당깁니다
+
+---
+
+fixed point
+
+f(x) = x 를 만족하는 점 x
+
+동역학에서는 시간 전개 사상(한 스텝 진행)이 상태를 자기 자신으로 보내는 상태
+평형점
+
+정지한 스택은 Step(x) = x 인 상태
+
+sleep 이 무손실인 이유
+f(x) = x 라면 f 를 호출하지 않아도 결과를 이미 안다
+
+---
+
+static / kinematic / dynamic
+"무엇이 이 물체를 움직이는가"
+
+FGeometryParticle 
+FKinematicGeometryParticle - 코드/애니메이션이 움직임
+FPBDRigidParticle -솔버가 움직임
+  
+---
+
+스켈레탈 메시의 바디들은 평소 키네마틱
+애님이 본을 몰고 바디가 따라감
+
+래그돌 전환 시에만 dynamic
+
+---
+
+USceneComponent::Mobility:EComponentMobility
+Static, Stationary, Movable
+
+이 컴포넌트의 트랜스폼이 런타임에 바뀔 수 있는가
+
+여러 서브시스템이 이 약속을 선계산(precomputation)으로 회수
+
+라이팅: Static 이면 라이트맵으로 조명을 구워버림(런타임 조명 계산 면제)
+렌더링: Static 프리미티브는 캐시된 드로우 리스트·인스턴싱 대상
+내비게이션: Static 지오메트리만 내비메시에 구워짐
+
+Mobility=Static → 정적 파티클(정적 가속구조 버킷, 재구축 면제)
+Movable + bSimulatePhysics=false → kinematic
+Movable + bSimulatePhysics=true → dynamic
+
+---
+
+Stationary
+라이트를 위한 계약
+Static(전부 베이크)과 Movable(전부 동적)의 절충
+
+움직일 수는 없지만, 위치 외의 속성(색, 강도)은 게임 중에 바뀔 수 있다
+정적 지오메트리에 대한 그림자와 간접광(바운스)은 베이크하고, 직접광은 동적으로 남겨둡니다
+
+---
+
+USceneComponent::SetMobility
+
+re-register 를 유발
+
+렌더 상태가 재생성되고 
+물리 상태도 다시 만들어지므로(OnCreatePhysicsState 경로) 
+파티클이 새 종류(static → kinematic/dynamic)로 다시 태어납니다
+
+바닥에 드리운 벽의 그림자는 바닥의 라이트맵 텍셀에 구워져 있습니다. 
+붉은 벽이 옆방에 물들인 바운스 광은 이웃 표면들의 라이트맵에 들어 있습니다. 
+볼류메트릭 라이트맵의 공간 샘플들에는 벽의 차폐와 바운스가 새겨져 있습니다. 
+벽을 옮겨도 이것들은 그대로입니다
+
+---
+
+베이크 프로젝트
+<=>
+
+모든 벽이 부서지는 세계에서 베이크는 성립 불가
+조명 파이프라인 자체를 동적으로
+
+---
+
+Kinematic target
+
+직접 쓰기(텔레포트)는 X, R 을 곧장 새 값으로 덮어써서 속도가 0인 순간이동을 만듭니다. 
+
+kinematic target 은 대신 "이번 스텝이 끝날 때 여기에 있어라"라는 목표 트랜스폼을 걸어두는 것이고, 
+FPBDRigidsEvolutionGBF::ApplyKinematicTargets 에서 
+서브스텝마다 목표를 향해 파티클을 옮기며 그 변위로부터 속도를 역산
+
+---
+
+무빙 플랫폼이 target 으로 움직이면 표면에 속도가 있으므로 
+마찰·접촉이 위에 선 물체를 실어 나릅니다. 
+
+텔레포트하면 표면 속도가 0이라 물체는 제자리에 남고 플랫폼만 발밑에서 빠져나갑니다
+경로가 없어서 도중의 마주친 사람과 부딪히지도 않습니다
+
+kinematic target 은 "도착지를 예고하고 걸어가게 하는 것"
+받는 쪽(솔버)이 자기 시간 해상도로 경로를 만들고, 
+그 경로가 세계와 상호작용
+
+---
+---
+---
+
+FPhysicsSolverBase::MarshallingManager
+
+ProducerData:FPushPhysicsData*            GT가 지금 채우는 봉투
+ExternalQueue:FPushPhysicsData*[]         발송 우편통 (타임스탬프 찍혀 대기)
+
+ConsumerData:FPushPhysicsData*            PT가 지금 소비 중인 봉투
+
+PushDataPool:TSpscQueue<FPushPhysicsData*>  재활용 풀
+
+BackingBuffer:TUniquePtr<FPushPhysicsData>[]  실소유 (수명의 뿌리)
+HistoryQueue_Internal:FPushPhysicsData*[]
+
+---
+---
+---
+
+Suspension constraint
+FPBDSuspensionSettings 
+
+SpringStiffness, MinLength, MaxLength, Axis
+
+로컬 축(Axis) 방향의 스프링-댐퍼 + 하드스톱(Min/MaxLength)
+
+단일 바디 제약
+구속되는 파티클은 차체(chassis) 하나
+
+바퀴는 물리 바디가 아니라 레이캐스트 결과
+바퀴를 강체로 만들면 고주파 접촉 문제로 불안정해지는, raycast vehicle 의 고전적 선택
+
+타깃(지면 접점)이 매 서브스텝 갱신
+
+ChaosVehicles 가 sim callback 으로 PT 박자에 맞춰 휠 레이캐스트를 쏘고
+서스펜션 타깃과 타이어 힘을 다시 계산
+
+해석은 FPBDSuspensionConstraints 컨테이너를 통해
+일반 island 파이프라인에 합류
+
+---
+
+레이캐스트 히트 결과
+
+지면까지의 거리(= 서스펜션 압축량)
+지면 노멀
+노면 머티리얼
+
+---
+
+고주파 접촉
+
+시스템에서 빠른 부분(바퀴–지면 접촉)만 도려내 해석적 모델(레이 + 스프링 공식 + slip 곡선)로 치환하고,
+느린 부분(차체의 요·피치·바운스, 수 Hz)만 솔버에게 맡긴다
+
+---
+
+Character ground constraint
+
+물리 기반 캐릭터(Mover 계열)용 제약
+
+TargetHeight("캐릭터 바디와 지면 사이 목표 거리")
+캐릭터를 지면 위 일정 높이에 스프링처럼 띄워 유지
+
+RadialForceLimit("목표 위치에 도달하기 위해 지면 평행 방향으로 낼 수 있는 힘")
+이동 추종을 유한한 다리 힘으로 모델링
+
+CosMaxWalkableSlopeAngle
+걷기 가능 경사 판정
+
+---
+
+UCharacterMovementComponent
+Query 소비자
+
+캡슐은 키네마틱(시뮬 off)이고, 이동은 GT 코드가 직접
+원하는 변위 계산 → 캡슐 스윕(쿼리)으로 막히는지 검사 → 막히면 표면을 따라 미끄러지게 재시도 → 트랜스폼을 직접 씀
+
+대가로 얻는 것이 완전한 제어
+게임 감각" 튜닝이 자유
+
+---
+
+FCharacterGroundConstraint 
+Simulation 참여자
+
+캐릭터가 동적 파티클이고, "저기로 가고 싶다"는 의도가 제약 데이터(목표 델타)로 주입되면 
+솔버가 RadialForceLimit 한도 내의 힘으로 실현
+
+결과: 상호작용이 양방향입니다
+밀면 반작용으로 밀리고, 서 있는 판자가 기울면 무게로 판자를 기울이고, 힘 한계보다 무거운 것은 못 밉니다
+
+지면 높이 유지(TargetHeight)도 계단·경사 처리도 솔버 반복 안에서 다른 제약들과 함께 풀리고
+PT 고정 스텝에서 돌므로 async 물리·리와인드·네트워크 리심 경로에 자연스럽게 합류합니다
+
+대가는 제어의 간접성
+
+---
+
+CMC(캡슐 스윕 + 키네마틱)와의 차이
+
+캐릭터가 솔버 안의 동적 바디라서 상호작용이 양방향
+물체를 밀면 반작용을 받고
+RadialForceLimit 때문에 너무 무거운 것은 못 밉니다
+
+CMC 가 "물리 위에 얹힌 별도 이동 코드"라면 
+Character ground constraint는 "이동을 제약으로 번역해 솔버에게 맡긴 것"
+
+---
+
+Root Particle
+양쪽 바디에 대해 GetRootParticle 을 호출해 실제로 시뮬레이션되는 파티클을 찾고
+
+::FixConnectorTransformsForRoot 가 원래 파티클과 root 사이의 상대 트랜스폼으로 connector frame 을 보정
+root 핸들 쌍으로 FPBDJointConstraints::AddConstraint 를 부릅니다
+
+조인트를 걸어달라고 지목한 파티클이 클러스터의 자식일 수 있기 때문
+
+Geometry Collection 조각이나 ClusterUnion 멤버는 개별로는 적분되지 않고
+클러스터 부모(root)가 하나의 강체로 시뮬
+
+---
+
+파괴 가능한 벽(Geometry Collection). 
+벽돌 1,000개로 미리 프랙처되어 있지만, 
+멀쩡한 동안에는 클러스터로 묶여 "벽 전체"라는 파티클 하나로 시뮬
+
+게임 코드가 요청합니다: "벽돌 537에 갈고리(조인트)를 걸어줘."
+문제: 솔버 세계에 지금 "움직이는 존재로서의 벽돌 537"은 없습니다
+
+적분되는 것은 클러스터 부모(벽 전체)뿐이고, 
+벽돌 537 파티클은 부모 안에 잠들어 있는 자식입니다
+
+조인트가 실제로 붙잡을 바디를 벽돌 537 → 그것이 속한 root(벽 전체)로 바꿉니다
+GetRootParticle 이 이 탐색
+
+부착점 보정: 그런데 그냥 바꾸면 갈고리가 벽의 원점(질량중심 근처)에 걸려버립니다. 
+갈고리는 그 벽돌 자리에 걸려야 하죠. 
+조인트에는 "바디 로컬 기준 어디에 붙는가"를 뜻하는 connector frame 이 있는데,
+이것을 "벽 전체 좌표계에서 본 벽돌 537 의 위치"로 이동
+
+---
+
+섬은 그 그래프에서 유도된 실행 단위
+
+그래프(노드 = 파티클, 간선 = 제약)는 FPBDIslandManager 가 제약의 추가·제거에 따라 
+증분 유지하는 지속 자료구조
+"무엇이 무엇과 연결되어 있나"만 답
+
+섬은 그 그래프의 연결요소 하나에 실행 메타데이터를 붙인 구획
+
+그래프는 지속·증분이고, 섬 구획은 연결성 변화에 따라 스텝마다 갱신
+
+---
+
+수치 커널의 종류
+
+제약 종류별로 최하층 커널이 하나씩
+
+제약 종류
+컨테이너 (지속 데이터)
+컨테이너 솔버 (그룹당 작업반)
+수치 커널
+
+Collision
+FPBDCollisionConstraints
+FPBDCollisionContainerSolver
+FPBDCollisionSolver
+
+
+Joint
+FJointConstraint                     
+FPBDJointConstraints
+TPBDJointContainerSolver<FPBDJointSolver>
+FPBDJointSolver
+FPBDJointSolverSettings
+
+Suspension
+FSuspensionConstraint                
+FPBDSuspensionConstraints
+TIndexedConstraintContainerSolver<FPBDSuspensionConstraints>
+전용 커널 없음 — 컨테이너 솔버가 직접 계산
+
+
+CharacterGround
+FCharacterGroundConstraint           
+FCharacterGroundConstraintContainer
+FCharacterGroundConstraintContainerSolver
+FCharacterGroundConstraintSolver
+
+
+공통 기반은 FSolverBody
+모든 커널이 계산한 보정이 여기 누적
+
+---
+
+[GT 데이터 객체]                     
+FConstraintBase                      
+  FJointConstraint                   
+  FSuspensionConstraint              
+  FCharacterGroundConstraint         
+  (Collision: 없음)                  
+
+[프록시]
+IPhysicsProxyBase
+  FJointConstraintPhysicsProxy
+  FSuspensionConstraintProxy
+  FCharacterGroundConstraintProxy
+  (Collision: 없음)
+
+[PT 컨테이너]
+FPBDConstraintContainer
+  FPBDCollisionConstraints
+  FPBDJointConstraints
+  FCharacterGroundConstraintContainer
+  TPBDIndexedConstraintContainer<FPBDSuspensionConstraints>
+      
+[핸들]
+FConstraintHandle
+  FIndexedConstraintHandle                     
+    TIndexedContainerConstraintHandle<FPBDJointConstraints>      = FPBDJointConstraintHandle
+    TIndexedContainerConstraintHandle<FPBDSuspensionConstraints> = FPBDSuspensionConstraintHandle
+  FIntrusiveConstraintHandle                    
+    FCharacterGroundConstraintHandle
+    FPBDCollisionConstraint              
+
+[컨테이너 솔버]
+FConstraintContainerSolver
+  FPBDCollisionContainerSolver
+  TPBDJointContainerSolver<FPBDJointSolver>
+  TIndexedConstraintContainerSolver<FPBDSuspensionConstraints>
+  FCharacterGroundConstraintContainerSolver
+
+[커널]
+FPBDCollisionSolver(+Simd/Jacobi)
+FPBDJointSolver
+FCharacterGroundConstraintSolver
+(Suspension: 컨테이너 솔버가 직접)
+
+Collision 
+접촉은 GT가 만들지 않고 시뮬이 매 스텝 발견하는 것
+GT 객체도 프록시도 없으며(명시적 생성 제약 vs 검출 제약)
+수명이 짧아 핸들마저 침습형으로 접었습니다
+
+---
+
+ISimCallbackObject 
+
+솔버 루프의 정해진 국면에 GT 코드를 꽂는 소켓
+
+SimCallbackObjects(일반, 스텝 단위)
+GT 로직을 PT 박자로 실행
+
+MidPhaseModifiers(파티클 쌍 단계)
+
+narrowphase 이전
+쌍 단위로 충돌 검출 자체를 걸러냄
+접촉이 만들어지기 전
+
+ContactModifiers(접촉 생성 후, 솔브 전)
+만들어진 접촉을 수정·비활성화
+one-way platform
+특정 페어 임시 통과
+
+CCDModifiers(CCD 스윕 후)
+고속 물체의 TOI 접촉에 개입
+
+---
+
+UWorld::RunTickGroup(TG_EndPhysics)
+→ FEndPhysicsTickFunction::ExecuteTick()
+→ UWorld::FinishPhysicsSim()
+→ FChaosScene::EndFrame()
+{
+  this::OnSyncBodies(Solver);                
+  this::CopySolverAccelerationStructure();
+
+  OnPhysScenePostTick.Broadcast();
+}
+
+---
+
+SolverAccelerationStructure 
+
+FPBDRigidsEvolutionBase::UpdateExternalAccelerationStructure_External
+
+이 내부 정본에서 외부용 사본이 나온다
+
+보유·사용하는 자: FChaosScene
+FChaosScene::SolverAccelerationStructure:ISpatialAccelerationCollection*
+GT 씬 쿼리(FChaosSQAccelerator)가 이 위에서 돕니다
+
+---
+
+템플릿 구현이 안 보이는 번역단위는 암시적 인스턴스화를 못 함
+
+add.h:    template<class T> T Add(T a, T b);       
+
+add.cpp:  template<class T> T Add(T a, T b) { return a + b; }
+
+main.cpp: #include "add.h"
+          int x = Add<int>(1, 2);                    
+
+
+C++ 는 cpp 마다 독립적으로 컴파일합니다(분리 컴파일 ). 
+
+각 번역단위의 운명을 보면:
+  main.cpp 컴파일: Add<int> 에 대한 수요가 여기서 발생했습니다. 
+  찍어내려면 레시피 본문이 필요한데 — 선언밖에 안 보입니다. 
+  컴파일러는 포기하고 "Add<int> 라는 심볼이 어딘가 있겠지"라는 외부 참조만 남깁니다.
+
+  add.cpp 컴파일: 레시피 본문이 여기 있습니다. 
+  그런데 add.cpp 안에는 Add<int> 를 쓰는 코드가 없습니다.
+  수요 기반 생성이므로, 수요가 없으면 아무것도 안 찍습니다. 
+  산출물: 기계어 0줄.
+
+링크: main 은 Add<int> 를 찾고, 어디에도 없습니다. 링크 에러
+
+기계어가 태어나려면 "본문"과 "수요"가 같은 번역단위 안에서 만나야 하는데, 
+본문은 add.cpp 에, 수요는 main.cpp 에 있어서 만나지 못했다
+
+---
+
+명시적 인스턴스화
+
+// add.cpp 맨 아래
+template int Add<int>(int, int);   // "int 판을 지금 여기서 찍어라"
+
+함수 호출이 아니라 "수요 발생" 자체를 문법으로 적은 것
+
+이 순간부터 Add<int> 는 더 이상 템플릿이 아니라, cpp 에 구현이 있는 평범한 함수와 완전히 동일한 존재입니다
+main.cpp 는 평범한 외부 함수를 부르듯 선언만 보고 호출하고, 링커가 연결합니다.
+
+---
+---
+---
+
+TArrayCollection                  
+ └ TParticles                     
+    └ TSimpleGeometryParticles    
+       └ TGeometryParticlesImp    
+          └ TKinematicGeometryParticlesImp
+             └ TRigidParticles    
+                └ TPBDRigidParticles
+                   └ TPBDRigidClusteredParticles   
+                      └ TPBDGeometryCollectionParticles
+
+---
+
+TGeometryParticle
+  MShapesArray:FShapeInstanceProxyArray
+
+  MXR:TChaosProperty<FParticlePositionRotation, XR>
+  MNonFrequentData:TChaosProperty<FParticleNonFrequentData, NonFrequentData>
+  
+  MDirtyFlags:FDirtyChaosPropertyFlags          // 변경 추적 비트필드
+  Proxy:IPhysicsProxyBase*
+
+
+TKinematicGeometryParticle
+  MKinematicTarget:TChaosProperty<FKinematicTarget, KinematicTarget>
+
+  MVelocities:TChaosProperty<FParticleVelocities, Velocities>
+
+
+TPBDRigidParticle
+  MMassProps:TChaosProperty<FParticleMassProps, MassProps>
+  MDynamics:TChaosProperty<FParticleDynamics, Dynamics>
+  MMiscData:TChaosProperty<FParticleDynamicMisc, DynamicMisc>
+
+---
+
+TChaosProperty<T, PropName>
+  Property:T                                    // 원료 실제 값
+  PropertyFlag:EChaosPropertyFlags (static)     // 이 프로퍼티의 dirty 비트
+
+FParticleDynamicMisc      { ObjectState, sleep/gravity ... }
+FParticleNonFrequentData  { Geometry, UniqueIdx, ParticleID, SpatialIdx, DebugName }
+
+---
+
+X-macro 패턴
+
+---
+---
+---
+
+TDirtyFlags 
+Bits:int32 에 프로퍼티 32개를 접은 비트마스크
+
+켜고 끄는 체크박스 한 줄
+"이 항목 바뀜/안 바뀜"만 표시하는 스위치 묶음
+
+
+FDirtyChaosProperties 
+  Flags:FDirtyChaosPropertyFlags
+  ParticleBufferType:EParticleType
+
+플래그(무엇)와 창고(값)를 연결하는 인덱싱 계층
+FDirtyChaosProperties::SyncRemote() 가 dirty한 것만 골라 창고에 씁니다
+
+---
+
+FDirtyProxy 
+  Proxy:IPhysicsProxyBase*
+  PropertyData:FDirtyChaosProperties
+  ShapeDataIndices:int32[]
+
+{ 누가(Proxy) + 무엇·어디(PropertyData) + 어떤 shape들 }
+
+플래그·값에는 "누가"가 없습니다
+실제 적용 대상(proxy)과 그 dirty 기술자를 한 몸으로 묶어야
+소비 측이 프록시를 잡고 그 값을 해당 handle/SOA로 되쓸 수 있습니다
+
+---
+
+FDirtySet 
+  DirtyProxyBuckets:FDirtyProxiesBucket[]
+  DirtyProxyBucketInfo:FDirtyProxiesBucketInfo
+
+GeometryCollection 서랍, Joint 서랍… + 각 서랍에 몇 장인지 요약표
+전체 파티클을 매 프레임 스캔하지 않고 바뀐 것만 O(dirty)로 열거
+
+소비 로직이 종류마다 다르므로(파티클 vs 컬렉션 vs 조인트) 타입별 버킷으로 나눠두면
+FDirtySet::ParallelForEachProxy() 로 종류별 일괄·병렬 처리가 됩니다
+
+---
+
+TDirtyElementPool 
+
+XR 값들만 모인 선반, Velocities 값들만 모인 선반
+값을 프로퍼티별 연속 배열(SoA)에 담아야 소비 측이 같은 타입을 캐시 친화적으로 훑습니다
+프록시별로 흩뿌리는 AoS 대신 컬럼으로 모으는 게 이 풀의 존재 이유
+
+---
+
+FDirtyPropertiesManager 
+
+여러 프로퍼티 컬럼을 한 곳에서
+소유·크기관리(FDirtyPropertiesManager::PrepareBuckets() 로 dirty 개수만큼 SetNum)하고
+<타입, PropName> 으로 올바른 풀을 꺼내주는(FDirtyPropertiesManager::GetChaosPropertyPool()) 단일 저장소
+
+FPushPhysicsData 안에서 "값" 전체를 대표
+
+---
