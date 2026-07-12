@@ -1,0 +1,981 @@
+서술 축
+
+TDirtyFlags → FDirtyChaosProperties → FDirtyProxy → (FDirtyProxiesBucket) → FDirtySet
+
+값 축
+
+TDirtyElementPool → FDirtyPropertiesManager
+
+---
+
+FPushPhysicsData
+
+├─ DirtyProxiesDataBuffer:FDirtySet                    
+│   ├─ DirtyProxyBuckets:FDirtyProxiesBucket[Count]      // 프록시 타입 개수만큼 고정 배열
+│   │     └─ ProxiesData:FDirtyProxy[]
+│   │           ├─ Proxy:IPhysicsProxyBase*      
+│   │           ├─ PropertyData:FDirtyChaosProperties
+│   │           │     ├─ Flags:FDirtyChaosPropertyFlags   (= TDirtyFlags<EChaosPropertyFlags>)
+│   │           │     └─ ParticleBufferType:EParticleType
+│   │           └─ ShapeDataIndices:int32[]       
+│   ├─ DirtyProxyBucketInfo:FDirtyProxiesBucketInfo    
+│   └─ ShapesData:FShapeDirtyData[]
+
+└─ DirtyPropertiesManager:FDirtyPropertiesManager      
+      ├─ XRPool:TDirtyElementPool<FParticlePositionRotation>
+      │     └─ Elements:FParticlePositionRotation[]
+      ├─ VelocitiesPool:TDirtyElementPool<FParticleVelocities>
+      └─ ... (프로퍼티마다 풀 하나, X-macro 생성)
+
+---
+
+TDirtyFlags<FlagsType>
+FDirtyChaosProperties
+int32 비트마스크
+
+---
+
+FDirtySet 
+
+"누가 바뀌었나"의 O(dirty) 목록
+서술 축 최상단
+프레임 전체 dirty 프록시를 타입별 버킷으로 담은 집합
+FDirtySet::ParallelForEachProxy()
+
+---
+---
+---
+
+TDirtyElementPool<T>
+
+한 프로퍼티 타입의 값만 늘어놓은 한 컬럼(SoA)
+실제 값을 연속 저장
+DataIdx로 인덱싱
+
+---
+---
+---
+
+FDirtyPropertiesManager 카디날리티
+
+월드의 dirty 바디 전부의 값을 관리
+바디당이 아니라 솔버(월드)당 1
+
+Manager가 관리하는 "여럿"은  **풀들(컬럼들)**이고, 
+각 풀이 "여럿"인 **바디들의 값(원소들)**을 관리
+2단 구조
+
+Manager → 풀[프로퍼티] → 원소[바디]
+
+---
+
+프로퍼티 타입당(7개, 각 100원소)
+
+FDirtyPropertiesManager::XRPool:TDirtyElementPool<FParticlePositionRotation> 같은 풀이 프로퍼티마다 1개
+
+버킷은 프록시 타입 수만큼(SingleParticle, GeometryCollection, ClusterUnion, Joint, ...)으로 고정
+
+---
+
+FDirtyProxy
+
+dirty해진 Proxy를 기록한 항목
+marshalling 대상의 식별자
+
+---
+
+IPhysicsProxyBase
+IPhysicsProxyBase::DirtyIdx:int32
+
+현재 프레임 dirty 버킷에서 내 슬롯 번호
+  IPhysicsProxyBase::DirtyIdx:int32 == INDEX_NONE 이면 "아직 dirty 아님"
+  내 FDirtyProxy 슬롯을 O(1)로 되찾기
+
+---
+
+IPhysicsProxyBase
+  Solver:Chaos::FPhysicsSolverBase*
+  Type:EPhysicsProxyType
+  SyncTimestamp:TSharedPtr<FProxyTimestampBase>* 
+
+---
+
+EChaosProperty(ParticleProperties.inl 나열 순서)가 프로퍼티마다 서수(0,1,2,…)를 부여
+EChaosPropertyFlags::PropName = 1 << EChaosProperty::PropName 로 비트를 만듭니다
+
+비트 i ↔ .inl의 i번째 프로퍼티
+
+파티클 종류별 맵이 아니라 전 프록시 타입이 공유하는 단일 전역 맵
+
+특정 프록시 타입은 자기 소속 비트만 세우고
+나머지 비트는 항상 0으로 낭비되지만 단순합니다
+
+컴파일 타임에 서수가 고정이라 "맵 테이블"이 따로 없고 enum 순서가 곧 맵입니다.
+
+---
+
+FDirtyChaosPropertyFlags = TDirtyFlags<EChaosPropertyFlags>
+FShapeDirtyFlags = TDirtyFlags<EShapeFlags> 
+
+---
+
+Set(FDirtySet)
+
+멤버십/중복 없음
+dedup
+유일성
+
+---
+
+Bucket(FDirtyProxiesBucket)
+
+키(프록시 타입)로 나눈 partition
+카테고리별 슬롯
+
+---
+
+Pool(TDirtyElementPool)
+
+미리 잡아
+재사용하는 
+동종 연속 저장
+
+---
+
+Buffer(FPushPhysicsData::DirtyProxiesDataBuffer:FDirtySet
+
+producer/consumer
+경계·시간을 넘기는 staging
+핸드오프
+
+---
+
+Data(FShapeDirtyData, FDirtyProxy::PropertyData:FDirtyChaosProperties)
+
+값/payload 부분
+행위 없는 struct
+
+---
+
+Info(FDirtyProxiesBucketInfo)
+
+다른 것에 대한 metadata/요약(개수, 인덱스 변환)
+데이터 자체가 아니라 항해용 부기
+
+---
+---
+---
+
+모든 proxy: 솔버가 타입별 레지스트리로 듭니다
+
+FPBDRigidsSolver
+  SingleParticlePhysicsProxies_PT:FSingleParticlePhysicsProxy*[]
+  GeometryCollectionPhysicsProxies_Internal:FGeometryCollectionPhysicsProxy*[]
+  ClusterUnionPhysicsProxies_Internal:FClusterUnionPhysicsProxy*[]
+  JointConstraintPhysicsProxies_Internal:FJointConstraintPhysicsProxy*[]
+  CharacterGroundConstraintProxies_Internal:FCharacterGroundConstraintProxy*[]
+
+---
+
+dirty 목록은 setter가 호출되는 그 순간 해당 프록시가 스스로 등록하며 프레임 내내 쌓입니다
+자기등록 설계
+
+FGeometryParticle::SetX(X)
+{
+  MXR:TChaosProperty::Write(...);   // 내부에서 MarkDirty
+}
+
+TChaosProperty::MarkDirty(...)
+{
+  Proxy:IPhysicsProxyBase::GetSolver()::AddDirtyProxy(Proxy);
+}
+
+FChaosMarshallingManager::AddDirtyProxy(Proxy)
+{
+  ProducerData:FPushPhysicsData*::DirtyProxiesDataBuffer:FDirtySet::Add(Proxy); // DirtyIdx==INDEX_NONE 일 때만
+}
+
+---
+
+FDirtySet::Add() 가 IPhysicsProxyBase::DirtyIdx:int32 == INDEX_NONE 인지 검사해,
+한 프레임에 같은 프록시를 100번 써도 목록엔 한 번만 들어갑니다
+
+---
+
+공간가속은 소유가 solver/evolution
+두 벌이 존재
+
+evolution 내부 구조(sim용)
+external 복사본(GT scene query용)
+
+scene은 그 external 구조로 raycast/sweep/overlap을 돌리고, 
+편입·삭제는 Solver::UpdateParticleInAccelerationStructure_External() 로 솔버에 위임
+
+---
+
+FPushPhysicsData::DirtyPropertiesManager:FDirtyPropertiesManager 는 값 저장소
+프로퍼티별 pool, 한 스냅샷의 데이터
+
+FChaosMarshallingManager 
+여러 FPushPhysicsData 를 이중버퍼로 소유
+producer↔consumer flip, timestamp, sub-step, resim 히스토리를 관리
+
+FChaosResultsManager 
+결과·보간 계층
+FPullPhysicsData 를 모아 물리 스텝 둘 사이를 FChaosInterpolationResults::Alpha:FReal 로 보간
+
+---
+---
+---
+
+GT 스레드가 FChaosMarshallingManager::ProducerData 위에서 FPushPhysicsData  조립 
+
+재료(어느 프록시가 dirty)는 프레임 내내 AddDirtyProxy 로 ProducerData 에 누적되고
+값 복사(조립 완성)는 kick 때 FPBDRigidsSolver::PushPhysicsState 가 합니다
+
+TG_StartPhysics → FStartPhysicsTickFunction → ... → AdvanceAndDispatch_External
+FPBDRigidsSolver::PushPhysicsState()
+{
+  PushData:FPushPhysicsData* = MarshallingManager::GetProducerData_External();
+  DirtyProxiesData:FDirtySet::ParallelForEachProxy( Particle:FGeometryParticle::SyncRemoteData() ); // 값 → pool, 조립 완성
+  MarshallingManager::Step_External();                 
+}
+
+---
+
+FChaosMarshallingManager::Step_External()
+{
+  this::ProducerData:FPushPhysicsData* 에 ExternalTimestamp/InternalStep 부여;
+  this::ExternalQueue:FPushPhysicsData*[] 에 ProducerData 밀어넣기;
+  this::PrepareExternalQueue_External();   // PushDataPool 에서 새 빈 ProducerData 확보 → 다음 프레임용
+}
+
+---
+
+FChaosMarshallingManager
+  // timing (atomics)
+  ExternalTime_External:FReal            // GT 현재 시간
+  ExternalTimestamp_External:int32       // GT 타임스탬프(프레임당 1)
+  SimTime_External:FReal                 // sim 시간(Step_External 시 전진)
+  InternalStep_External:int32            // 현재 push 대상 internal step
+
+  // push 방향
+  ProducerData:FPushPhysicsData*         // GT가 채우는 현재 버퍼
+  ConsumerData:FPushPhysicsData*         // PT가 읽는 현재 버퍼
+  ExternalQueue:FPushPhysicsData*[]      // timestamp 붙은 대기열
+  PushDataPool:FPushPhysicsData*[]       // 재사용 풀(SPSC, realloc 회피)
+  BackingBuffer:TUniquePtr<FPushPhysicsData>[]   // 모든 인스턴스의 실소유(수명/delete)
+  HistoryQueue_Internal:FPushPhysicsData*[]      // resim 보관, 최신이 앞
+  
+  // pull 방향 (대칭)
+  CurPullData:FPullPhysicsData*
+  PullDataQueue:FPullPhysicsData*[]
+  PullDataPool:FPullPhysicsData*[]
+  BackingPullBuffer:TUniquePtr<FPullPhysicsData>[]
+  
+  // 기타
+  MarshallingManagerLock:FRWLock
+  Delay:int32
+  HistoryLength:int32
+
+ProducerData/ConsumerData(이중버퍼, 지금 쓰는 것)
+ExternalQueue/HistoryQueue_Internal(시간순 대기·과거 보관)
+PushDataPool+BackingBuffer(재사용 풀·실소유)
+
+---
+
+FChaosMarshallingManager 는 양방향 raw 마샬링을 다 합니다
+
+FChaosResultsManager 
+
+pull "전송"이 아니라 pull 후처리(보간) 계층
+
+FChaosMarshallingManager& 를 참조로 들고
+그 pull 큐에서 FPullPhysicsData 를 빌려와 두 프레임을 섞어 GT에 부드러운 결과를 만듭니다
+
+---
+
+FChaosResultsManager
+  Channels:FChaosResultsChannel*[]                 // 보간 채널 (static MaxNumChannels = 2, 예: sync/async)
+  MarshallingManager:FChaosMarshallingManager&     // pull 원본을 빌리는 대상
+  InternalQueue:FPullDataQueueInfo[]
+      PullData:FPullPhysicsData*   // MarshallingManager에서 빌려온 결과
+      bHasPopped:bool[]            // 채널별 소비 여부
+      bPendingFree:bool[]          // 채널별 반납 대기
+  PerChannelTimeDelay:FRealSingle[]                 // 채널마다 시간 지연을 둬 Prev/Next 선택
+
+---
+
+FPushPhysicsData
+  DirtyPropertiesManager:FDirtyPropertiesManager
+  DirtyProxiesDataBuffer:FDirtySet              
+
+  StartTime:FReal
+  ExternalDt:FReal
+  ExternalTimestamp:int32
+  InternalStep:int32
+  IntervalStep:int32
+  IntervalNumSteps:int32
+  
+  SimCallbackObjectsToAdd:ISimCallbackObject*[]
+  SimCallbackObjectsToRemove:ISimCallbackObject*[]
+  SimCallbackInputs:FSimCallbackInputAndObject[]
+  SimCommands:FSimCallbackCommandObject*[]
+
+FPBDRigidsSolver::PushPhysicsState 가 조립
+재료는 프레임 내내 FChaosMarshallingManager::AddDirtyProxy 로
+FChaosMarshallingManager::ProducerData 에 누적
+
+값 복사는 kick 때 TGeometryParticle::SyncRemoteData 가
+FPushPhysicsData::DirtyPropertiesManager 의 pool로
+
+FChaosMarshallingManager::BackingBuffer:FPushPhysicsData*[]
+인스턴스는 슬롯 ProducerData → ExternalQueue → ConsumerData → HistoryQueue_Internal 을 오가고
+유휴분은 FChaosMarshallingManager::PushDataPool 에 대기
+
+---
+
+FPullPhysicsData
+  DirtyRigids:FDirtyRigidParticleData[]
+  DirtyRigidErrors:<const IPhysicsProxyBase*, FDirtyRigidParticleReplicationErrorData>
+  DirtyGeometryCollections:FDirtyGeometryCollectionData[]
+  DirtyClusterUnions:FDirtyClusterUnionData[]
+  
+  DirtyJointConstraints:FDirtyJointConstraintData[]
+  DirtyCharacterGroundConstraints:FDirtyCharacterGroundConstraintData[]
+
+  SolverTimestamp:int32
+  ExternalStartTime:FReal
+  ExternalEndTime:FReal
+
+FPBDRigidsSolver::BufferPhysicsResults 가 active 프록시들을 순회하며
+각 FSingleParticlePhysicsProxy::BufferPhysicsResults(FDirtyRigidParticleData&) 가 handle/SOA를 읽어
+FChaosMarshallingManager::CurPullData:FPullPhysicsData* 의 DirtyRigids:FDirtyRigidParticleData[] 에 append
+FChaosMarshallingManager::FinalizePullData_Internal 가 큐로 넘깁니다
+
+FChaosMarshallingManager::BackingPullBuffer:FPullPhysicsData*[]
+슬롯 CurPullData → PullDataQueue
+유휴분은 FChaosMarshallingManager::PullDataPool
+
+---
+
+// 최초 호출자: PT 태스크 FPhysicsSolverProcessPushDataTask::ProcessPushData
+
+FPBDRigidsSolver::ProcessPushedData_Internal(PushData:FPushPhysicsData&)
+{
+  this::MarshallingManager::SetConsumerData_Internal(&PushData);   // 이 스냅샷을 consumer로
+
+  // SimCallback 등록
+
+  // PushData::DirtyProxiesDataBuffer:FDirtySet 를 순회하며 프록시별로
+
+  Proxy:FSingleParticlePhysicsProxy::PushToPhysicsState(Manager, DataIdx, Dirty);
+     //  값 읽기: Dirty::PropertyData:FDirtyChaosProperties 가 Manager pool[DataIdx] 에서 꺼냄
+     //  값 쓰기: FPBDRigidParticleHandle 경유 → FPBDRigidsSOAs 해당 행(X,R,V,W...)
+     //  신규면: handle 생성 + this::GetEvolution():FPBDRigidsEvolution::RegisterParticle(Handle)
+     //          + this::SingleParticlePhysicsProxies_PT 등록 + 가속구조 편입
+}
+
+---
+
+// 최초 호출자: TG_EndPhysics → FEndPhysicsTickFunction → FPhysScene::EndFrame → FChaosScene::SyncBodies
+FChaosScene::SyncBodies(Solver)
+{
+  this::OnSyncBodies(Solver);
+}
+
+FPhysScene_Chaos::OnSyncBodies(Solver)
+{
+  Dispatcher:FDispatcher;   // 로컬, PendingTransforms:FPhysScenePendingComponentTransform_Chaos[] 보유
+  Solver:FPhysicsSolverBase::PullPhysicsStateForEachDirtyProxy_External(Dispatcher);
+  // 이후 Dispatcher::PendingTransforms 를 실제 컴포넌트 이동에 일괄 적용(지연 이동)
+}
+
+FPhysicsSolverBase::PullPhysicsStateForEachDirtyProxy_External(Dispatcher)
+{
+  Results:FChaosInterpolationResults = this::PullResultsManager::PullAsyncPhysicsResults_External(time); 
+  // 동기 모드면 PullSyncPhysicsResults_External
+  
+  // 각 결과에 대해:
+  Proxy:FSingleParticlePhysicsProxy* = RigidInterp:FChaosRigidInterpolationData::Prev:FDirtyRigidParticleData::GetProxy();
+  Proxy::PullFromPhysicsState(RigidInterp::Prev, ts, &RigidInterp::Next, &Results::Alpha);  
+  // Prev↔Next 보간 → GT 갱신
+
+  Dispatcher(Proxy);   // 아래 operator()
+}
+
+FDispatcher::operator()(Proxy:FSingleParticlePhysicsProxy*)   // GT
+{
+  DirtyParticle:FPBDRigidParticle* = Proxy::GetRigidParticleUnsafe();          // 방금 갱신된 GT
+  BodyInstance:FBodyInstance* = ::ChaosInterface::GetUserData(*Proxy::GetParticle_LowLevel());
+  OwnerComponent:UPrimitiveComponent* = BodyInstance::OwnerComponent.Get();
+  NewTransform:FRigidTransform3 = { DirtyParticle::X(), DirtyParticle::R() };
+  // 변경 시 this::PendingTransforms 에 (OwnerComponent, MoveBy, NewRotation) 적재
+}
+
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+
+게임 스레드(GT, External)의 세계
+여기는 게임플레이가 물체를 만들고, 힘을 주고, 위치를 읽는 저작(authoring)의 공간
+
+물리 스레드(PT, Internal)의 세계
+여기는 실제 적분과 충돌이 도는 시뮬레이션의 공간
+
+---
+
+외부(GT) 파티클
+`FGeometryParticle`에서 시작해 `FKinematicGeometryParticle`, `FPBDRigidParticle`로 내려가는 상속 계보
+게임플레이가 직접 읽고 쓴다
+
+핸들
+`FGeometryParticleHandle` 계보
+SOA의 한 행(`ParticleIdx`)을 가리키는 view
+
+SOA 컨테이너
+`FPBDRigidsSOAs` 안에 `TParticles → TGeometryParticlesImp → TPBDRigidParticles`로 이어지는 SOA
+위치·회전·속도가 각각 연속 배열로 사는 실제 저장소다.
+
+---
+
+개념적으로는 "하나의 바디"지만, 구현은 세 표현으로 쪼개져 서로를 가리킨다. 
+SOA의 한 행은 자기를 가리키는 핸들과 외부 파티클과 프록시로의 역참조를 모두 들고 있어, 
+세 층이 삼각형으로 닫힌다. 
+
+---
+
+매 프레임 10,000개의 바디를 통째로 복사해 넘기는 것은, 그중 5개만 움직였을 때 명백한 낭비다. 
+그래서 스냅샷은 전체가 아니라 **변경분(delta)**만 담는다. 
+무엇이 바뀌었는지를 추적해서, 바뀐 것만 넘기는 것이다. 
+
+---
+
+dirty는 "프레임 단위 change-set"
+
+"이번 프레임에 GT에서 바뀐 것들을, PT가 나중에 비동기로 읽을 수 있도록 얼려서 압축·타입별로 담은 변경분"
+
+무엇이 바뀌었는지는 `TDirtyFlags`가 비트마스크로 답한다. 
+한 프록시가 무엇을 바꿨는지의 전표 헤더는 `FDirtyChaosProperties`가 든다(플래그 + 값 접근자). 
+
+그 전표를 실제 대상과 묶은 한 장은 `FDirtyProxy`이고(누가 + 무엇 + shape 인덱스), 
+프레임 전체의 전표를 프록시 타입별 서랍에 담은 바인더는 `FDirtySet`이다. 
+
+---
+
+값 자체는 다른 축에 산다
+한 프로퍼티의 값만 늘어놓은 컬럼이 `TDirtyElementPool`이고, 
+그 컬럼들을 모은 창고가 `FDirtyPropertiesManager`다. 
+
+서술 축(무엇/누가)과 값 축(실제 값)을 하나의 정수로 봉합하는 것이 **DataIdx**다. 
+프록시가 자기 타입 버킷 안에서 갖는 행 번호가, 동시에 모든 pool의 같은 행을 가리킨다.
+
+---
+
+비트는 "무엇이 바뀌었나"만 답한다. 
+값을 어디에 얼려둘지(스냅샷 격리), 
+누가 바뀌었는지의 O(dirty) 목록, 
+타입별 캐시 친화적 일괄 적용, 
+그리고 쓰기 때는 비트만 세우고 무거운 복사는 프레임 경계로 미루는 지연 복사
+
+비트는 이 구조의 가장 안쪽 한 겹(`MDirtyFlags`)으로 살아 있고, 
+나머지는 "비트 하나"를 "다른 스레드로 보낼 수 있는, 얼려진, 컬럼형의, 타입 있는 change-set"으로 바꾸는 기계
+
+---
+
+이 change-set의 한 프레임분을 담는 그릇이 `FPushPhysicsData`
+
+값 창고(`FDirtyPropertiesManager`)와 전표 바인더(`FDirtySet`)
+타이밍 정보(dt, timestamp, internal step)가 
+한 덩어리로 들어 있다. 
+
+이 덩어리들을 실어 나르는 운반·타이밍 계층이 `FChaosMarshallingManager`
+
+매니저는 이중버퍼(GT가 채우는 Producer와 PT가 읽는 Consumer), 
+시간순 대기열(`ExternalQueue`), 
+재사용 풀(`PushDataPool`), 
+그리고 실소유(`BackingBuffer`)
+resim용 히스토리를 든다.
+
+`BackingBuffer`는 `TUniquePtr`의 배열로, 모든 인스턴스의 수명을 쥔다. 
+실제 `delete`는 오직 여기서만 일어나고, 프로그램이 도는 동안 high-water mark로 자라기만 한다. 
+`PushDataPool`은 raw 포인터의 큐로, 지금 놀고 있는(유휴) 인스턴스만 담는 재활용 free-list다. 
+
+딜러가 모든 차의 등록증을 들고(BackingBuffer), 
+주차장엔 지금 빌려줄 수 있는 차만 놓이는 것(Pool)과 같다. 
+
+한 인스턴스는 평생 BackingBuffer의 한 TUniquePtr이 소유하고, 
+그 raw 포인터가 Pool → Producer → Queue → Consumer → History → Pool의 순환을 돈다. 
+그래서 매 프레임 new/delete가 없다.
+
+---
+
+마샬링 매니저는 push와 pull 양방향의 raw 데이터(큐·풀·백킹·이중버퍼)를 모두 소유한다. 
+
+그 위에 얹힌 결과 매니저는 pull 데이터를 빌려와 
+물리 두 프레임을 보간(Prev/Next/Alpha)해 
+GT에 부드러운 결과를 주는 후처리 계층
+
+---
+
+`IPhysicsProxyBase`
+
+프록시는 한쪽에 GT 파티클을, 다른 쪽에 PT 핸들을 쥐고 
+둘을 한 몸으로 묶는 pivot
+
+정확히는 파생 프록시가 그 둘을 들고, 
+base는 어느 솔버·어느 타입·dirty 슬롯 같은 가로지르는 정체성만 든다 
+
+솔버를 소유한 scene(`FPhysScene_Chaos::AddObject`)이 
+`FPBDRigidsSolver::RegisterObject`를 부르고, 
+그 안에서 `SetSolver`로 프록시가 솔버를 알게 되고 
+`SetProxy`로 파티클이 프록시를 알게 된다. 
+
+---
+
+`UWorld::Tick` 그룹을 순서대로 돌린다. 
+
+`TG_PrePhysics`에서 액터들이 바디에 쓰기를 하며 dirty를 쌓는다(생산). 
+
+`TG_StartPhysics`에서 `FStartPhysicsTickFunction`이 물리를 kick한다
+`FChaosScene::StartFrame` → `AdvanceAndDispatch_External` → `PushPhysicsState`가 
+dirty set만 순회하며 값을 pool로 조립하고, 
+`Step_External`로 스냅샷을 대기열에 인계
+
+이어 PT 태스크가 그 스냅샷을 소비해 SOA에 적용하고 
+시뮬레이션이 SOA를 적분한다(소비 + 변형)
+
+마지막으로 `TG_EndPhysics`에서 `SyncBodies`가 결과를 당겨 컴포넌트에 되쓴다
+
+---
+
+`ProcessPushedData_Internal`이 dirty set을 순회하고, 
+`FSingleParticlePhysicsProxy::PushToPhysicsState`가 핸들을 거쳐 `FPBDRigidsSOAs`의 해당 행에 값을 꽂는다. 
+
+---
+
+`SyncBodies`가 `PullFromPhysicsState`로 보간된 결과를 GT 파티클에 되쓰고, 
+그 값이 `FBodyInstance`를 거쳐 `UPrimitiveComponent`의 월드 트랜스폼을 움직인다.
+
+---
+
+Push 데이터는 GT가 생산해 PT가 적용하고, 
+Pull 데이터는 PT가 생산해 GT가 적용한다. 
+
+그리고 두 데이터의 실소유자는 똑같이 마샬링 매니저 
+
+---
+
+Pull 쪽에만 보간이 붙는 이유
+
+렌더 fps와 물리 fps가 다르기 때문
+물리 두 프레임 사이를 Alpha로 섞어야 화면이 튀지 않는다. 
+
+pull의 적용부(`PullFromPhysicsState`)는 Prev·Next·Alpha를 한꺼번에 받아 
+그 자리에서 보간까지 해낸다. 
+
+컴포넌트를 실제로 옮기는 일은 순회 도중 재진입을 피하려고 `PendingTransforms`로 모아 뒤에 일괄 적용한다.
+
+---
+---
+---
+
+FChaosMarshallingManager
+
+marshal의 원뜻
+
+순서대로 이동
+지휘
+
+퍼레이드 marshal
+항공기 유도 marshaller
+군대를 marshal한다(집결·정렬)
+철도의 **marshalling yard(조차장, 미국식으론 classification yard)**
+
+조차장은 들어온 화차를 모으고, 행선지별로 분류하고, 유치선에 대기시켰다가, 알맞은 시각에 알맞은 편성으로 다시 내보내는 곳
+
+dirty 화차를 ProducerData에 모으고, 
+timestamp로 편성 순서를 매기고, 
+ExternalQueue에 대기시켰다가, 
+소비자의 내부 시각이 맞을 때 StepInternalTime_External로 내보내고, 
+빈 화차는 PushDataPool로 되돌려 재사용하는 조차장 관리인
+
+언제 내보낼지(timestamp를 internal step에 매칭, sub-step 처리), 
+무엇을 붙잡아 둘지(resim용 HistoryQueue_Internal), 
+빈 것을 어떻게 돌려쓸지(PushDataPool, BackingBuffer)
+
+---
+
+FPushPhysicsData::DirtyPropertiesManager:FDirtyPropertiesManager
+
+property pool들을 준비·재사용·조회하는 관리자
+값은 manager 내부의 여러 column에 
+
+FDirtyPropertiesManager::XRPool:TDirtyElementPool<FParticlePositionRotation>
+FDirtyPropertiesManager::VelocitiesPool:TDirtyElementPool<FParticleVelocities>
+...
+
+FDirtyPropertiesManager::PrepareBuckets()
+
+---
+---
+---
+
+FPBDRigidsSolver
+
+모든 바디의 SOA(Particles:FPBDRigidsSOAs)
+수치 엔진(MEvolution:FPBDRigidsEvolution*)
+base에서 물려받은 마샬링 매니저
+
+---
+
+등록 허브
+
+RegisterObject로 프록시를 받아 SetSolver/SetProxy로 결선
+unique idx를 발급
+가속구조에 편입
+
+---
+
+마샬 엔드포인트
+
+GT가 밀어준 걸 ProcessPushedData_Internal로 꺼내 SOA에 적용하고
+BufferPhysicsResults로 결과를 pull 데이터에 채웁니다
+
+---
+
+Chaos에서 한 solver는 "데이터를 가진, 틱될 수 있고 마샬링의 양 끝을 소유하는 하나의 물리 세계"
+여러 solver가 있을 수 있고(예: ChaosSolverActor가 별도 solver를 띄웁니다)
+FChaosSolversModule이 그 여럿을 관리
+
+PT 쪽에서 한 시뮬레이션에 필요한 모든 소유·구동·경계 책임이 한 주인에게 모이는 지점
+
+마샬링 파이프의 GT 끝에는 FPhysScene_Chaos라는 허브가, 
+PT 끝에는 FPBDRigidsSolver라는 허브가 마주 서 있습니다
+
+---
+
+게임 프레임마다(솔버당) FChaosScene가 FPhysicsSolverBase::AdvanceAndDispatch_External(dt)를 한 번 부릅니다
+external 시간을 고정 dt로 나눠 NumSteps를 구하고
+FPBDRigidsSolver::PushPhysicsState를 한 번 돌린 뒤
+while( FChaosMarshallingManager::StepInternalTime_External() ) 루프로 internal 스텝을 하나씩 풀어내며
+스텝마다 FPhysicsSolverProcessPushDataTask와 FPhysicsSolverAdvanceTask를 던집니다
+각 internal 스텝은 
+FPBDRigidsSolver::AdvanceSolverBy(SubStepInfo) → FPBDRigidsEvolution::AdvanceOneTimeStep(dt)로, 
+SOA 전체를 한 번 적분·해결합니다
+
+1 게임 프레임 → 1 AdvanceAndDispatch_External → 0..N internal 스텝 → 각 스텝당 1 AdvanceOneTimeStep
+
+---
+---
+---
+
+FPushPhysicsData
+“어떤 proxy가 바뀌었다”는 목록
+“각 proxy의 어떤 값이 새 값인가”라는 값 묶음
+
+FPhysicsSolverProcessPushDataTask::ProcessPushData()
+  FPBDRigidsSolver::ProcessPushedData_Internal 로 GT 데이터를 SOA에 반영
+  ProcessPushData가 prereq로 먼저 끝나야 Advance가 돕니다
+
+---
+
+FPhysicsSolverAdvanceTask 
+물리 세계를 한 스텝 굴리고 push data 반납
+  FPhysicsSolverBase::AdvanceSolverBy 로 실제 한 스텝 전진
+    FPBDRigidsEvolution::AdvanceOneTimeStep
+  push data를 FChaosMarshallingManager::FreeDataToHistory_Internal 로 회수
+
+---
+
+FChaosMarshallingManager::SetConsumerData_Internal()
+“지금부터 이 편지를 읽겠다”는 지정
+
+---
+
+FPBDRigidsSolver::ProcessSinglePushedData_Internal()
+
+FSingleParticlePhysicsProxy::PushToPhysicsState()가 
+dirty flag를 읽고, 
+바뀐 property만 FPushPhysicsData::DirtyPropertiesManager의 pool에서 꺼내 handle에 쓴다
+
+---
+
+새로운 바디라면 갱신 전에 먼저 탄생시켜야 한다
+
+Game Thread에는 FSingleParticlePhysicsProxy::Particle:TUniquePtr<FGeometryParticle>가 있지만, 
+Physics Thread의 particle handle과 SoA 행은 아직 없다. 
+
+그러면 솔버는 Physics Thread 쪽 particle handle을 만들고, 그 handle을 proxy와 연결하고, Evolution에 등록한다
+
+---
+---
+---
+
+렌더: World(GT) → [render command queue] → FScene + FPrimitiveSceneProxy
+물리: World(GT) → FPhysScene(GT facade) → [marshalling] → FPBDRigidsSolver + FPBDRigidsSOAs 
+
+FScene의 짝은 FPhysScene이 아니라 FPBDRigidsSolver
+
+---
+
+FPrimitiveSceneProxy
+RT 쪽에만 존재하는 one-sided 복제본
+
+FSingleParticlePhysicsProxy
+two-sided bridge
+GT 표현(Particle:FGeometryParticle*)과 PT 핸들(Handle:FGeometryParticleHandle*)을 둘 다
+PushToPhysicsState(GT→PT)와 PullFromPhysicsState(PT→GT)를 둘 다
+
+---
+
+FPhysicsActorHandle = FSingleParticlePhysicsProxy*
+FGeometryParticleHandle
+
+---
+
+참조(reference): 누가 이 객체를 가리켜서 도달하나
+수명(lifetime): 누가 만들고 누가 지우나
+접근(access): 어느 스레드가 실제로 그 상태를 만져도 되나
+
+---
+
+FPrimitiveSceneProxy
+
+컴포넌트가 CreateSceneProxy로 만들고
+DestroyRenderState_Concurrent로 허뭅니다
+접근은 render thread 전용
+실제 delete도 FScene을 통해 RT에서 벌어집니다
+
+---
+
+FSingleParticlePhysicsProxy 
+
+GT는 FBodyInstance가 actor handle로
+PT는 FPBDRigidsSolver::SingleParticlePhysicsProxies_PT:FSingleParticlePhysicsProxy*[] 레지스트리가
+
+GT가 FBodyInstance::InitBody에서 생성을 시동하지만
+실제 delete는 솔버가 지연 처리
+FPBDRigidsSolver::PendingDestroyPhysicsProxy → DestroyPendingProxies_Internal
+PT가 아직 핸들을 쓰는 중일 수 있어 바로 못 지우니까
+
+FPhysScene은 소유자가 아니라 
+이 등록/해제를 중개(AddObject/RemoveObject)
+
+---
+
+FChaosScene::SceneSolver
+StartFrame/EndFrame/SyncBodies
+바디 등록·해제를 중개
+
+GT 쪽 scene-query 데스크
+FChaosScene::SolverAccelerationStructure
+CopySolverAccelerationStructure로 PT의 구조를 GT로 복사해 둡니다
+
+---
+
+FPhysScene_Chaos
+
+GT 안에서 identity 번역
+PhysicsProxyToComponentMap
+ComponentToPhysicsProxyMap
+
+스레드 경계를 넘는 데이터 번역
+GT 값 ↔ PT SOA
+FChaosMarshallingManager
+
+---
+---
+---
+
+한 UWorld는 render-scene(FScene)과 physics-scene(FPhysScene)을 가집니다
+여기서 "Scene"은 "World의 하위 시스템별 대표 객체"라는 뜻으로 읽을 수 있다
+"게임 스레드가 한 World의 물리를 소유·구동·해석하는 데 필요한 모든 것"의 창구
+
+역사적 화석
+
+PhysX 시절 FPhysScene은 PxScene을 감싸는 래퍼
+PxScene이 곧 물리 world
+
+Chaos가 PhysX를 대체하면서 실제 세계는 solver(PT)로 이사
+
+---
+---
+---
+
+한 물체는 두 번 표현
+
+FGeometryParticle, GT 메모리, GT만 만짐
+FGeometryParticleHandle → SOA 한 줄, PT 메모리, PT만 만짐
+
+이 둘은 그 자체로는 서로를 모릅니다
+같은 물체를 묘사하지만 남남인 두 객체입니다
+
+프록시는 그 둘을 가리키는 포인터를 든 객체
+
+Particle:FGeometryParticle* 
+Handle:FGeometryParticleHandle*
+
+PushToPhysicsState
+PullFromPhysicsState
+
+프록시가 Handle을 쥐고 있으니 들어온 GT-값을 PT 세계의 어디에 쓸지 압니다
+프록시가 Particle을 쥐고 있으니 시뮬 결과를 GT 세계의 어디에 쓸지 압니다
+
+그리고 FPhysScene의 map을 거쳐 올바른 component로 되돌아옵니다
+
+---
+---
+---
+
+GT와 PT는 같은 프로세스의 두 스레드이고, heap은 하나입니다
+별개의 GT-메모리, PT-메모리 같은 건 애초에 없다
+어느 편의 밭에 심긴 게 아니다.
+"두 세계"는 "어느 스레드가 언제 만지느냐"의 규율
+
+proxy는 "양쪽에 있는" 게 아니라, 하나의 heap에 있는 단 하나의 객체이고, 
+두 스레드가 둘 다 그 포인터를 쥐고
+파이프라인이 시간을 갈라준 덕에 서로 다른 순간에 그 객체의 메서드를 부릅니다
+
+---
+
+FSingleParticlePhysicsProxy
+
+GetGameThreadAPI()
+FRigidBodyHandle_External
+
+GetPhysicsThreadAPI()
+FRigidBodyHandle_Internal
+
+공유 heap 한 곳에 살고, 각 스레드에는 자기 쪽 얼굴만 보입니다
+
+---
+
+FParticle은 누가 소유하나
+
+FSingleParticlePhysicsProxy —(TUniquePtr로 소유)→ FGeometryParticle(GT)
+proxy —(raw 포인터로 참조)→ FGeometryParticleHandle(PT; 실소유는 SOA)
+
+FBodyInstance::InitBody가 particle을 만들어 
+FSingleParticlePhysicsProxy::Create(TUniquePtr&&) 로 넘기며 
+소유권을 proxy에 이관
+
+PT 쪽 authoritative 사본은 
+solver의 SOA(FPBDRigidsSolver::Particles:FPBDRigidsSOAs)
+handle은 그 SOA 한 행을 가리키는 view
+
+---
+
+FPhysicsObject
+FPhysicsObjectHandle = FPhysicsObject*
+
+{ 어느 proxy, 그 안의 몇 번 body, 이름 } 의 위치표(locator)
+
+"한 물리 body"를 종류 불문하고 가리키는 opaque 통합 핸들
+FPhysicsObject는 이 proxy의 body 하나를 대리
+하나의 인터페이스(FPhysicsObjectInterface)로 transform·mass·velocity 등을 다루게 해주는 추상
+
+내부는 opaque입니다(struct FPhysicsObject; 전방선언만 있고 알맹이를 안 드러냄)
+당신은 그 속을 만지지 않고, 핸들을 인터페이스에 넘겨서 조작합니다
+
+---
+---
+---
+
+주소공간/프로세스/네트워크 경계
+넘기 = 직렬화 + 전송(서로 다른 메모리로 복사)
+
+스레드/동시성 경계
+넘기 = 동기화·인계(같은 메모리, 다른 시간-주인)
+
+---
+
+소유는 참조와 수명과 접근으로 갈라졌고, 
+상태는 설정과 동역학으로 갈라졌다.
+
+세계 속을 낙하하는 상자 하나는 엔진 안에서 흩어져 있다
+게임 스레드 쪽에는 플래그와 설정과 재료 참조를 인 저작 객체(FBodyInstance)로, 
+
+같은 게임 스레드에 그 물리 상태의 얇은 거울(FGeometryParticle)로, 
+물리 스레드 쪽에는 모든 body가 열을 맞춰 누운 표의 한 행(SOA)으로, 
+그 행을 가리키는 handle으로, 
+종류를 안 가리는 불투명한 표찰(FPhysicsObject)로, 
+이 모두를 하나로 묶는 proxy로. 
+
+---
+
+조각은 자기 일이 가장 싸게 처리되는 곳에 산다.
+
+동역학 — 위치, 속도, 힘은 시뮬레이션이 매 스텝 모든 body를 한꺼번에 삼키는 데이터 
+그것은 연속으로 늘어선 배열, SOA로, 물리 스레드에 살아야 한다. 
+
+반면 설정 "물리를 켤까", 질량, 감쇠, 어떤 geometry와 material을 쓸까
+게임플레이가 한 번 세팅하고 드물게 건드리는, 한 body씩 개별로 만지는 데이터
+그것은 게임 스레드의 FBodyInstance에 산다. 
+
+속도는 "설정"이 아니라 "매 스텝 일괄 계산되는 결과"이기 때문에, 
+자기 일이 벌어지는 SOA로 간 것
+
+각 조각은 자기 노동이 부른 자리에
+
+---
+
+GT와 PT는 두 개의 장소가 아니라 두 개의 스레드
+누가, 무엇을, 언제 만져도 되는가에 대한 약속
+
+경계
+무언가가 달라지는 선
+넘는 데 복사가 필요하면 주소공간의 경계, 
+동기화가 필요하면 스레드의 경계, 
+인터페이스 호출이 필요하면 모듈의 경계, 
+검증이 필요하면 신뢰의 경계 
+
+물리 엔진의 GT↔PT 이음매는 스레드의 경계
+같은 메모리를, 시간을 갈라 번갈아 만지는 규율
+
+---
+
+두 스레드가 body를 동시에 만질 수는 없으니, 
+바뀐 것만 얼려 스냅샷으로 뜨고, 
+프레임이 넘어가는 순간에 건너편으로 넘긴다. 
+
+Dirty 클래스들, 이중 버퍼, 재사용 풀
+"무엇이 바뀌었나"와 "새 값"을 하나의 정수로 봉합하던 DataIdx
+
+---
+
+render의 proxy는 저편에 놓아둔 복제본
+물리의 proxy는 대역이 아니라 중개자 
+
+GT particle을 소유하고, 
+PT의 SOA 행을 가리키는 handle을 쥐고, 
+양쪽이 "이 body"라고 부를 때 가리키는 안정된 이름
+시뮬레이션 결과에 찍히는 반송 주소 
+
+home국 대표부(GT particle)를 소유하면서 host국과의 관계(PT handle)를 유지
+body의 집
+
+---
+
+실제 수치는 Evolution이 하고, Solver는 한 시뮬레이션을 소유하고 구동하는 문맥
+
+---
+
+다원론적
+body를 두 스레드로 찢고, 
+데이터를 SOA로 눕히고, 
+설정과 계산을 갈라놓는다. 
+
+세계 속을 낙하하는 그 상자는 어느 한 객체 안에 있지 않다. 
+그것은 게임 스레드의 설정 하나와, 물리 스레드의 표 속 한 행과, 
+손가락 하나가 모두 같은 상자라는 하나의 약속이다
+
+body는 엔진이 매 프레임 다시 맺는 대응(correspondence)
+그것은 어디에도 있지 않고 조각들 사이의 관계로서 유지된다
