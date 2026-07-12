@@ -979,3 +979,219 @@ body를 두 스레드로 찢고,
 
 body는 엔진이 매 프레임 다시 맺는 대응(correspondence)
 그것은 어디에도 있지 않고 조각들 사이의 관계로서 유지된다
+
+---
+---
+---
+---
+---
+---
+
+FPBDRigidsSolver::BufferPhysicsResults
+이번 스텝에 active(움직인) particle만 순회하며 결과를 채웁니다
+
+proxy 종류별로 갈린 배열
+
+FPullPhysicsData
+  DirtyRigids:FDirtyRigidParticleData[]
+  DirtyRigidErrors:<const IPhysicsProxyBase*, FDirtyRigidParticleReplicationErrorData>
+  DirtyGeometryCollections:FDirtyGeometryCollectionData[]
+  DirtyClusterUnions:FDirtyClusterUnionData[]
+  DirtyJointConstraints:FDirtyJointConstraintData[]
+  DirtyCharacterGroundConstraints:FDirtyCharacterGroundConstraintData[]
+
+---
+
+Pull 쪽 결과
+움직인 body의 시뮬 결과는 X·R·V·W가 거의 항상 함께 바뀐다
+
+---
+
+동종(homogeneous) 대량 처리를 위해 type-switch를 hot loop 바깥으로 끌어올리는 것
+타입별 버킷으로 분기를 hoist
+
+TArray<IPhysicsProxyBase*> 하나에 전부 섞어 담고, 
+순회하며 proxy->PushToPhysicsState()를 virtual로 부르는 방식
+
+원소마다 "이게 무슨 타입이지?"를 묻고 분기하고(또는 vtable 간접호출)
+데이터는 포인터로 흩어져 캐시를 때립니다
+
+body가 수천 개면 그 분기·virtual 비용을 수천 번 치릅니다
+
+타입별 버킷은 그 질문을 원소마다가 아니라 통마다 한 번씩만 하게 만듭니다
+그 안에서는 타입이 정적으로 확정된 분기 없는 tight loop가 돕니다
+
+같은 것끼리 뭉쳐, 분기 없이, 한꺼번에 처리한다
+
+---
+---
+---
+
+Push의 FDirtySet::DirtyProxyBuckets:FDirtyProxiesBucket[]
+FPullPhysicsData::DirtyRigids:FDirtyRigidParticleData[](및 Sibling)
+FPBDRigidsSolver::SingleParticlePhysicsProxies_PT:FSingleParticlePhysicsProxy*[](및 Sibling)
+SOA의 저장 컨테이너 StaticParticles / KinematicParticles / DynamicParticles / ClusteredParticles
+Evolution의 제약 컨테이너 Collision / Joint / Suspension / CharacterGround
+
+(1) 동종 batch — hot loop에서 원소마다 분기·virtual 대신 통마다 타입이 확정된 tight loop
+(2) 표현 필요 — joint 결과와 rigid 결과는 애초에 다른 struct라 한 배열에 못 담김
+
+---
+
+FDirtyPropertiesManager::XRPool:TDirtyElementPool<FParticlePositionRotation>(및 Velocities/Dynamics/... pool들)
+FPBDRigidsSOAs::ActiveParticlesMapArray / MovingKinematicsMapArray / TransientDirtyMapArray
+FPBDRigidsSolver::MidPhaseModifiers / CCDModifiers / StrainModifiers / ContactModifiers
+
+---
+---
+---
+---
+---
+
+Event 시스템의 뼈대는 event 종류마다 하나씩인 TEventContainer<PayloadType>
+
+EEventType { Collision, Breaking, Trailing, Sleeping, Removal, Crumbling }
+충돌, (클러스터) 파손, 궤적, 수면 전이, 제거, 부스러짐
+
+TEventContainer<PayloadType>
+  FCollisionEventData::CollisionData:FAllCollisionData[](raw 충돌 배열)
+  FCollisionEventData::PhysicsProxyToCollisionIndices:FIndicesByPhysicsProxy(proxy→그 proxy가 낀 event 인덱스들)
+  raw 데이터 배열 + "누가 연루됐나"의 proxy 색인 두 부분
+
+---
+
+FPBDRigidsSolver
+  MEventManager:FEventManager*
+
+FEventManager
+  EventContainers:FEventContainerBase*[]        (EEventType 당 하나)
+  ...
+
+---
+
+단일버퍼면 GT가 읽는 동안 PT가 못 쓴다
+
+EventBuffer:IBufferResource*
+FMultiBufferFactory::CreateBuffer(BufferMode)로 만든 MultiBuffer
+
+한 번 만들어 매 프레임 Reset+refill+flip으로 재사용
+PT가 producer 쪽에 쓰고 GT가 consumer 쪽을 읽다가 flip합니다.
+
+---
+
+async physics
+
+물리를 고정 dt로 GT와 디커플해 돌립니다
+GT가 프레임 N 결과를 (보간해서) 읽는 동안 PT는 이미 프레임 N+1을 생산할 수 있습니다
+이때 producer와 consumer가 겹치므로 2~3중 버퍼가 필요
+
+버퍼 개수가 EMultiBufferMode로 설정 가능
+sync면 사실상 single로도 되고, async면 double/triple
+
+---
+
+TEventContainer는 6종 event에 공통으로 재사용되는 buffer+dispatch 껍데기
+"solver에서 이 event를 어떻게 뽑나"를 자기가 모릅니다. 
+그 지식을 밖에서 함수로 주입받습니다
+
+RegisterEvent가 InjectedFunction을 바인딩
+InjectProducerData(Solver)는 "주입된 producer 함수를 돌려 producer 버퍼를 채워라"
+
+---
+
+TG_StartPhysics  : push 조립·인계 -> async sim task 디스패치
+TG_DuringPhysics : sim이 worker에서 돈다
+TG_EndPhysics    : 완료 대기 → pull sync → event dispatch
+TG_PostPhysics   : 갓 나온 결과를 쓰는 gameplay tick
+
+---
+
+// TG_StartPhysics
+FStartPhysicsTickFunction::ExecuteTick()
+{
+  Target:UWorld*::StartPhysicsSim();
+    PhysScene:FPhysScene*::StartFrame();
+      FChaosScene::StartFrame()
+      {
+        this::OnStartFrame();                                   
+        this::SceneSolver::AdvanceAndDispatch_External(Dt)
+        {
+          this::PushPhysicsState();                             // push 조립 (dirty set → pool)
+          this::MarshallingManager:FChaosMarshallingManager::Step_External();   // 인계
+          // 디스패치:
+          //   FPhysicsSolverProcessPushDataTask  → ProcessPushedData_Internal → PushToPhysicsState → SOA
+          //   FPhysicsSolverAdvanceTask          → Evolution::AdvanceOneTimeStep (pull·event 생산)
+        }
+      }
+}
+
+// TG_DuringPhysics : 위 task들이 async 진행
+
+// TG_EndPhysics
+FEndPhysicsTickFunction::ExecuteTick()
+{
+  Target:UWorld*::FinishPhysicsSim();
+    PhysScene:FPhysScene*::EndFrame();
+      FChaosScene::EndFrame()
+      {
+        this::IsCompletionEventComplete();                     // sim task 완료 보장 (async면 대기)
+        this::CopySolverAccelerationStructure();               // GT scene-query 가속구조 갱신
+        this::SyncBodies(Solver);                  // pull: 보간 + PullFromPhysicsState → GT particle → UPrimitiveComponent
+        Solver:FPBDRigidsSolver::FlipEventManagerBuffer();     // event 더블버퍼 flip
+        Solver:FPBDRigidsSolver::SyncEvents_GameThread()
+        {
+          this::MEventManager:FEventManager::DispatchEvents()
+            FPhysScene_Chaos::HandleCollisionEvents()
+              this::DispatchPendingCollisionNotifies() // ← 여기서 OnComponentHit 발화
+        }
+        this::OnPhysScenePostTick.Broadcast();
+      }
+}
+
+// TG_PostPhysics : 동기화된 결과를 소비하는 gameplay
+TG_PostPhysics에서 tick하는 gameplay는 이미 hit delegate가 처리된 상태를 봅니다
+
+---
+
+TEventContainer<PayloadType>::InjectedFunction
+  :TFunction<void(const FPBDRigidsSolver* Solver, PayloadType& EventDataInOut, bool bReset)>
+
+RegisterEvent가 이 함수를 바인딩
+
+---
+
+IEventHandler::HandleEvent(const void*) = 0                  // ← virtual pure base
+TRawEventHandler<PayloadType,HandlerType> : IEventHandler    // ← override
+
+TRawEventHandler<PayloadType, HandlerType>::HandleEvent(const void* EventData)
+{
+  (Handler->*HandlerFunction)( *(const PayloadType*)EventData );  // void* → PayloadType* 캐스팅 후 typed 호출
+}
+
+---
+---
+---
+
+Marshalling은 마샬 대상이 고정·기지(닫힌 스키마)라 솔버가 하드코딩
+
+반면 Event는 생산자(collision·clustering...)도 소비자(gameplay component·replication·Niagara·audio...)도 
+서로 다른 모듈이고, 코어가 그들을 몰라야 합니다. 
+그래서 producer/consumer를 register/inject로 디커플하는 broker가 필요
+
+---
+
+FChaosMarshallingManager 
+STATE delta 미러 도구
+dirty pool, DataIdx join, resim history, timestamp queue
+
+FEventManager            
+EVENT pub-sub 도구
+handler registry, per-type container, listener filter
+
+---
+
+이벤트는 한 producer 버퍼에 누적(InjectProducerData(bReset=false))했다 한 번 flip.
+개수가 안 변하니 recycle pool도 별도 backing도 필요 없음
+이벤트는 재적용하는 input이 아니라 output 통지라, resim 대상이 아님
+
+이벤트 버퍼는 그 FChaosMarshallingManager 버퍼 machinery의 간단한 부분집합
