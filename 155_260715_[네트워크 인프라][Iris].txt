@@ -1,0 +1,1333 @@
+묶는 기준은 공유 조건(lifecycle)
+
+state
+같은 owner + 같은 high-level 조건을 가진 member 집합
+
+grouping의 요점은 표현의 중복 제거가 아니라 batching 
+조건을 property 하나하나가 아니라 블록 단위로 한 번에 적용·필터
+
+---
+
+FReplicationProtocol                                          // object 전체 스키마
+└─ ReplicationStateDescriptors:FReplicationStateDescriptor*[] // state 하나의 스키마
+   └─ member i = 아래 배열들의 i번째 행
+        MemberDescriptors:FReplicationStateMemberDescriptor[i]                      // offset(external/internal)
+        MemberSerializerDescriptors:FReplicationStateMemberSerializerDescriptor[i]  // codec
+        MemberChangeMaskDescriptors:FReplicationStateMemberChangeMaskDescriptor[i]  // dirty bit
+        MemberProperties:FProperty*[i]                                        // ← reflection 다리
+
+---
+
+Object  (게임: UObject   /   IRIS: FNetRefHandle · ObjectIndex 로 식별)
+├─ FReplicationInstanceProtocol                               // 이 인스턴스의 바인딩
+│   ├─ Fragments:FReplicationFragment*[]                      // state를 이 object에 잇는 행위 객체
+│   └─ FragmentData:FFragmentData[].ExternalSrcBuffer:uint8*  // → external state 버퍼(값)
+└─ (참조) FReplicationProtocol                                // 위 schema spine 을 가리킴
+
+---
+
+flyweight 
+
+FReplicationProtocol
+공유
+
+FReplicationInstanceProtocol
+"여기부터 인스턴스마다 다르다"는 경계선
+
+---
+
+Protocol 
+
+복제는 전송되지 않는 계약 위에서 돈다
+양쪽이 같은 클래스에서 같은 규칙으로 굽고 identifier로만 대조
+두 당사자(server/client)가 동일하게 재현해 합의해야 하는 것
+
+---
+
+FNetHandle 
+모듈이 NetCore(Iris 아님)
+넷 스택 전반이 "이 로컬 오브젝트"를 가리킬 때 씀
+앱 수명 동안 replicated object를 유일하게 식별
+
+---
+
+FNetRefHandle 
+
+모듈이 IrisCore
+Iris ReplicationSystem이 등록된 NetObject에 매기는 네트워크 id
+
+cross-machine 의미
+네트워크 reference
+
+FNetRefHandleManager가 부여·관리
+Id : 60bit + ReplicationSystemId : 4bit
+
+FNetRefHandleManager
+FNetRefHandle ↔ ObjectIndex 매핑
+
+---
+
+FNetObjectReference 
+모듈 IrisCore
+
+RefHandle:FNetRefHandle // 핸들로 가리키기
+PathToken:FNetToken     // 경로 토큰으로 가리키기 (핸들 없이 stable path/asset)
+Traits:ENetObjectReferenceTraits  // CanBeExported 등
+
+---
+---
+---
+
+Editor process
+  ├─ PIE Server UWorld
+  │    └─ Server UNetDriver
+  │         └─ UReplicationSystem[0]
+  │
+  ├─ PIE Client 1 UWorld
+  │    └─ Client UNetDriver
+  │         └─ UReplicationSystem[1]
+  │
+  └─ PIE Client 2 UWorld
+       └─ Client UNetDriver
+            └─ UReplicationSystem[2]
+
+---
+
+FReplicationSystemFactory::CreateReplicationSystem()
+생성된 System을 process-global array에 등록
+
+FReplicationSystemFactory::ReplicationSystems:UReplicationSystem*[16]
+
+---
+
+각 UReplicationSystem은 독립적인 FNetRefHandleManager를 가진다
+각 manager는 자기 Handle ID를 독립적으로 할당한다.
+
+FNetRefHandle
+
+{ Id=42, ReplicationSystemId=0 }
+{ Id=42, ReplicationSystemId=1 }
+
+이 4-bit는 양 endpoint가 합의하는 network Object ID의 일부가 아니다. 
+현재 process에서 Handle을 올바른 IRIS instance로 돌려보내기 위한 local metadata
+
+---
+---
+
+UReplicationSystem                                        // public UObject facade (exported API)
+
+└─ Impl:TPimplPtr<FReplicationSystemImpl>                 // pimpl — 컴파일 방화벽
+
+     └─ ReplicationSystemInternal:FReplicationSystemInternal   // 서브시스템 집합체
+          ├─ FReplicationStateStorage
+          ├─ FReplicationFiltering
+          ├─ FReplicationPrioritization
+          ├─ FReplicationConnections
+          ├─ FDeltaCompressionBaselineManager
+          ├─ FObjectReferenceCache
+          ├─ ... 
+          └─ UReplicationBridge*        
+
+---
+
+TPimplPtr<FReplicationSystemImpl> Impl
+
+impl을 forward-declare만 하고 
+무거운 include는 전부 .cpp로 밀어넣는 pimpl 관용구
+
+---
+
+각 서브시스템이 서로의 포인터를 직접 들면 상호참조·초기화 순서 지옥
+FReplicationSystemInternal이 그 전부를 멤버로 소유하고 getter로 나눠줘
+Iris 내부의 service locator / shared context
+"내부 세계" 핸들 하나로 서브시스템이 일원화
+
+---
+
+external 저장소
+
+FPropertyReplicationState가 소유하는 StateBuffer:uint8* 
+state(=fragment) 당 하나
+
+다른 fragment 종류는 자기 external 버퍼를
+FReplicationInstanceProtocol::FFragmentData::ExternalSrcBuffer로 대신 넘길 수 있어
+
+---
+
+internal 저장소
+
+현재본
+send용은 ReplicatedObjectStateBuffers:TNetChunkedArray<uint8*>[i]
+recv용은 FReplicatedObjectData::ReceiveStateBuffer에 보관
+
+baseline(과거본, delta용)
+FReplicationStateStorage가 관리
+
+---
+
+external·internal 두 layout은 같은 FReplicationStateDescriptor 한 번의 build에서 동시에 산출된 두 projection
+
+---
+
+UCLASS 의 UPROPERTY 들 (reflection)
+   │  FReplicationStateDescriptorBuilder — build 1회, member 타입 → NetSerializer/Config 선택
+   ▼
+FReplicationStateDescriptor  (state 스키마; member-indexed 병렬 배열)
+   ├─ MemberDescriptors[i].ExternalMemberOffset + ExternalSize/Align   ┐
+   ├─ MemberDescriptors[i].InternalMemberOffset + InternalSize/Align   │ 같은 pass가
+   ├─ MemberChangeMaskDescriptors[i] (BitOffset/BitCount)              │ 동시에 산출
+   └─ MemberSerializerDescriptors[i] (external ↔ internal 변환)        ┘
+   │  (오브젝트 단위 합산)
+   ▼
+FReplicationProtocol.InternalTotalSize / InternalTotalAlignment
+   ├─ external 저장소로 실체화 → FPropertyReplicationState::StateBuffer     (ExternalSize, state별)
+   └─ internal 저장소로 실체화 → uint8* @ InternalTotalSize (오브젝트별)
+        · 현재본  : FNetRefHandleManager::ReplicatedObjectStateBuffers[i] · ReceiveStateBuffer
+        · baseline: FReplicationStateStorage
+
+---
+---
+---
+
+UNetDriver         
+└─ UReplicationSystem          
+   └─ Impl:TPimplPtr<FReplicationSystemImpl>
+      └─ Impl::FReplicationSystemInternal
+         │
+         ├─[스키마 — 타입 단위, 모든 AMyPawn 인스턴스가 공유]
+         │  ├─ FReplicationProtocolManager
+         │  │   └─ Protocol:FReplicationProtocol            (AMyPawn 용)
+         │  │        ├─ FReplicationStateDescriptor*[]
+         │  │        │    └─ [0] → D   
+         │  │        ├─ InternalTotalSize = 12
+         │  │        └─ InternalTotalAlignment = 4
+         │  └─ FReplicationStateDescriptorRegistry
+         │       └─ D:FReplicationStateDescriptor 를 캐시·공유
+         │
+         ├─[인스턴스 색인 — 오브젝트 단위]
+         │  └─ FNetRefHandleManager
+         │       ├─ TMap<FNetRefHandle → FInternalNetRefIndex>
+         │       ├─ TNetChunkedArray<FReplicatedObjectData>
+         │       │    └─ [7] = {                              ← pawn P
+         │       │         FNetRefHandle,
+         │       │         FReplicationProtocol*        → 위 AMyPawn Protocol
+         │       │         FReplicationInstanceProtocol* 
+         │       │         ReceiveStateBuffer:uint8*             (수신용 internal)
+         │       │         Flags: ... }
+         │       └─ ReplicatedObjectStateBuffers:TNetChunkedArray<uint8*>
+         │            └─ [7] ──▶ ■ internal 저장소 (송신용, 12B)     ← 여기!
+         │
+         └─[baseline — delta 기준]
+            └─ FReplicationStateStorage
+                 └─ P(index 7)의 과거 quantized 스냅샷들
+
+---
+
+D:FReplicationStateDescriptor
+ member 0 = Ammo
+   MemberProperties[0]:FProperty*                = FIntProperty(Ammo)
+   MemberDescriptors[0]                          = { ExternalMemberOffset=24, InternalMemberOffset=8 }  
+   MemberSerializerDescriptors[0]                = { Serializer=FIntRange…, Config={Lower=0,Upper=1000,BitCount=10} }
+   MemberChangeMaskDescriptors[0]                = { BitOffset=0, BitCount=1 }
+
+ member 1 = Aim
+   MemberProperties[1]:FProperty*                = FStructProperty(Aim:FRotator)
+   MemberDescriptors[1]                          = { ExternalMemberOffset=0, InternalMemberOffset=0 }     
+   MemberSerializerDescriptors[1]                = { Serializer=FRotatorNetSerializer, Config=default }
+   MemberChangeMaskDescriptors[1]                = { BitOffset=1, BitCount=1 }
+
+ ExternalSize=32, ExternalAlignment=8, ChangeMasksExternalOffset=28   
+ InternalSize=12, InternalAlignment=4, ChangeMaskBitCount=2
+
+---
+
+FReplicationInstanceProtocol   (pawn P 전용; ReplicatedObjectData[7].InstanceProtocol 가 가리킴)
+├─ Fragments:FReplicationFragment*[]
+│    └─ [0] = F:FReplicationFragment*  (property용 구현체)
+│         └─ (소유) PropertyReplicationState:FPropertyReplicationState
+│              └─ StateBuffer:uint8*  ──▶ ■ external 저장소 
+└─ FragmentData:FFragmentData[]
+     └─ [0].ExternalSrcBuffer:uint8*  ──▶ 같은 external 저장소
+
+---
+
+external 저장소 (P)  — FPropertyReplicationState::StateBuffer
+  [ 0 .. 23]  Aim:FRotator       = (0, 90, 0)      double×3 (게임 타입 그대로)
+  [24 .. 27]  Ammo:int32         = 250
+  [28 .. 31]  changemask:uint32  = bit0(Ammo)·bit1(Aim) dirty 여부
+
+internal 저장소 (P) — ReplicatedObjectStateBuffers[7]
+  [ 0 .. 7 ]  Aim(quantized)     = { XYZIsNotZero=2, X=0, Y=16384(예), Z=0 }   uint16×4
+  [ 8 .. 11]  Ammo(quantized)    = 250                                          uint32
+
+---
+---
+---
+
+[보낼 때]
+UObject ──poll──▶ external 사본 ──Quantize──▶ internal 사본 ──Serialize──▶ 네트워크
+(원본)           (게임 타입)                  (압축 타입)
+
+[받을 때]
+UObject ◀─push── external 사본 ◀─Dequantize── internal 사본 ◀─Deserialize── 네트워크
+
+---
+
+descriptor = "이 클래스의 어떤 프로퍼티가 / external·internal 어디에 앉고 / 어떻게 압축되나"를 적은 공유 설명서
+
+internal 사본들은 번호(인덱스)로 한 표에 모아 둠(매 프레임 전부 쭉 훑어야 하니까)
+external 사본은 각 오브젝트에 붙여 둠(그 오브젝트를 다룰 때만 쓰니까)
+
+external :  P ─(P의 등록기록)─ P의 사본
+            Q ─(Q의 등록기록)─ Q의 사본     ← 각자 따로, 오브젝트를 거쳐 접근
+
+---
+
+[게임]                 [문]              [Iris]
+AActor P ─"복제해"─▶  Bridge  ─▶  NetObject P 탄생 =
+                                    · 신원   : handle + 번호
+                                    · external 사본  (P에 붙음)
+                                    · internal 사본  (중앙 서랍장의 P번 칸)
+                                    · 스키마 손잡이  (이 클래스 설명서)
+
+---
+
+UReplicationBridge
+게임의 오브젝트 모델과 Iris의 복제 모델 사이의 대응을 소유
+경계 권한자
+두 어휘를 동시에 아는 구성요소
+
+게임 어휘: UObject, AActor, UActorComponent, 서브오브젝트, RepNotify, 스폰
+Iris 어휘: NetObject, FNetRefHandle, FReplicationProtocol, FReplicationInstanceProtocol, 내부 인덱스
+
+---
+
+UReplicationBridge — IrisCore 모듈
+UObjectReplicationBridge — IrisCore 모듈
+UEngineReplicationBridge — Engine 모듈
+
+---
+
+UEngineReplicationBridge::StartReplicatingActor(AActor*) / StartReplicatingComponent / StartReplicatingSubObject
+게임의 "복제 시작/중단"을 NetObject의 탄생/소멸 + FNetRefHandle 발급·회수로 옮김
+
+구체 UObject로부터 그 클래스의 FReplicationProtocol(설명서)을 얻고, 
+이 인스턴스에 묶인 FReplicationInstanceProtocol(조각들)을 만듦
+UObject를 읽는 법을 아는 건 UReplicationBridge 계층뿐
+
+게임의 액터→컴포넌트→서브오브젝트 소유관계를 Iris의 서브오브젝트 관계로 번역
+
+UReplicationBridge::CreateNetRefHandleFromRemote
+wire에서 온 FNetRefHandle을 받아 진짜 UObject를 스폰/탐색
+
+---
+
+내부 집합체가 자기 가장자리에 브리지 포인터를 하나 쥐고 게임 쪽을 바라봐
+UReplicationBridge는 Iris 시스템의 게임 쪽 테두리 (반대쪽 테두리는 wire)
+
+---
+---
+---
+
+FReplicationSystemInternal
+├─ FReplicationStateDescriptorRegistry    (UClass/UStruct → FReplicationStateDescriptor[])
+└─ FReplicationProtocolManager            (FReplicationProtocolIdentifier → FReplicationProtocol; fragment로 조립)
+
+UObject
+└─ virtual RegisterReplicationFragments(...)     ← 오브젝트가 자기 fragment를 여기서 등록
+
+FNetRefHandleManager
+└─ ReplicatedObjectData[i]::FReplicationInstanceProtocol*
+
+---
+
+프로퍼티 하나(복제 변수 하나) = member = descriptor 안의 한 줄(row).
+여러 member를 같은 조건·owner로 묶은 것 = 하나의 ReplicationState = 하나의 FReplicationStateDescriptor
+FReplicationFragment = 그 ReplicationState 하나를 오브젝트에 물려주는 손잡이
+
+fragment는 프로퍼티 하나가 아니라 프로퍼티 묶음 하나(= state 하나) 에 대응
+
+---
+---
+---
+
+FReplicationStateDescriptorBuilder::CreateDescriptorsForClass
+CreateDescriptorForStruct(const UStruct*)
+CreateDescriptorForFunction(const UFunction*)
+
+한 클래스가 여러 FReplicationStateDescriptor로 
+
+---
+
+1
+Object->GetLifetimeReplicatedProps(...)로 복제 프로퍼티 목록을 얻어 → [Ammo, Aim]
+
+2
+member마다 serializer 고르기. 프로퍼티 타입 → FNetSerializer를 타입별 등록소(PropertyNetSerializerInfoRegistry)에서 찾아
+이 serializer가 두 가지를 데려와: Serializer->QuantizedTypeSize/QuantizedTypeAlignment(internal 발자국)
+
+3
+빌더는 두 개의 offset을 누적한다 — Context.External과 Context.Internal:
+
+external 누적기: member를 게임-네이티브 크기/정렬로 앉혀
+Aim@0(24B) → Ammo@24(4B)
+
+internal 누적기: member를 serializer의 quantized 크기/정렬로 앉혀
+Aim@0(8B) → Ammo@8(4B).
+
+4 
+changemask 비트 배정
+member마다 비트를 붙여
+
+그 비트 영역을 external 버퍼 끝에 놓아
+external 버퍼 = [member들][changemask]
+
+6
+병렬 배열 채우기. 지금까지 계산한 걸 member 인덱스로 나란히
+
+MemberDescriptors[i]{ExternalMemberOffset, InternalMemberOffset}
+MemberSerializerDescriptors[i]{Serializer, SerializerConfig}
+MemberChangeMaskDescriptors[i]
+MemberProperties[i](FProperty 역참조)
+
+7
+member 이름·타입·개수(그리고 ChangeMaskBitCount 등)를 섞어 FReplicationStateIdentifier를 계산
+서버·클라가 스키마를 안 보내고 같은 클래스에서 각자 구워 같은 해시로 맞춰보는 근거.
+
+8 
+CDO(또는 지정된 DefaultStateSource)의 값을 quantize해 default internal 버퍼를 만들어
+delta의 최초 baseline
+
+9
+완성된 descriptor를 FReplicationStateDescriptorRegistry에 클래스 키로 넣어
+
+---
+---
+---
+
+프레임 골격
+
+UNetDriver::TickFlush()
+  UReplicationSystem::NetUpdate(DeltaSeconds)     // 파이프라인 본체 
+  UReplicationSystem::SendUpdate(SendFunction)    // 커넥션별 실제 전송(write)
+  UReplicationSystem::PostSendUpdate()            // 마무리/리셋
+
+---
+
+UReplicationSystem::NetUpdate(DeltaSeconds)
+{
+  Impl:FReplicationSystemImpl*::StartPreSendUpdate()
+    → FReplicationSystemInternal::UReplicationBridge*::OnStartPreSendUpdate();  // 게임측에 프레임 시작 통지
+    → FReplicationSystemInternal::FNetRefHandleManager::OnPreSendUpdate();     // scope 등 프레임-시작 스냅샷 확정
+
+  Impl::UpdateDirtyObjectList();
+    → FReplicationSystemInternal::FDirtyNetObjectTracker;   // push-model로 표시된 dirty 오브젝트 수거(bitset)
+
+  Impl::UpdateWorldLocations();
+    → FReplicationSystemInternal::FWorldLocations;                 // 공간 필터·우선순위용 위치 갱신
+
+  Impl::UpdateFiltering();
+    → FReplicationSystemInternal::FReplicationFiltering;      // 커넥션별 scope 축소 = bitset 교집합·차집합
+
+  Impl::CallPreSendUpdate(DeltaSeconds);
+    → FReplicationSystemInternal::UReplicationBridge*::CallPreSendUpdate();
+        // ★ POLL: 게임 오브젝트 → external 사본으로 읽어 비교, 바뀐 member에 changemask 세팅
+
+  Impl::UpdateDirtyListPostPoll();
+    → FReplicationSystemInternal::FDirtyNetObjectTracker;   // poll 중 새로 dirty된 것 합류
+
+  Impl::UpdateConditionals();
+    → FReplicationSystemInternal::FReplicationConditionals;          // per-member 조건(COND_*) 갱신
+
+  Impl::QuantizeDirtyStateData();
+       // QUANTIZE: dirty만 external → internal 로 압축
+    → FReplicationSystemInternal::FNetRefHandleManager::ReplicatedObjectStateBuffers:TNetChunkedArray<uint8*>;  // 중앙 서랍장에 씀
+
+  Impl::UpdateObjectScopes();                                                     // 커넥션별 scope 최종 확정(bitset)
+
+  Impl::PropagateDirtyChanges();
+    → FReplicationSystemInternal::FChangeMaskCache → 각 커넥션 기록; // 바뀐 member 비트를 커넥션들에 전파
+
+  Impl::UpdatePrioritization(ReplicatingConnections);
+    → FReplicationSystemInternal::FReplicationPrioritization;      // 커넥션별 우선순위 산정
+
+  FReplicationSystemInternal::FDeltaCompressionBaselineManager::PreSendUpdate();          // baseline(과거 스냅샷) 준비
+}
+
+UReplicationSystem::PostSendUpdate()
+    → Impl::ResetObjectStateDirtiness();  Impl::EndPostSendUpdate();              // dirtiness 리셋, scope 저장
+    → FReplicationSystemInternal::DeltaCompressionBaselineManager::PostSendUpdate(); // 이번 프레임 상태를 baseline으로 확정
+
+---
+---
+---
+---
+---
+
+UReplicationSystem::Impl:FReplicationSystemImpl*
+  ::ReplicationSystemInternal:FReplicationSystemInternal
+    ::Connections:FReplicationConnections
+      ::[커넥션별] (ReplicationDataStream 이 보유) Writer:FReplicationWriter
+
+---
+
+one per replicated object per connection
+
+FReplicationWriter::FReplicationInfo
+├─ ChangeMaskOrPtr:FChangeMaskStorageOrPointer   // 이 커넥션이 아직 못 보낸 member 비트들
+├─ State:5bit  (EReplicatedObjectState)          // 이 커넥션 기준 수명: PendingCreate→Created→PendingDestroy…
+├─ HasDirtyChangeMask:1                          // 보낼 변경이 있나
+├─ IsDeltaCompressionEnabled:1
+├─ LastAckedBaselineIndex:2                      // delta 기준(과거 스냅샷) 추적
+└─ PendingBaselineIndex:2
+
+---
+---
+---
+
+1
+FReplicationSystemInternal::FReplicationFiltering
+->
+FReplicationWriter::UpdateScope(ScopedObjects)
+
+새로 보이면 PendingCreate, 빠지면 PendingDestroy로 상태 전이
+
+2
+FReplicationSystemInternal::ChangeMaskCache:FChangeMaskCache
+->
+FReplicationWriter::UpdateDirtyChangeMasks(CachedChangeMasks)
+
+이번 프레임 dirty를 각 오브젝트의 per-connection changemask에 OR
+
+3
+FReplicationSystemInternal::FReplicationPrioritization
+->
+FReplicationWriter::UpdatePriorities(UpdatedPriorities)
+
+---
+
+UReplicationSystem::SendUpdate(SendFunction)
+  → (커넥션별) FReplicationWriter::Write(Context)
+    {
+      WriteObjectsPendingDestroy(Context);        // 사라진 오브젝트 파괴 먼저
+      ScheduleObjects(OutScheduled);              // 후보 = 이 커넥션에 보낼 게 있는 오브젝트(dirty/new/resend)
+      SortScheduledObjects(OutScheduled, ...);    // priority(SortKey) 순 정렬 (최대 PartialSortObjectCount=128)
+      WriteObjects(Context);                      // 패킷이 찰 때까지 순서대로
+        WriteObjectAndSubObjects(Context, InternalIndex, ...)
+          WriteObjectInBatch / WriteObjectBatch(...)
+          {
+            WriteNetRefHandleId(Context, Handle);  // 신원(핸들) 기록
+            // PendingCreate 면 생성 정보도 함께
+            // 이 오브젝트의 per-connection changemask 기록(어떤 member가 바뀌었나)
+            SerializeObjectStateDelta(Context, InternalIndex, Info,
+                ObjectData, ReplicatedObjectStateBuffer, CurrentBaseline, CreatedBaselineIndex);
+                // ★ dirty member만 serializer의 SerializeDelta 로 baseline 대비 delta → bit-packing
+            // 첨부(RPC/NetBlob) 있으면 이어서
+          }
+      // 쓴 내용을 FReplicationRecord 에 적재 (ack/재전송용)
+    }
+
+---
+
+여기 Object = NetObject 하나를 FInternalNetRefIndex로 가리킨 것
+writer는 index 공간에서 일해
+실체는 액터/컴포넌트/서브오브젝트
+
+이 커넥션의 나가는 패킷 비트스트림
+FNetSerializationContext 안의 FNetBitStreamWriter가 실제 비트 싱크야
+
+각 오브젝트는 batch
+패킷 = 오브젝트 batch들의 나열
+
+---
+
+WriteObjects                                // [루프] scheduled 오브젝트들을 패킷 찰 때까지
+ └ WriteObjectAndSubObjects                 // [묶음] 루트 1개 + 그 서브오브젝트들 (함께 복제되는 단위)
+    └ WriteObjectBatch / WriteObjectInBatch // [프레이밍] 오브젝트 1개를 크기-경계 batch로
+       ├ WriteNetRefHandleId                //   신원(핸들 id)
+       ├ (per-connection changemask)        //   어느 member 바뀌었나
+       ├ SerializeObjectStateDelta          //   값 delta (baseline 대비)
+       └ (attachments)                      //   RPC/NetBlob
+
+---
+
+전역 scopable(복제 등록된 모든 후보) → filtering을 거쳐 커넥션별 scope
+그 커넥션에 relevant한 부분집합
+FReplicationFiltering::ConnectionInfos[ConnId].ObjectsInScope:FNetBitArray
+
+오브젝트가 그 커넥션 scope에 들어오면 클라에 생성되고
+나가면 그 클라에서 파괴
+
+---
+
+FNetObjectGroups, FNetObjectGroupHandle
+
+inclusion 그룹(이 그룹은 지정된 커넥션에만 보임), 
+exclusion 그룹(지정된 커넥션에겐 안 보임)
+
+팀 기반 가시성(팀 A 자루는 팀 A 커넥션에만)
+레벨 스트리밍, "이 커넥션들엔 항상 관련" 묶음
+게임이 명시적으로 넣고 빼는 도구
+
+spatial(거리 자동)과 다름
+
+---
+
+permission = 자격
+
+owner-only(주인 플레이어만)
+connection 필터(명시적 허용/차단)
+group exclusion(팀 가시성)
+
+relevancy 
+
+봐도 되지만 지금 보낼 가치가 있나
+주로 spatial: 멀면 관심 밖
+
+---
+
+같은 dirty 집합을 먹이는 두 소스
+push, poll 
+
+FDirtyNetObjectTracker
+DirtyObjectList
+
+---
+
+Conditionals
+
+COND_OwnerOnly, COND_SkipOwner, 
+COND_InitialOnly, 
+COND_SimulatedOnly/AutonomousOnly, 
+COND_Custom
+
+---
+
+FReplicationSystemInternal::Conditionals:FReplicationConditionals
+
+OwnerOnly/SkipOwner는 누가 주인이냐에 따라 갈리고 주인은 바뀔 수 있어
+(그리고 커넥션마다 다름)
+
+---
+
+PropagateDirtyChanges 
+
+오브젝트의 changemask을 각 커넥션의 outbox로 뿌린다
+FReplicationSystemInternal::FChangeMaskCache를 거쳐 
+각 커넥션의 writer 장부(per-connection changemask)에 OR
+
+---
+
+Filtering = 오브젝트 단위
+Conditionals = member 단위
+
+이미 존재하는 오브젝트 안에서 "어느 프로퍼티를 이 커넥션이 받나." 
+
+---
+
+예전엔 액터마다 UActorChannel + 그 bunch들
+Iris는 액터당 채널 대신 하나의 DataStream
+그 스트림 바이트 안에서 오브젝트를 Batch(크기-경계 단위)로 구분
+
+채널/번치(액터당)에서 → 한 스트림 안의 Batch(오브젝트당)로 옮겨감
+per-object 경계가 채널에서 스트림 안으로 이사한 것.
+
+---
+
+internal 저장소
+오브젝트당 
+quantized 
+uint8* 버퍼
+
+실체: uint8* 버퍼 하나
+크기 = FReplicationProtocol::InternalTotalSize
+
+소유: FNetRefHandleManager
+ReplicatedObjectStateBuffers:TNetChunkedArray<uint8*>의 [i] 칸이 그 버퍼
+
+수신용 버퍼는 
+FNetRefHandleManager::ReplicatedObjectData[i]::ReceiveStateBuffer가 소유
+
+생성: UReplicationBridge의 등록 요청에 의해,
+FNetRefHandleManager::CreateNetObject가 FMemory::MallocZeroed(Protocol->InternalTotalSize)로 만든다
+
+FNetRefHandleManager::GetReplicatedObjectStateBufferNoCheck(i) 메서드를 통해 그 버퍼에 접근
+
+Impl::QuantizeDirtyStateData()가 external→여기로 쓴다
+FReplicationWriter::SerializeObjectStateDelta가 여기서 읽어 delta 직렬화한다
+
+---
+
+external 저장소
+오브젝트당 
+버퍼
+
+실체: FPropertyReplicationState의 멤버 StateBuffer:uint8* // 게임타입 값 + changemask
+크기 = FReplicationStateDescriptor::ExternalSize
+
+소유: property fragment(FReplicationFragment 구현체)가 
+FPropertyReplicationState를 소유하고, 그것이 StateBuffer를 소유한다
+
+그 fragment는 FReplicationInstanceProtocol::FReplicationFragment*[]에 들어 있고
+버퍼 포인터는 FReplicationInstanceProtocol::FragmentData[k]::ExternalSrcBuffer:uint8*로도 가리켜진다.
+
+생성: UObjectReplicationBridge가 UObject::RegisterReplicationFragments(Context)를 호출한 요청에 의해, 
+기본 구현 CreateAndRegisterFragmentsForObject가 FPropertyReplicationState를 만들며 
+그 생성자가 FReplicationStateDescriptor의 ConstructReplicationState로 
+StateBuffer를 할당·구성한다. 
+
+fragment들을 묶은 FReplicationInstanceProtocol 자체는 
+FReplicationProtocolManager::CreateInstanceProtocol이 만든다.
+
+FPropertyReplicationState::PollPropertyReplicationState(SrcData)가 UObject를 읽어 여기에 쓴다
+
+---
+
+UObject P
+  → FNetRefHandleManager::GetInternalIndex(Handle) 메서드를 통해  index i 에 접근
+  → i 로 두 저장소에 닿는다:
+
+     internal 저장소 = FNetRefHandleManager::ReplicatedObjectStateBuffers[i]
+
+     external 저장소 = FNetRefHandleManager::ReplicatedObjectData[i]::InstanceProtocol
+                          → Fragments[k]  (property fragment)
+                          → 그 FPropertyReplicationState::StateBuffer
+                       (또는 FragmentData[k]::ExternalSrcBuffer 로 바로)
+
+---
+---
+---
+
+물리·렌더링·부트는 구체적인 것(강체, 삼각형, 초기화 순서)을 모델링해서 이름이 사물에 붙어
+IRIS는 반대로 임의의 오브젝트를 동기화하는 일반 프레임워크
+이름이 추상적이고 generic해질 수밖에 없어
+
+---
+
+Descriptor ↔ Fragment
+한 상태
+
+Protocol ↔ InstanceProtocol
+오브젝트 전체
+
+---
+
+IRIS-enabled UNetConnection 하나
+    → UDataStreamChannel 하나
+모든 IRIS replication data를 운반 
+
+Legacy 구조에서 UActorChannel은 (Connection, Actor) 쌍의 전송 문맥
+
+---
+
+UNetConnection
+  └─ UDataStreamChannel
+       └─ UDataStreamManager::Streams:UDataStream[]
+            ├─ UReplicationDataStream
+            │    ├─ FReplicationWriter
+            │    └─ FReplicationReader
+            └─ UNetTokenDataStream
+
+---
+
+원본 = 게임 UObject
+
+external copy = 네트워크용 Proxy. 원본에서 복제할 필드만 뽑아, 게임과 같은 타입으로 담은 사본
+네트워크 시스템이 소유하고 원본 대신 이걸로 일해
+
+internal copy = 그 Proxy를 전송용으로 압축한 두 번째 형태
+
+---
+
+"무엇이 바뀌었나"를 알려면 지난번 값을 기억해야 해
+원본은 "지금 값"만 알아. 그래서 네트워크는 자기만의 기억용 사본이 필요하고
+원본 vs 이 사본을 비교해서 바뀐 걸 찾아
+
+---
+
+게임과 같은 타입의 사본(external)을 하나 두면, 값이 바뀌었는지 싸게 비교하고, 바뀐 것만 압축
+external은 "변화 감지의 발판"
+
+---
+
+“전송관의 개수”와 “전송관 안의 객체 식별”
+
+Actor마다 UChannel 객체를 만드는 대신
+하나의 UReplicationDataStream 안에서 여러 replicated object의 record를 multiplexing
+
+UReplicationDataStream
+  └─ Object batch
+       ├─ FNetRefHandle(Actor A) + Actor A state
+       ├─ FNetRefHandle(Actor B) + Actor B state
+       └─ FNetRefHandle(Actor C) + Actor C state
+
+---
+
+UNetConnection의 send update
+{
+  Channel:UDataStreamChannel::SendData();
+    Manager:UDataStreamManager::WriteData();
+      Stream:UReplicationDataStream::WriteData();
+        Writer:FReplicationWriter::Write();
+          // 여러 NetObject를 object batch로 기록
+}
+
+---
+
+UDataStreamChannel::ReceivedBunch()
+{
+  Manager:UDataStreamManager::ReadData();
+    Stream:UReplicationDataStream::ReadData();
+      Reader:FReplicationReader::Read();
+        // FNetRefHandle로 대상 NetObject를 식별하고 state 적용
+}
+
+---
+
+external proxy(게임 타입 사본)
+FPropertyReplicationState
+UObject의 프로퍼티가 여러 State로 쪼개졌으면 FPropertyReplicationState도 여러 개
+
+---
+---
+---
+
+index i   (복제되는 UObject 당 하나)
+├─ FNetRefHandleManager::ReplicatedInstances[i]          : 원본 UObject 포인터   ← 원본으로의 유일한 끈
+├─ FNetRefHandleManager::ReplicatedObjectStateBuffers[i] : internal proxy (오브젝트당 한 덩어리)
+└─ FNetRefHandleManager::ReplicatedObjectData[i].InstanceProtocol
+       └─ Fragments[0..k] : 각 fragment이 external proxy 조각 하나(FPropertyReplicationState)를 쥠
+
+---
+---
+---
+
+살아있는 인스턴스별 바인더 (active · per-object)
+FReplicationInstanceProtocol
+
+오브젝트마다 힙에 새로 생성되는 = FReplicationProtocolManager::CreateInstanceProtocol
+
+---
+
+FNetRefHandleManager
+
+여기서 HandleManager는 숫자를 발급하는 allocator보다 넓고
+OS의 handle table에 유사
+
+Handle과 그 Handle이 가리키는 대상의 내부 record를 함께 관리
+
+---
+
+Handle을 등록하면 Manager가 내부 index를 하나 배정합니다
+
+Handle H42
+  → RefHandleToInternalIndex<H42 -> 7>
+  → FInternalNetRefIndex 7
+
+FInternalNetRefIndex
+    = 현재 ReplicationSystem 내부의 object slot 번호
+
+---
+
+그 IRIS 내부에서는 index 7을 사용
+
+FNetRefHandleManager
+{
+  ReplicatedObjectData[7]
+  ReplicatedObjectStateBuffers[7]
+  ReplicatedInstances[7]
+  ReplicatedObjectRefCount[7]
+  AssignedInternalIndices[7]
+}
+
+---
+
+FNetRefHandleManager::ReplicatedObjectData
+
+slot 7의 해석 설명서
+실제 replicated property value가 아니라
+identity, schema, lifecycle 정보를 저장
+
+
+{
+  RefHandle:FNetRefHandle // application lifetime에서 UObject를 식별
+  NetHandle:FNetHandle    // 특정 ReplicationSystem 안에서 network object를 식별
+
+  Protocol:FReplicationProtocol*
+  InstanceProtocol:FReplicationInstanceProtocol*
+
+  ReceiveStateBuffer:uint8*
+
+  SubObjectRootIndex:FInternalNetRefIndex
+  SubObjectParentIndex:FInternalNetRefIndex
+
+  Flags:uint16
+}
+
+---
+
+FNetRefHandleManager::AssignedInternalIndices:FNetBitArray
+
+AssignedInternalIndices[7] == 1
+    → object slot 7이 할당되어 있다
+
+AssignedInternalIndices[7] == 0
+    → slot 7을 새 object에 배정할 수 있다
+
+
+FNetRefHandleManager::InternalCreateNetObject()
+{
+  InternalIndex = this::AssignedInternalIndices:FNetBitArray::FindFirstZero();
+  ...
+  this::AssignedInternalIndices:FNetBitArray::SetBit(InternalIndex);
+}
+
+---
+
+FNetRefHandleManager::ReplicatedInstances:TObjectPtr<UObject>[]
+
+이 column은 slot 7에 연결된 실제 game-world UObject를 가리킵니다
+연결된 instance는 IRIS registry가 GC reference 유지하는 UObject reference로 취급
+
+---
+
+FNetRefHandleManager::ReplicatedObjectStateBuffers:uint8*[]
+
+Protocol이 정의한 internal/quantized layout의 memory
+buffer를 해석하려면 같은 index의 Protocol이 필요
+
+---
+
+FNetRefHandleManager::ReplicatedObjectRefCount:uint16[]
+
+ReplicatedObjectRefCount[7] == 3
+    → connection writer 세 개가
+      object slot 7에 관한 replication state를 유지한다
+
+object 종료가 요청되어도 refcount가 남아 있으면 slot을 유지
+Writer가 creation, destruction, TearOff, ACK 관련 처리를 끝내고 reference를 해제하면 slot 반환 조건이 성립
+
+---
+---
+---
+---
+---
+
+UMyObject { a,b,c,d replicated, e,f,g,h non-replicated }
+
+FReplicationStateDescriptor 
+게임 사본과 Iris 사본, 두 레이아웃을 한 기술자가 같이 기술
+각 멤버에 external 오프셋 + internal 오프셋 둘 다
+
+그걸 오브젝트 전체로 묶은 게 FReplicationProtocol
+
+---
+
+FPropertyReplicationState 
+그 안 StateBuffer:uint8*에 a,b,c,d의 게임 타입 실제 값 + changemask
+이게 external proxy(살아있는 실물)
+{ 실제 값들: a,b,c,d }
+
+---
+
+복제용 Iris 사본 인스턴스
+
+uint8* 버퍼. a,b,c,d를 압축한 값이 들어
+
+위치는 FNetRefHandleManager::ReplicatedObjectStateBuffers[i]
+오브젝트당 한 덩어리
+State들이 그 안에서 구간을 나눠 씀
+
+크기 = FReplicationProtocol::InternalTotalSize
+
+---
+
+FReplicationInstanceProtocol   (pawn P 전용; ReplicatedObjectData[7].InstanceProtocol 가 가리킴)
+├─ Fragments:FReplicationFragment*[]
+
+FPropertyReplicationState(사본)를 소유
+"이 사본을 UObject와 어떻게 주고받나"(poll/apply)를 아는 연결 로직
+
+FPropertyReplicationState::PollPropertyReplicationState(SrcData)
+
+ReplicatedInstances[i]가 가리키는 그 UMyObject. a,b,c,d를 읽어 StateBuffer와 비교하고
+다르면 값 갱신 + changemask 세팅
+
+---
+
+FPropertyReplicationState::PushPropertyReplicationState
+반대로 사본→UObject로 씀
+
+---
+
+NetObject = 하나의 index i로 묶이는, FNetRefHandleManager의 병렬 배열들에 흩어진 데이터의 논리적 총합
+
+엔티티 = 그냥 id, 그 필드들 = 별도 배열(열)에 흩뿌려짐
+NetObject = FNetRefHandle(밖) / i(안)로 가리켜지는 개념적 전체
+물리적으론 FNetRefHandleManager의 index i 열들
+
+---
+---
+---
+
+per-object (i로 키)
+
+FReplicationStateStorage 
+  현재 버퍼가 아니라 baseline(과거 스냅샷) 보관
+  delta의 기준선
+
+FDeltaCompressionBaselineManager 
+  어느 baseline을 쓸지, 언제 만들고 회전할지(delta 장부)
+
+FObjectReferenceCache 
+  UObject 참조 ↔ FNetObjectReference 참조
+
+---
+
+per-(커넥션 × object) (커넥션과 i 둘로 키):
+
+FReplicationFiltering 
+  커넥션마다 "이 오브젝트 보이나" scope 비트셋 + owner/group 필터
+
+FReplicationPrioritization 
+  커넥션마다 오브젝트 우선순위
+
+FReplicationConnections 
+  커넥션들 + 각 커넥션의 writer
+
+---
+
+FNetRefHandleManager
+    = primary object table
+
+Filtering / Prioritization / Writer / Baseline
+    = InternalIndex로 join되는 subsystem-specific table
+
+---
+
+FReplicationFiltering
+
+ConnectionInfos[c].ObjectsInScope[i]
+ConnectionInfos[c].ConnectionFilteredObjects[i]
+ConnectionInfos[c].DynamicFilteredOutObjects[i]
+
+그 의미는 다음 질의의 materialized result
+
+“Object i를 Connection c의 replication set에 포함하는가?”
+
+FReplicationFiltering::Filter()
+  → global object set를 입력
+  → ConnectionInfos[c].ObjectsInScope 작성
+
+---
+
+FReplicationPrioritization
+
+ConnectionInfos[c].Priorities[i]
+
+---
+
+FReplicationConnections
+  ├─ ReplicationWriter:FReplicationWriter*
+  ├─ ReplicationReader:FReplicationReader*
+  ├─ DataStreamManager:UDataStreamManager*
+  ├─ UserData:FObjectPtr
+  └─ bIsClosing:bool
+
+---
+
+FDeltaCompressionBaselineManager
+
+connection별 object history
+
+현재 quantized state는 모든 connection이 공유할 수 있습니다
+그러나 delta의 기준점은 connection마다 다릅니다
+
+Baseline[c][i][BaselineIndex]
+
+---
+---
+---
+
+FNetRefHandleManager 
+
+FNetRefHandle  ↔  FInternalNetRefIndex i  ↔  코어 배열들의 슬롯 [i]
+
+handle 하나 발급 = 인덱스 i 하나 배정 = 코어 배열들의 슬롯 하나 확보
+이 셋은 lockstep이라 쪼개면 오히려 위험해
+
+---
+---
+---
+
+FGlobalDirtyNetObjectTracker 
+프로세스 전역
+모든 Iris 시스템
+키 = 프로세스 전역 정체성 FNetHandle
+저장 : DirtyObjects:TSet<FNetHandle>
+
+NetCore
+static singleton instance
+
+---
+
+FGlobalDirtyNetObjectTracker::Instance:FPimpl*
+
+DirtyObjects: TSet<FNetHandle>
+PollerStatuses: FPollerStatus[]
+Pollers: FNetBitArray
+PollerCount: uint32
+bLockDirtyList: bool
+
+---
+
+::MarkNetObjectStateDirty(NetHandle:FNetHandle)
+{
+  FGlobalDirtyNetObjectTracker::DirtyObjects.Add(NetHandle);
+}
+
+호출자는 다음 정보를 알 필요가 없습니다
+어느 ReplicationSystem에 등록되어 있는가
+
+---
+---
+---
+
+FReplicationSystemInternal::FDirtyNetObjectTracker 
+
+UReplicationSystem마다 하나
+key  : FInternalNetRefIndex
+저장 : FNetBitArray
+
+매 프레임 전역 트래커를 긁어와(UpdateDirtyNetObjects → ApplyGlobalDirtyObjectList)
+그중 자기 오브젝트만 골라 자기 bitset(키 = 내부 index i)에 담아
+
+---
+
+FDirtyNetObjectTracker
+{
+  DirtyNetObjects: FNetBitArray
+  AccumulatedDirtyNetObjects: FNetBitArray
+  ForceNetUpdateObjects: FNetBitArray
+
+  NetRefHandleManager: FNetRefHandleManager*
+  GlobalDirtyTrackerPollHandle: FPollHandle
+  ReplicationSystemId: uint32
+}
+
+---
+
+DirtyNetObjects[i] == 1
+    → 이 ReplicationSystem의 object i가
+      이번 net frame에 dirty notification을 받았다
+
+---
+
+한 프로세스에 replication system이 여럿일 수 있어
+
+PIE 다중 월드, 리슨 서버 = 서버+클라 동시 등
+
+각자 자기 오브젝트의 dirty만 알아야 하니 → 시스템별 gatherer
+
+---
+
+FGlobalDirtyNetObjectTracker  :  FNetHandle              (프로세스 전역 id)
+FDirtyNetObjectTracker        :  FInternalNetRefIndex i  (시스템별 index)
+
+게임플레이는 전역 id(FNetHandle)로 찍고, 시스템은 그걸 자기 i로 번역해 긁는다
+
+---
+
+게임플레이 MarkNetDirty → 전역 트래커 → 시스템별 gather → 각 커넥션 outbox로 propagate
+
+---
+---
+---
+
+FDirtyNetObjectTracker
+
+object-level "이번 프레임에 바뀐 오브젝트 집합"
+push와 poll 둘 다 여기로 흘러들어
+
+push(게임이 찍음) vs poll(IRIS가 비교로 발견)
+
+FDirtyNetObjectTracker = object-level 집합
+changemask = member-level
+
+---
+
+push → 트래커 흐름
+
+게임 코드: MarkNetDirty(UObject)
+  → 오브젝트의 전역 정체성 FNetHandle 로
+  → FGlobalDirtyNetObjectTracker : 그 비트 set
+  → [매 프레임] Impl::UpdateDirtyObjectList()
+        → FDirtyNetObjectTracker::UpdateDirtyNetObjects() / ApplyGlobalDirtyObjectList()
+             : 전역에서 긁어와 FNetHandle→내부 i 번역, 자기 dirty bitset[i] set
+
+
+partial push면 "어느 member"인지도 함께 찍혀 changemask에 바로 들어가
+그래서 그 오브젝트는 poll을 건너뛸 수 있어
+
+---
+
+poll → 트래커 흐름:
+
+[매 프레임] Impl::CallPreSendUpdate() → bridge → fragment poll
+  → FPropertyReplicationState::PollPropertyReplicationState(SrcData = UObject)
+        : UObject 값 vs external shadow 비교, 다른 member의 changemask bit set   (member-level 발생)
+  → 하나라도 달랐으면 그 오브젝트를 dirty로
+  → Impl::UpdateDirtyListPostPoll()
+        : poll이 새로 dirty 만든 오브젝트를 프레임 object-level dirty 집합(FDirtyNetObjectTracker)에 합류
+---
+---
+---
+
+push의 커버리지(trait)
+
+HasFullPushBasedDirtiness = 그 오브젝트의 모든 복제 프로퍼티가 property-level push로 덮임
+changemask가 push만으로 완성 → poll 아예 생략
+
+HasPartialPushBasedDirtiness = 일부만 push로 덮임
+덮인 건 push가 changemask로 알려주고, 나머지는 여전히 poll.
+
+---
+
+poll 대상 선정 기준
+
+NeedsPoll trait이 있는 오브젝트
+즉 full-push가 아닌 것
+
+빈도: FObjectPollFrequencyLimiter로 매 프레임이 아니라 간격을 둬 폴링
+이번 프레임 실제 폴한 건 PolledObjectsInternalIndices 비트셋에 기록
+
+---
+
+poll 경로
+
+legacy/도입성
+견고성
+본질적으로 poll-형인 데이터
+  매 프레임 변하는 값(물리 트랜스폼)
+
+---
+
+UObject property
+    ↕ FProperty가 실제 memory를 읽고 쓴다
+External State
+    ↕ FNetSerializer가 Quantize/Dequantize한다
+Internal State
+    ↕ Serialize/Deserialize
+Network
+
+---
+
+
+
+---
+
+struct FNaiveReplicator
+{
+    AMyActor* Owner;
+    int32 ShadowHealth;
+    int32 ReceivedHealth;
+
+    void Poll()
+    {
+        ShadowHealth = Owner->Health;
+    }
+
+    void Apply()
+    {
+        Owner->Health = ReceivedHealth;
+    }
+};
+
+---
+
+struct FMemberDescriptor
+{
+    FProperty* Property;
+    uint32 ExternalMemberOffset;
+    uint32 InternalMemberOffset;
+    const FNetSerializer* Serializer;
+};
+
+---
+
+FReplicationStateDescriptor
+ ├─ MemberProperties:FProperty*[]
+ │    UObject property를 찾고 복사하는 정보
+ │
+ ├─ MemberDescriptors:FReplicationStateMemberDescriptor[]
+ │    ExternalMemberOffset
+ │    InternalMemberOffset
+ │
+ ├─ MemberSerializerDescriptors:FReplicationStateMemberSerializerDescriptor[]
+ │    FNetSerializer*
+ │    FNetSerializerConfig*
+ │
+ ├─ MemberChangeMaskDescriptors[]
+ │    member가 사용하는 change-mask bit 범위
+ │
+ ├─ MemberPropertyDescriptors[]
+ │    ArrayIndex
+ │    RepNotifyFunction
+ │
+ ├─ ExternalSize / ExternalAlignment
+ └─ InternalSize / InternalAlignment
+
+---
+
+FProperty ReplicationState
+
+FReplicationStateDescriptor는 layout입니다.
+특정 Actor의 현재 Health 값은 포함하지 않습니다
+
+reflected-property 경로에서는 FPropertyReplicationState가 이 역할
+
+FPropertyReplicationState
+ ├─ Descriptor:FReplicationStateDescriptor*
+ ├─ StateBuffer:uint8*
+ └─ ChangeMask
+
+---
+
+FProperty ReplicationState::Poll PropertyReplicationState (Owner)
+{
+    for (MemberIndex)
+    {
+        Property:FProperty* = Descriptor::MemberProperties[MemberIndex];
+
+        UObjectValue =
+            reinterpret_cast<uint8*>(Owner)
+            + Property->GetOffset_ForGC()
+            + Property->GetElementSize() * ArrayIndex;
+
+        ExternalValue =
+            StateBuffer
+            + Descriptor::MemberDescriptors[MemberIndex].ExternalMemberOffset;
+
+        Property 값과 ExternalValue를 비교
+        변경되었으면 ChangeMask를 표시
+        Property 연산으로 UObjectValue를 ExternalValue에 복사
+    }
+}
+
+---
+
+
+
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
