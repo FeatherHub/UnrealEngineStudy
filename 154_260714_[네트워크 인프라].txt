@@ -409,16 +409,16 @@ UNetDriver
 
 
 └─ ReplicationSystem:UReplicationSystem*          // Iris 의 루트. NetDriver 당 1개
-    ├─ ReplicationBridge:UReplicationBridge*      // UObject 세계 ↔ handle 세계의 문
-    │    UReplicationBridge                       // IrisCore: UObject 몰라도 되는 추상
-    │    └─ UObjectReplicationBridge              // UObject/property 일반론
-    │        └─ UEngineReplicationBridge          // Engine 쪽: actor·subobject 결합
+    ├─ ReplicationBridge
+    │    : UReplicationBridge                       // IrisCore: UObject 몰라도 되는 추상
+    │    └─ UObjectReplicationBridge                // UObject/property 일반론
+    │        └─ UEngineReplicationBridge            // Engine 쪽: actor·subobject 결합
 
-    └─ Internal:FReplicationSystemInternal -> FReplicationSystemImpl
+    └─ Internal:FReplicationSystemInternal, FReplicationSystemImpl
 
         ├─ NetRefHandleManager        // FNetRefHandle ↔ 내부 index
         ├─ ReplicationStateStorage    // 중앙 quantized 상태 버퍼
-        ├─ DirtyNetObjectTracker:     // push 로 통지된 dirty 집합
+        ├─ DirtyNetObjectTracker      // push 로 통지된 dirty 집합
         ├─ FReplicationFiltering      // 누구에게 보이나 (grid/owner/group)
         ├─ FReplicationConditionals   // COND_OwnerOnly 류의 후신
         ├─ FReplicationPrioritization // 얼마나 급한가
@@ -1073,4 +1073,201 @@ FReplicationProtocol
   └─ ReplicationStateDescriptors[StateIdx]
        → 같은 FReplicationStateDescriptor
 
+---
+---
+---
+---
+---
+---
+---
+---
+
+external(source, 게임 타입)  ↔  internal(quantized, 네트워크 타입)
+그래서 member 하나가 오프셋을 둘 갖는다
+
+FReplicationStateDescriptor
+  FReplicationStateMemberDescriptor[]
+  [i] = { ExternalMemberOffset, InternalMemberOffset }
+  
+---
+
+일반 프로퍼티                 70개 → _State Descriptor 1개
+COND_InitialOnly              10개 → _InitOnly Descriptor 1개
+Lifetime Conditional          15개 → _LifetimeConditionals Descriptor 1개
+Custom Replication Fragment    5개 → 전용 Descriptor 5개
+
+---
+
+if (Member::Traits has InitOnly)
+    Builders[InitOnly]::AddMemberProperty(Member);
+
+if (Member::Traits has HasLifetimeConditionals)
+    Builders[LifetimeConditionals]::AddMemberProperty(Member);
+
+if (Member::Traits has neither trait)
+    Builders[State]::AddMemberProperty(Member);
+
+---
+---
+---
+
+Gameplay World
+
+Shared Replication World
+  NetRefHandle로 등록된 Object
+  Quantized State와 ChangeMask
+  목적: 이번 Update에서 무엇이 변했는지 공통으로 표현
+
+Per-Connection World
+  Connection별 전달 상태
+  목적: 이 Client가 무엇을 이미 알고 있는지 표현
+
+---
+
+UWorld::BroadcastTickFlush
+  UNetDriver::TickFlush
+   ReplicationSystem->NetUpdate
+      Impl:FReplicationSystemImpl->CallPreSendUpdate
+        ReplicationSystemInternal.GetReplicationBridge()->CallPresendUpdate
+          UReplicationBridge::PreSendUpdate
+          {
+            Poll: fragment:ExternalSrcBuffer → Serializer::Quantize → CurrentSendState
+              // push model이면 MarkNetDirty가 이미 changemask 세팅 → poll 축소/생략
+            변경 member → ChangeMask 비트 set
+            for each connection:
+              Filter / Prioritize                     // network-side 표현 위에서
+              ReplicationWriter::Write();             // dirty member만
+                Serializer::SerializeDelta(CurrentSendState vs acked baseline) → bitstream
+          }
+
+---
+---
+---
+
+ReplicationState
+
+같은 high-level 조건과 같은 owner를 공유하는 프로퍼티 묶음
+
+그래서 오브젝트 하나가 보통 여러 state로 쪼개져
+
+"State"는 값 스냅샷을 뜻해
+
+FReplicationStateDescriptor  =  그 state의 schema
+state buffer (uint8*)        =  그 state의 instance(실제 값)
+
+State는 "이 묶음 프로퍼티들의 현재 값"
+
+quantize로 포착하고, IsEqual/delta로 비교하고, dequantize+apply로 재현하는 대상이 State
+Descriptor는 그 State 버퍼의 모양을 적은 것
+
+---
+                     
+FReplicationFragment
+
+ReplicationState 하나를 실제 오브젝트에 바인딩하는 역할
+
+---
+
+Object
+└─ FReplicationProtocol                     // = ReplicationState descriptor들의 합 (타입 단위 schema)
+   └─ ReplicationState = FReplicationStateDescriptor 1개  
+        └─ member i = 프로퍼티 하나 = 배열들의 행(row), 객체 아님
+
+   ↕ (바인딩)
+
+   FReplicationInstanceProtocol
+     └─ Fragments[k]:FReplicationFragment*   // ReplicationState 1개 ↔ 실제 오브젝트 연결
+
+---
+---
+---
+
+quantized 결과를 모든 커넥션이 공유
+오브젝트당 한 번 quantize → N개 커넥션이 재사용
+커넥션마다 게임 오브젝트를 다시 안 건드리는 이유
+
+---
+
+recv: quantized → Dequantize → external → 오브젝트에 push + RepNotify
+
+---
+
+external 저장소
+
+FPropertyReplicationState가 소유하는 힙 버퍼
+state(=fragment) 하나당 하나
+레이아웃은 descriptor의 External* 필드로 기술
+
+FPropertyReplicationState
+└─ StateBuffer:uint8*
+   ├─ [member i @ ExternalMemberOffset]   게임-네이티브 타입 (FString/FVector/TArray/UObject* ...)
+   ├─ [changemask @ ChangeMasksExternalOffset]
+   └─ [conditional changemask]
+   // 생성/파괴: descriptor::ConstructReplicationState / DestructReplicationState
+
+게임-네이티브 타입이 들어오니 memcpy로 못 만들고 진짜 ctor/dtor가 필요 
+그래서 descriptor가 ConstructReplicationState/DestructReplicationState 함수 포인터를 든다. 
+타입이 POD면 IsSourceTriviallyConstructible/IsSourceTriviallyDestructible trait로 그 호출을 생략
+
+
+---
+
+internal 저장소
+
+FReplicationStateStorage가 관리하는 오브젝트-인덱스 풀
+
+오브젝트마다 불투명 quantized byte 버퍼를 둘(Send/Recv) 들고, delta용 baseline은 별도 할당
+
+FReplicationStateStorage
+├─ ObjectIndexToObjectInfoIndex:uint16[]         // object index → 슬롯
+├─ ObjectInfos:TChunkedArray<FPerObjectInfo>     
+
+└─ UsedPerObjectInfos:FNetBitArray               // 할당 비트맵
+      FPerObjectInfo
+      ├─ Protocol:FReplicationProtocol*
+      ├─ StateBuffers[SendState, RecvState]:uint8*   // 각 크기 = Protocol::InternalTotalSize
+      └─ AllocationCount
+   // 별도: AllocBaseline/ReserveBaseline/CommitBaselineReservation → delta용 과거 스냅샷
+
+---
+
+불투명 byte 버퍼
+타입 정보는 버퍼에 없고 전부 descriptor/serializer가 해석
+
+dynamic state는 포인터로
+array 같은 컨테이너는 버퍼 상단엔 작은 헤더(개수+포인터)만 POD로 두고 실제 원소는 힙에 quantized로
+
+네트워크 표현을 담는다
+숫자는 압축 인코딩
+object ref는 raw 포인터가 아니라 FNetRefHandle/NetObjectReference
+
+current + history
+SendState/RecvState(현재)뿐 아니라 acked baseline들을 함께 저장해 delta 기준을 유지
+external은 "직전 하나"만, internal은 "현재 + 다수 baseline".
+
+---
+---
+---
+
+양자화
+결과는 여전히 바이트 주소지정 가능한 POD 
+<=> 직렬화는 주소지정 불가능
+
+---
+
+object pointer(로컬 주소) → FNetObjectReference(양측 합의 ID), 
+FName → NetToken, 
+non-POD 컨테이너 → POD 헤더 + heap
+
+---
+
+정준화
+
+서브정밀도 노이즈를 같은 버킷으로 뭉개서 dirty 오탐 방지
+0.001° 차이 나는 두 원본이 같은 short로 압축되면 안 dirty → 안 보냄
+원본 float를 그냥 비교했다면 매 프레임 미세 노이즈로 재전송했을 것
+
+---
+---
+---
 ---
