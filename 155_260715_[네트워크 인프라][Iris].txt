@@ -1316,18 +1316,360 @@ FProperty ReplicationState::Poll PropertyReplicationState (Owner)
 
 ---
 
+Health가 100 → 80으로 바뀌면
 
+Owner->Health              = 80
+ExternalState.Health       = 100
+
+Poll
+ ├─ FProperty로 Owner->Health 주소 계산
+ ├─ ExternalMemberOffset으로 shadow 주소 계산
+ ├─ 두 값을 비교
+ ├─ ChangeMask의 Health bit 설정
+ └─ ExternalState.Health = 80
+
+---
+---
+---
+
+UPROPERTY replication에는 FPropertyReplicationFragment가 사용
+
+FPropertyReplicationFragment
+ ├─ Owner:UObject*
+ ├─ ReplicationStateDescriptor:FReplicationStateDescriptor*
+ ├─ SrcReplicationState:TUniquePtr<FPropertyReplicationState>
+ └─ PrevReplicationState:TUniquePtr<FPropertyReplicationState>
+
+---
+
+FObjectPoller::PollObject()
+{
+    FReplicationInstanceOperations::PollAndCopyPropertyData(InstanceProtocol)
+        FPropertyReplicationFragment::PollReplicatedState()
+        {
+            SrcReplicationState:FPropertyReplicationState::PollPropertyReplicationState(Owner) // UObject → External State
+        }
+}
+
+---
+---
+---
+
+UMyObject { int32 a; int32 b; }, a=5, b=7)
+
+① UObject 인스턴스     @ 0x1000    (원본, 게임 타입, 리플렉션 오프셋)
+     [+40] a = 5
+     [+44] b = 7
+
+② External State blob  @ 0x8000    (IRIS 소유, 게임 타입 그대로의 사본)
+     [+0]  a = 5          ← a의 external 오프셋 = 0
+     [+4]  b = 7          ← b의 external 오프셋 = 4
+     [+8]  changemask     ← a 바뀜? b 바뀜? (2비트)
+
+③ Internal State blob  @ 서랍장[i]  (IRIS 소유, 압축된 사본)
+     [+0]  a(압축)         ← a가 [0..255]면 1바이트로
+     [+1]  b(압축)
+
+---
+
+UReplicationSystem                                        
+  ::Impl:FReplicationSystemImpl
+    ::FReplicationSystemInternal
+      ::FNetRefHandleManager
+
+---
+
+FNetRefHandleManager
+  ::ReplicatedObjectStateBuffers:TNetChunkedArray<uint8*>
+     [i] ─────────────▶ ■ Internal State blob
+                          (uint8*, 크기 = FReplicationProtocol::InternalTotalSize;
+                           CreateNetObject 에서 malloc, 여기서 소유)
+
+---
+
+FNetRefHandleManager
+  ::ReplicatedObjectData:TNetChunkedArray<FReplicatedObjectData>
+      [i].FReplicationInstanceProtocol* ──▶ (힙 InstanceProtocol)
+        ::Fragments:FReplicationFragment*[]
+          [k] ──▶ (property fragment;)
+            ::FPropertyReplicationState
+              ::StateBuffer:uint8* ──▶ ■ External State blob
+                                        (크기 = FReplicationStateDescriptor::ExternalSize;
+                                        FPropertyReplicationState 생성자가 할당, 여기서 소유)
+
+---
+
+FReplicationInstanceProtocol::FragmentData[k].ExternalSrcBuffer:uint8* ──▶ 같은 External State blob (지름길 포인터)
 
 ---
 ---
 ---
 ---
 ---
+
+어떤 change mask bit가 그 값을 대표할 것인지, 
+어떤 `FNetSerializer`가 그 값을 변환할 것인지, 
+수신 후 어떤 RepNotify를 호출할 것인지
+
+`FReplicationStateDescriptor`
+
+---
+
+Descriptor는 하나의 replication state를 구성하는 member들의 layout
+Descriptor는 member마다 `FProperty`, External State에서의 위치, Internal State에서의 위치, change mask 위치, serializer 규칙 할당
+
+---
+
+`FProperty`가 알려주는 위치는 살아 있는 `UObject` 안의 주소
+`ExternalMemberOffset`은 External State Buffer 안의 주소
+`InternalMemberOffset`은 Internal State Buffer 안의 주소
+
+Descriptor는 이 세 좌표 사이의 대응표다.
+
+---
+
+`FReplicationProtocol`은 특정 object type을 설명
+한 `UObject` type은 여러 replication state로 구성될 수 있다. 
+
+전체 Internal State의 크기와 정렬, 
+전체 change mask의 크기를 계산
+
+`Actor_7`과 `Actor_8`은 서로 다른 현재 값을 가지지만 
+“어떤 replication state들로 이루어지고 각 state가 어떤 layout을 갖는가”라는 type-level 계획은 같다. 
+
+---
+
+Protocol은 무엇을 어떻게 읽을지 설명하지만 구체적으로 어떤 `UObject`를 읽을지는 모른다. 
+특정 instance와 결합하는 존재가 `FReplicationFragment`
+
+reflected property 경로에서는 `FPropertyReplicationFragment`가 이 역할을 한다. 
+
+FPropertyReplicationFragment는 `Owner:UObject*`를 가리키며, 
+자신이 담당하는 `FReplicationStateDescriptor`를 참조하고, 
+송신 측에서는 `FPropertyReplicationState`를 소유한다.
+
+---
+
+`FPropertyReplicationFragment`를 특정 `UObject`에 배치된 측량사라고 생각할 수 있다. 
+Descriptor는 측량 지침서이고, Owner는 실제 측량 대상이며, 
+`FPropertyReplicationState`는 측량사가 들고 다니는 현장 기록부
+
+`PollReplicatedState()`가 호출되면 Fragment는 자신의 Owner를 
+`FPropertyReplicationState::PollPropertyReplicationState()`에 건넨다. 
+
+`FPropertyReplicationState`는 Descriptor에 기록된 `FProperty`를 이용해 
+`UObject`의 실제 property 주소를 찾는다. 
+그리고 그 값을 자신의 External State Buffer에 들어 있는 이전 값과 비교한다. 
+값이 달라졌다면 해당 change mask bit를 표시하고 새 값을 External State에 복사한다.
+
+`FPropertyReplicationFragment`는 이 작업을 특정 Owner에 결합하고 호출하는 instance adapter
+
+---
+
+External State는 원본 세계의 언어를 유지한 상태 
+`FString`, `TArray`, `FVector`, object reference처럼 Unreal의 native value semantics를 보존
+이 상태는 property-aware copy와 비교, RepNotify 적용에 적합
+
+`FNetSerializer::Quantize()`는 External State를 Internal State로 내리고, 
+`FNetSerializer::Dequantize()`는 Internal State를 External State로 올린다. 
+`Serialize()`와 `Deserialize()`는 이 Internal representation을 byte stream과 왕복시킨다.
+
+---
+
+`FNetSerializer`
+
+특정 value type에 대한 operation table
+한 type의 native representation과 canonical representation을 정의하고, 
+두 표현의 변환과 byte 표현의 변환을 한곳에 모은다. 
+
+`Quantize`, `Dequantize`, `Serialize`, `Deserialize`가 같은 객체에 있는 이유는 
+이 네 연산이 동일한 representation 계약을 공유하기 때문 
+
+한 type의 모든 상태 연산을 한 번의 serializer lookup으로 얻고, 
+그 연산들이 동일한 config와 representation invariant를 공유하는 구조를 선택
+
+---
+
+Fragment 하나는 replication state 하나를 담당
+한 `UObject`가 여러 state를 가진다면 여러 Fragment가 필요
+
+이 instance 측 Fragment들을 한데 모으는 객체가 `FReplicationInstanceProtocol`
+
+---
+
+송신 측에서 `FObjectPoller`가 object를 처리하기로 결정하면 
+`FReplicationInstanceOperations`가 해당 `FReplicationInstanceProtocol`을 통해 Fragment들을 찾는다.
+
+`FPropertyReplicationFragment::PollReplicatedState()`는 Owner를 읽어 External State를 갱신한다.
+이때 `FPropertyReplicationState`가 `FProperty`를 통해 원본 값과 shadow 값을 비교하고 member change mask를 만든다. 
+
+이어서 Descriptor가 지정한 `FNetSerializer::Quantize()`가 
+dirty member의 External representation을 Internal representation으로 변환한다. 
+
+---
+
+수신 측에서 `Deserialize()`가 byte representation을 received Internal State로 복원한다. 
+`Dequantize()`가 changed member를 temporary External State로 올린다. 
+`FPropertyReplicationFragment::ApplyReplicatedState()`는 이 External State를 
+`FPropertyReplicationState`의 형태로 감싸고 `PushPropertyReplicationState()`를 호출한다. 
+
+`PushPropertyReplicationState()`는 Descriptor의 change mask를 보고 적용 대상 member를 고른 다음 
+`FProperty`로 Owner 안의 실제 주소를 찾아 값을 쓴다. 
+적용이 끝난 뒤 RepNotify를 호출한다. 
+
+송신에서 `FProperty`가 `UObject`를 External State로 읽었고, 
+수신에서는 같은 `FProperty`가 External State를 `UObject`에 쓴다. 
+
 ---
 ---
 ---
+
+살아있는 세계를, 내 것으로 미러링하고, 무엇이 변했는지 알아채, 
+그 변화를 필요한 이에게 흘려보내기. 
+
+IRIS는 원본을 직접 만지지 않는다. 대신 원본의 값을 자기 쪽으로 베껴 와, 오직 그 사본 위에서만 일한다. 
+
+원본과 '대화'하기에 편한 모양
+실제로 '일'하기에 편한 모양
+
+external state — 원본과 같은 언어로 쓰인 사본이다. 
+int면 int, 벡터면 벡터, 게임이 쓰는 타입 그대로. 
+원본을 읽어와 비교하고 받은 값을 원본에 되돌려 쓰기에 편하도록, 원본과 같은 결을 지녔다. 
+
+internal state — 압축된, 정준화된 사본
+보내기에, 비교하기에, 차분을 뜨기에 최적화된 바이트 뭉치
+
+두 사본 사이를 오가는 번역
+Quantize와 Dequantize
+
+---
+
+UObject와 external 사이에는 Poll과 Push
+external과 internal 사이에는 Quantize와 Dequantize
+internal과 네트워크 사이에는 Serialize와 Deserialize
+
+원본의 프로퍼티는 리플렉션이 아는 오프셋에 앉아 있고, 
+external 사본의 자리는 스키마가 정한 또 다른 오프셋에 있다. 
+
+Poll은 프로퍼티마다 원본의 값을 읽어 사본의 값과 비교하고, 
+다르면 사본을 갱신하며 '이 자리가 바뀌었다'는 표시를 남긴다. 
+그 표시가 changemask다. 
+
+external과 UObject를 잇는 '연결'이란 
+두 개의 오프셋 표를 들고 값을 비교하고 복사하는 루프
+
+---
+
+리플렉션을 매번 걷지 말고, 한 번 구워 표로 만들어라
+
+클래스가 처음 등장할 때, FReplicationStateDescriptorBuilder가 그 클래스의 복제 프로퍼티들을 훑어
+각 멤버가 external의 어디에 앉고 internal의 어디에 앉는지, 
+어떤 코덱(FNetSerializer)으로 압축되는지, 
+어느 changemask 비트를 쓰는지를 — 계산해 하나의 표에 새긴다. 
+이 표가 FReplicationStateDescriptor
+
+---
+
+평범한 프로퍼티 묶음이 한 조각이고, fast array가 또 다른 조각이며, 완전히 커스텀한 상태가 또 다른 조각
+
+오브젝트의 복제란 이 이질적 조각들을 하나로 조립한 것
+
+internal 쪽은 언제나 균일한 압축 덩어리 하나이므로 매니저의 단순한 배열 칸 하나로 충분하다
+반면 external 쪽은 종류마다 실체가 다르고, poll하고 apply하고 RepNotify를 쏘는 행위까지 가져야 하며, 
+제3자가 새 종류를 끼워 넣을 수 있어야 한다. 
+
+그래서 external만이 Fragment라는 조립 이음매를 필요로 한다. 
+
+---
+
+하나의 인덱스 i
+그 인덱스로 여러 배열의 같은 칸들을 한꺼번에 가리킬 때, 흩어진 그 칸들의 총합이 NetObject
+
+바깥 세계가 오브젝트를 부르는 안정된 이름(FNetRefHandle)과, 
+안쪽의 조밀한 인덱스(FInternalNetRefIndex)와, 
+그 인덱스가 가리키는 저장 슬롯은 함께 태어나고 함께 죽는다. 
+
+티켓을 발급한다는 것은 곧 슬롯을 확보한다는 것이고, 
+슬롯을 소유한다는 것은 그 인덱스로 열리는 배열들을 소유한다는 것이다. 
+
+---
+
+IrisCore는 UObject가, AActor가 무엇인지 모른다. 그 지식은 전부 하나의 경계로 밀려나 있다
+
+UReplicationBridge. 
+게임은 이 다리에게 "이 액터를 복제해 달라"고 건네고, 다리는 그것을 NetObject의 탄생으로 번역한다. 
+
+---
+
+변한 것들만 external에서 internal로 압축
+이 압축은 오브젝트당 한 번, 모든 커넥션이 그 하나의 결과를 나눠 쓴다. 
+
+그 뒤 커넥션마다 누가 무엇을 볼 수 있고 무엇을 먼저 보아야 하는지를 
+bitset의 집합 연산으로 가려낸다. 
+
+마지막으로 커넥션별 writer가, 
+각자 기억해둔 지난 기준선(baseline)과 비교해 바뀐 멤버만 직렬화해서 내보내고, 
+상대가 받았다는 신호가 오면 그 자리를 지우고 오지 않으면 다시 보낸다. 
+
 ---
 ---
 ---
+
+Buffer 
+생짜 바이트 블록(uint8*)
+읽으려면 Descriptor가 필요한 층
+
+Storage 
+버퍼의 수명을 소유·관리하는 서브시스템
+할당·풀
+
 ---
+---
+---
+
+FPropertyReplicationFragment의 생성 단위
+
+특정 UObject instance × 특정 FReplicationStateDescriptor 하나
+
+---
+
+CoreStateDescriptor
+ ├─ Health
+ ├─ Mana
+ └─ TeamId
+
+ FPropertyReplicationFragment
+ ├─ Owner          → Actor_7
+ ├─ Descriptor     → CoreStateDescriptor
+ └─ PropertyState  → Health, Mana, TeamId의 External State
+
+---
+---
+---
+
+FPropertyReplicationFragment
+FFastArrayReplicationFragmentBase 
+FNativeFastArrayReplicationFragmentBase 
+
+FPropertyReplicationState
+
+---
+
+Fragment (행위, 3종)                       State (데이터 래퍼)
+FPropertyReplicationFragment            →  FPropertyReplicationState  (Src + Prev, 2개)
+FFastArrayReplicationFragmentBase       →  FPropertyReplicationState  (재사용)
+FNativeFastArrayReplicationFragmentBase →  (없음 — 오브젝트의 native fast array를 직접)
+
+native fast array는 이미 자기 오브젝트 안에 변화추적 구조를 갖고 있어서, 
+IRIS 쪽 미러 State가 필요 없다
+
+---
+
+3개의 행위(Fragment) ↔ 1개의 공유 데이터 래퍼(FPropertyReplicationState)
+이질성은 Fragment에, 데이터는 균일
+
+이름 FPropertyReplicationState는 under-describe
+fast array가 재사용하는 걸 보면 "property 전용"이 아니라 "descriptor 기반 범용 state 래퍼"
+주 용처가 property라 그렇게 이름
+
 ---

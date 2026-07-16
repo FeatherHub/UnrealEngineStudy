@@ -1,0 +1,636 @@
+FReplicationFragment 
+
+owner에 바인딩되어 있다
+
+ApplyReplicatedState
+CallRepNotifies
+PollReplicatedState
+
+Traits:EReplicationFragmentTraits
+
+---
+
+FPropertyReplicationFragment : FReplicationFragment
+
+PropertyReplicationState를 owner에 바인딩
+
+SrcReplicationState:TUniquePtr<FPropertyReplicationState>
+PrevReplicationState:TUniquePtr<FPropertyReplicationState>
+Owner:UObject*
+
+---
+
+FFastArrayReplicationFragmentBase : FReplicationFragment
+FNativeFastArrayReplicationFragmentBase : FReplicationFragment
+
+---
+
+FReplicationFragmentInfo 
+  FReplicationStateDescriptor*
+  SrcReplicationStateBuffer:void*
+  Fragment:FReplicationFragment*
+
+---
+
+FReplicationFragments = TArray<FReplicationFragmentInfo, TInlineAllocator<32>>
+
+---
+
+FFragmentRegistrationContext 
+
+{
+  Fragments:FReplicationFragments, 
+  ReplicationStateRegistry:FReplicationStateDescriptorRegistry*, 
+  ReplicationSystem:UReplicationSystem*, 
+  FragmentTraits:EReplicationFragmentTraits, 
+  bIsAFragmentlessNetObject:bool
+}
+
+RegisterReplicationFragment(Fragment, Descriptor, SrcReplicationStateBuffer)
+
+Object::RegisterReplicationFragments가 여기에 조각을 담음.
+
+---
+
+EReplicationFragmentTraits 
+
+NeedsPoll, HasRepNotifies, 
+HasObjectReference, DeleteWithInstanceProtocol
+CanReplicate, CanReceive, 
+
+---
+
+EFragmentRegistrationFlags 
+
+RegisterRPCsOnly, 
+InitializeDefaultStateFromClassDefaults, 
+AllowFastArraysWithAdditionalProperties
+
+---
+
+UObject::RegisterReplicationFragments(Context, Flags)
+  FReplicationFragmentUtil::CreateAndRegisterFragmentsForObject(this, Context, Flags)
+      1) this의 UClass 복제 프로퍼티를 훑어 → FReplicationStateDescriptor 를
+         레지스트리에서 찾거나 첫 인스턴스면 FReplicationStateDescriptorBuilder 로 굽는다
+
+      2) FPropertyReplicationFragment::CreateAndRegisterFragment(this /*owner*/, descriptor, Context)
+           → new FPropertyReplicationFragment(traits, owner, descriptor)
+                [ctor] SrcReplicationState = MakeUnique<FPropertyReplicationState>(descriptor)
+                         → descriptor 로 StateBuffer 할당·구성
+           → Context.RegisterReplicationFragment(fragment, descriptor, fragment의 StateBuffer)
+
+---
+---
+---
+
+FPropertyReplicationState            
+{
+  FReplicationStateDescriptor*
+  StateBuffer:uint8*  // external 버퍼(값들 + changemask)
+
+  bOwnState:uint32:1  // 버퍼 소유 여부(주입받았으면 0)
+  FPropertyReplicationState(Descriptor)                     // 버퍼 새로 할당·구성
+  FPropertyReplicationState(Descriptor, InStateBuffer:uint8*) // 외부 버퍼 주입
+  ~FPropertyReplicationState()
+
+  PollPropertyReplicationState(SrcData):bool                
+  PollObjectReferences(SrcData):bool
+  PushPropertyReplicationState(Owner, DstData, bPushAll)    
+  CallRepNotifies(DstData, Params)                         
+
+  SetPropertyValue(Index, SrcValue) / GetPropertyValue(Index, DstValue)  // 주로 테스트/poll층
+  IsDirty(Index):bool / MarkDirty(Index) / IsCustomConditionEnabled(Index):bool
+}
+
+---
+
+FPropertyReplicationFragment : FReplicationFragment 
+{
+  SrcReplicationState:FPropertyReplicationState*    // (TUniquePtr) 현재 미러
+  PrevReplicationState:FPropertyReplicationState*   // (TUniquePtr) 직전(RepNotify용, 필요시)
+
+  FReplicationStateDescriptor*
+  Owner:UObject*
+
+  ::CreateAndRegisterFragment(Owner, Descriptor, Context)   // static 팩토리
+
+  ApplyReplicatedState(Context) / CollectOwner(Owners) / CallRepNotifies(Context) // FReplicationFragment override
+  PollReplicatedState(PollOption):bool
+}
+
+---
+
+FReplicationProtocol
+FReplicationStateDescriptor
+
+1 fragment = "1 ReplicationState" = 1 FPropertyReplicationState = N 개 member
+
+---
+
+Fragment → SrcReplicationState (묶음 하나)
+           특정 프로퍼티 = member index i
+           i ─(descriptor)→ 그 member의 offset → StateBuffer[offset]
+
+즉 프로퍼티 = 객체가 아니라 index
+NetObject가 index였던 것과 똑같은 DoD 원리
+
+---
+
+AActor::RegisterReplicationFragments가 자기 컴포넌트들의 RegisterReplicationFragments까지 불러서 
+컴포넌트의 fragment를 같은 Context에 등록
+
+루트 액터 + 그 컴포넌트/서브오브젝트
+그 fragment의 Owner는 컴포넌트
+
+---
+
+서로 다른 owner 집합에 대해
+Object::PreNetReceive()          
+오브젝트당 1회, collector가 이걸 위해 dedup
+
+fragment 순회                
+Fragment::CallRepNotifies()    
+changemask 보고 바뀐 프로퍼티의 OnRep_만 선택 호출
+
+---
+---
+---
+
+FReplicationStateDescriptorRegistry 
+
+클래스 키로 descriptor 캐시
+
+---
+
+EReplicationStateTraits 
+state 분류
+
+InitOnly, HasObjectReference, HasDynamicState, 
+HasPushBasedDirtiness, SupportsDeltaCompression, 
+IsStructWithCustomSerializer, IsFastArrayReplicationState
+
+---
+
+UReplicationStateDescriptorConfig 
+
+descriptor 빌드 정책
+
+---
+
+FReplicationStateHeader          
+모든 state 버퍼 맨 앞 4바이트
+state를 dirty-tracking에 바인딩
+
+{
+  NetHandleId:uint32:30          // 이 state가 묶인 오브젝트 네트워크 id (0이면 unbound)
+  bStateIsDirty:uint32:1         // 이 state에 dirty가 있나
+}
+
+
+
+---
+---
+---
+
+internal buffer
+
+local offset + per-state base = global
+각 state는 자기 InternalSize만큼 자리를 차지
+
+어떤 연산이든 오브젝트를 훑을 때 
+Protocol->ReplicationStateDescriptors[]를 순서대로 걸으며 running 포인터를 누적
+
+CurrentInternalStateBuffer += CurrentDescriptor->InternalSize;       // 다음 state 구역으로 전진
+CurrentChangeMaskBitOffset += CurrentDescriptor->ChangeMaskBitCount; // changemask도 마찬가지
+
+멤버 주소 = 오브젝트 internal buffer base
+            + Σ(앞선 state들의 InternalSize)               ← per-state base
+            + MemberDescriptors[i].InternalMemberOffset    ← descriptor의 state-local offset
+
+이 base는 매 멤버마다 다시 구하는 게 아니라, 셋업 때 state별로 한 번 계산
+FStateData에 캐시(각 state의 버퍼 포인터를 저장)
+
+---
+
+descriptor가 relocatable해야 하니까
+
+struct descriptor는 여러 클래스의 여러 위치에 중첩되어 재사용
+
+---
+---
+---
+
+state 값 버퍼 
+
+external state 버퍼
+크기 FReplicationStateDescriptor::ExternalSize
+state(=fragment)당 1개
+
+소유: FPropertyReplicationState::StateBuffer:uint8*
+fragment의 SrcReplicationState가 소유
+FReplicationInstanceProtocol::FragmentData[k].ExternalSrcBuffer가 가리킴
+
+내용: FReplicationStateHeader(NetHandleId+dirty 비트) + 게임-네이티브 member 값 + changemask
+해석: FPropertyReplicationState(+descriptor의 ExternalMemberOffset·MemberProperties)
+헤더는 FReplicationStateHeaderAccessor
+
+---
+
+previous external 버퍼
+크기 FReplicationStateDescriptor::ExternalSize
+필요한 state당 1개
+
+소유: FPropertyReplicationFragment::PrevReplicationState:FPropertyReplicationState*
+내용: RepNotify "적용 전 이전 값" 스냅샷
+해석: FPropertyReplicationState
+
+---
+
+internal state 버퍼 (송신)
+quantized 
+
+크기 FReplicationProtocol::InternalTotalSize
+오브젝트당 1개
+
+소유: FNetRefHandleManager::ReplicatedObjectStateBuffers:TNetChunkedArray<uint8*>[i]
+CreateNetObject에서 malloc
+
+해석: FReplicationStateDescriptor의 InternalMemberOffset + member별 FNetSerializer
+
+---
+
+internal state 버퍼 (수신) 
+
+크기 FReplicationProtocol::InternalTotalSize
+오브젝트당 1개
+
+소유: FNetRefHandleManager::ReplicatedObjectData[i]::ReceiveStateBuffer:uint8*
+내용: 수신된 quantized 값 (DeserializeDelta 결과)
+해석: 같은 descriptor + serializer(Dequantize)
+
+---
+
+internal 저장소
+
+FNetRefHandleManager가
+ReplicatedObjectStateBuffers:TNetChunkedArray<uint8*>[i]로 쥔 uint8* 
+수신용은 ReplicatedObjectData[i]::ReceiveStateBuffer
+
+---
+
+external 저장소
+
+fragment의 
+FPropertyReplicationState::StateBuffer
+
+---
+
+ReplicatedObjectStateBuffers
+복제 오브젝트의 state 버퍼들
+internal 저장소
+
+handle 매니저가 곧 NetObject 테이블
+internal ↔ FNetRefHandleManager
+
+---
+
+index i로 키를 잡는 NetObject 테이블
+
+FNetRefHandleManager = 그 테이블 자체
+ReplicatedObjectStateBuffers[i] = 그 테이블의 한 열
+internal 저장소 = 그 테이블의 압축(quantized) 열.
+
+---
+---
+---
+
+자료구조 선택
+접근 패턴 + 수명
+
+TNetChunkedArray<T>
+
+FNetRefHandleManager의 ReplicatedObjectStateBuffers, ReplicatedInstances, ReplicatedObjectRefCount
+FReplicationStateStorage::ObjectInfos
+
+특징: 고정 청크(예 256개)씩 성장
+
+TArray는 성장 시 realloc하며 원소를 이사시켜
+참조가 깨져
+
+청크는 기존 원소 주소가 안 움직여
+그래서 "index/포인터 안정성"
+
+---
+
+FNetBitArray / FNetBitArrayView
+
+scope, dirty, relevant, polled, assigned, subobject, filtering의 ObjectsInScope
+
+특징: 오브젝트당 1비트(dense index), word 단위 저장, And/Or/AndNot·set-bit 스캔·CountSetBits
+
+TArray<bool>
+bool 배열은 8배 크고 병렬 안 됨
+
+bitset = 밀도 + word-parallel 집합대수 + bit-scan으로 켜진 것만 방문
+
+---
+
+64개 오브젝트 = 8바이트 = uint64 하나
+& 한 번이 64개 비트를 동시에
+SWAR(SIMD Within A Register)
+
+TArray<bool>
+각 bool이 한 바이트를 통째로 쓰고 의미 있는 비트는 1개뿐
+바이트 두 개를 &해도 오브젝트 1개분 정보만 나와 (나머지 7비트 낭비)
+
+ALU 폭에 맞춰 최대한 채운다
+
+---
+
+TArray + TInlineAllocator<N>
+
+특징: 처음 N개는 스택 인라인, 넘치면 힙
+
+fragment/커넥션 리스트는 보통 작아 → 흔한 경우 힙 할당 0. 
+작고 수명 짧은 것의 미시 최적화
+
+SBO
+small buffer optimization
+
+---
+
+여러 배열을 같은 인덱스로 lockstep 순차 스트리밍
+하드웨어 프리페처가 다중 순차 스트림을 잘 처리
+
+배열이 아주 작
+
+10,000 오브젝트 × 1비트 = 1.25 KB/배열. 
+6개 합쳐도 7.5 KB로 
+L1(보통 32~48 KB)에 통째로 상주
+
+작고 조밀해서 다 캐시에 들어앉아 있어
+
+같은 걸 TArray<bool>로 하면 
+10 KB/배열 × 6 = 60 KB로 
+L1을 넘겨 L2로 흘러
+
+---
+---
+---
+
+대부분의 오브젝트×커넥션은 이번 프레임에 아무것도 안 해. 
+안 바뀌었거나(not dirty), 안 보이거나(not relevant)
+
+bitset 대수는 그 수백만 개의 "안 함"을 word당 64개씩 판정하는 도구
+비싼 실제 작업(quantize·serialize)이 살아남은 소수(changed ∩ relevant)에만 돌아
+
+---
+
+scopable 
+
+GlobalScopableInternalIndices(전역, 커넥션 무관)
+assigned(슬롯 있는 전체)에서, 이번 프레임에 복제 심사에 올릴 후보만
+
+빠지는 것: pending-destroy 중인 것, 부모와 함께 처리되는 서브오브젝트
+
+---
+
+scope[c]
+커넥션 c가 볼 것
+
+ConnectionInfos[c].ObjectsInScope
+scopable에서 c의 필터(owner/connection/group/spatial)를 통과한 부분집합
+"scope 밖"(c 기준) = c에게 걸러진 것(c 소유 아님/차단됨/그룹 제외/너무 멂)
+
+커넥션마다 다름
+같은 오브젝트가 c엔 in, c'엔 out일 수 있어
+
+---
+
+relevant 
+적어도 한 커넥션이 원함
+
+RelevantObjectsInternalIndices = ∪_c scope[c]  +  always-relevant
+"어느 한 커넥션이라도 scope에 넣었나". 목적은 공유 작업 게이팅
+
+공유 작업(poll/quantize)은 어느 특정 scope[c]가 아니라 그것들의 합집합인 relevant(∃c)에 대해 수행
+"아무 커넥션의 scope에 들었나"가 기준
+
+---
+
+relevant
+
+owner-only: 주인 커넥션엔 거리 무관하게 relevant.
+group-included: 그룹에 넣었으면 relevant.
+always-relevant(필터 없음, 예: 게임 상태 액터): 늘 relevant.
+spatial: 거리 안이면 relevant.
+
+relevant = 이 모든 이유의 합집합
+
+---
+---
+---
+
+ConnectionInfos[0].ObjectsInScope:  1 1 0 1 0
+                                    │ │ │ │ └ 4: not scopable
+                                    │ │ │ └ 3: 근처 → in
+                                    │ │ └ 2: owner=1 → out(c0)
+                                    │ └ 1: owner=0 → in
+                                    └ 0: always → in
+
+ConnectionInfos[1].ObjectsInScope:  1 0 1 0 0
+                                    │ │ │ │ └ 4: not scopable
+                                    │ │ │ └ 3: 멂 → out(c1)
+                                    │ │ └ 2: owner=1 → in
+                                    │ └ 1: owner=0 → out(c1)
+                                    └ 0: always → in   
+---
+
+scope[0]:  1 1 0 1 0
+scope[1]:  1 0 1 0 0
+OR ─────── 1 1 1 1 0   = RelevantObjectsInternalIndices   (obj4만 not relevant)
+
+---
+
+dirty:            0 1 0 1 0
+relevant:         1 1 1 1 0
+dirty ∩ relevant: 0 1 0 1 0   → quantize 대상 = {1, 3}
+
+---
+
+커넥션0 패킷:  scope[0]={0,1,3} ∩ 변경분{1,3} = {1,3}  → obj1,obj3 직렬화(c0 baseline 대비 delta)
+커넥션1 패킷:  scope[1]={0,2}   ∩ 변경분{1,3} = {}     → 이번 프레임 보낼 것 없음
+
+---
+---
+---
+
+Prioritization
+오브젝트당 float
+
+scope[c]가 boolean(비트: in/out)이었다면
+priority는 "얼마나 급한가"라는 스칼라(float)
+
+FReplicationPrioritization::NetObjectPrioritizationInfos
+
+FReplicationWriter::FScheduleObjectInfo { Index:uint32 ; SortKey:float }   // 이 float으로 정렬
+
+---
+
+obj  priority(SortKey)
+obj5   8.0    (아주 가깝고 중요)
+obj1   5.0    (가까움)
+obj3   2.0    (멂)
+obj7   1.0    (멀고 사소)
+
+---
+
+N짜리 float 배열 × 커넥션 수
+C개의 writer가 각자 자기 N배열을 든 형태
+
+---
+
+priority factor
+
+spatial prioritizer (주 동적 요인)
+기아 누적 — 이 커넥션에 안 보낸 프레임 수만큼 상승
+수명 bump — CreatePriority(새 오브젝트 빨리 등장), LostStatePriorityBump(손실 재전송 우선), TearOffPriority
+pluggable 커스텀 - UNetObjectPrioritizer (게임이 "내 조준 대상은 최우선" 같은 요인을 추가 가능)
+
+---
+---
+---
+
+FReplicationConnection {                           // 커넥션 하나의 struct
+  ReplicationWriter : FReplicationWriter*          
+  ReplicationReader : FReplicationReader*          
+  DataStreamManager : UDataStreamManager*          // 엔진 transport로의 링크
+}
+
+prioritization이 Connection->ReplicationWriter 여기에 priority를 써넣어
+
+---
+
+UReplicationSystem::Impl::ReplicationSystemInternal
+  ::FReplicationConnections
+     ::FReplicationConnection
+        ::FReplicationWriter
+
+---
+
+FReplicationConnections {
+  Connections      : FReplicationConnection[]      // connId로 인덱싱 (writer/reader/링크)
+  ReplicationViews : FReplicationView[]            // connId로 인덱싱 — 커넥션 시점(priority/spatial 입력)
+}
+
+---
+---
+---
+
+UNetConnection
+└─ Channels[] 
+   └─ UDataStreamChannel : UChannel                  (Iris 전용 채널)
+      ├─ UDataStreamManager*      [소유]
+      │    └─ 
+      │        ├─ UReplicationDataStream : UDataStream        // 복제 담당 stream
+      │        │    ├─ FReplicationWriter*  ──fetch──▶ (IRIS)
+      │        │    └─ FReplicationReader*  ──fetch──▶ (IRIS)
+      │        └─ (그 외 stream들: NetToken, OOB 등)
+      └─ Tick() / PostTickDispatch() / ReceivedBunch() / ReceivedAck·Nak()
+
+---
+
+FReplicationSystemInternal
+└─ FReplicationConnections
+    ├─ FReplicationView (커넥션 시점 — priority/spatial 입력)
+    └─ FReplicationConnection
+
+        ├─ FReplicationWriter*     ◀── 엔진 ReplicationDataStream이 fetch
+        │   ├─ ReplicationInfos : FReplicationInfo[objectIndex]
+        │   │      { ChangeMaskOrPtr, State(EReplicatedObjectState), Last/PendingBaselineIndex, priority 누적… }  
+                   (오브젝트 × 이 커넥션)
+
+        │   ├─ FWriteContext { ObjectsWrittenThisPacket:FNetBitArray, ScheduledObjectInfos:FScheduleObjectInfo[](Index,SortKey),
+        │   │                  정렬 커서·카운터, MaxPacketsToSend, flags(dirty/OOB/huge…) }
+
+        │   ├─ FReplicationRecord (+ FBatchRecord/FObjectRecord)         (ack/재전송용 기록)
+
+        │   ├─ FHugeObjectSendQueue { FHugeObjectContext{ RootIndex, Blobs[] } }  (거대 payload 분할)
+        │   ├─ FNetObjectAttachmentsWriter                                 (RPC/NetBlob)
+
+
+
+        ├─ FReplicationReader*      ◀── 엔진이 fetch 
+        ├─ UDataStreamManager*  (weak)  ──▶ Tree1의 Manager
+        ├─ UserData : FObjectPtr
+
+---
+---
+---
+
+IRIS → 엔진 :  FReplicationConnection::DataStreamManager   ─▶  UDataStreamChannel::DataStreamManager
+엔진 → IRIS :  UReplicationDataStream::ReplicationWriter/Reader   =  Connection->ReplicationWriter/Reader 
+
+
+구동 (매 프레임)
+  엔진 채널 Tick / PostTickDispatch
+    → UDataStreamManager::WriteData        (모든 활성 stream에 forward)
+      → UReplicationDataStream::WriteData
+        → FReplicationWriter::Write(Context)     ← Context의 비트스트림 = 채널의 2048B 버퍼
+          → (scope ∩ dirty를 priority 순으로 직렬화)
+    → 결과가 bunch로 패킷에 실려 UNetConnection으로 송신
+
+---
+
+수신
+
+ReceivedBunch
+Manager::ReadData
+UReplicationDataStream::ReadData
+FReplicationReader::Read
+
+---
+---
+---
+
+OOB = Out Of Band
+첨부(RPC/NetBlob)를 정상 오브젝트 batch 흐름 밖으로 보내는 것
+
+보통 RPC는 자기 오브젝트의 상태 batch에 얹혀 가는데, 그럴 수 없을 때
+대상이 지금 scope 밖이거나(AttachmentToObjectNotInScope)
+틱을 안 기다리고 즉시 별도로 보내야 할 때(PostTickDispatch) 
+
+예약 인덱스(ObjectIndexForOOBAttachment=0)로 우회 전송
+
+bIsOOBPacket/bHasOOBAttachmentsToSend
+
+---
+
+batch
+
+패킷은 오브젝트 batch들의 나열
+오브젝트를 "크기-경계 단위(batch)"로 묶어 스트림에 쓰는 것
+
+한 batch = 루트 오브젝트(+ 그 서브오브젝트들)
+
+---
+
+채널: ReceivedAck(PacketId)  /  ReceivedNak(PacketId)
+  → ProcessPacketDeliveryStatus(Status, Record)      // 그 패킷이 담았던 기록을 되짚음
+    → (stream forward) → FReplicationWriter::ProcessDeliveryNotification(Status)
+
+Ack("받았다")
+
+그 패킷에 실렸던 오브젝트들의 보낸 changemask 비트를 지우고(확정), 
+baseline 인덱스를 전진(LastAckedBaselineIndex)
+이후 delta는 이 baseline 대비
+생성 확인이면 상태를 WaitOnCreateConfirmation → Created로
+
+---
+
+Nak("안 왔다"/손실)
+그 비트들을 다시 dirty로 세워 재전송 대상에 넣고, 
+priority를 bump(LostStatePriorityBump)
+baseline은 전진 안 함
+
+---
