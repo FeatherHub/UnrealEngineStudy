@@ -1,3 +1,21 @@
+UEngine
+└─ FWorldContext
+   └─ ActiveNetDrivers : TArray<FNamedNetDriver>
+
+UWorld
+├─ NetDriver ──────────────> UNetDriver
+└─ DemoNetDriver ──────────> UDemoNetDriver
+
+UNetDriver
+├─ 서버: ClientConnections[] ──> UNetConnection(클라이언트별)
+└─ 클라이언트: ServerConnection ──> UNetConnection(서버 방향)
+                                          └─ OpenChannels[]
+                                             ├─ UControlChannel
+                                             ├─ UActorChannel (고전)
+                                             └─ UDataStreamChannel (Iris)
+
+---
+
 UWorld
  └─ UNetDriver
      ├─ 서버: ClientConnections[각 클라이언트]
@@ -16,10 +34,24 @@ UWorld
 UNetDriver
   ServerConnection
   ClientConnections
-  NetworkObjects
-  GuidCache - 객체와 FNetworkGUID의 대응표
-  RepLayoutMap - 클래스별 프로퍼티 복제 레이아웃 캐시
-  ReplicationDriver - 복제 대상 선정 방식을 바꾸는 확장 지점
+
+  고전 복제 공유 데이터
+    FNetworkObjectList NetworkObjects
+    FNetGUIDCache GuidCache
+    RepLayoutMap
+    UReplicationDriver
+
+  Iris
+    UReplicationSystem
+  
+  프레임 진입점
+    TickDispatch()  : 수신
+    TickFlush()     : 복제 update와 송신
+    PostTickFlush() : Iris PostSendUpdate
+
+`GuidCache/FNetworkGUID`는 Iris 복제에는 사용되지 않는다
+
+---
 
 UNetDriver
   InitConnect: 클라이언트 모드로 서버에 접속
@@ -31,62 +63,186 @@ UNetDriver
 
 ---
 
-TickDispatch
-  → 수신 패킷 해석
-  → UNetConnection::ReceivedPacket
-  → 해당 UChannel::ReceivedBunch
-  → 프로퍼티 적용 또는 RPC 실행
+`UNetDriver`는 연결 집합, transport 구현, 복제 시스템 진입점을 묶는 월드 단위 coordinator
 
-TickFlush
-  → ServerReplicateActors
-  → 연결별 relevancy / priority 판단
-  → UActorChannel::ReplicateActor
-  → UChannel::SendBunch
-  → UNetConnection::FlushNet
-  → 실제 패킷 전송
+Iris가 활성화되면 `TickFlush`는
+`UpdateIrisReplicationViews()`와 `ReplicationSystem->NetUpdate()`를 호출
+
+`TickFlush → ServerReplicateActors`는 고전 서버 복제일 때의 경로
+
+`ReplicationDriver`는 복제 정책 확장점
+`UReplicationGraph`가 대표 구현
+Iris의 정책은 `UReplicationSystem`의 Filtering/Prioritization 쪽에
 
 ---
 
-UDemoNetDriver
-리플레이 기록·재생
+[수신 단계]
+UNetDriver::InternalTickDispatch
+  → UReplicationSystem::PreReceiveUpdate
+  → UNetDriver::TickDispatch // socket/transport에서 packet 수신
+  → UReplicationSystem::PostReceiveUpdate
 
-UIpNetDriver
-인터넷 프로토콜 기반의 구체 드라이버
+[송신 단계]
+UNetDriver::TickFlush
+  → 고전: ServerReplicateActors
+  → Iris : UpdateIrisReplicationViews, UReplicationSystem::NetUpdate
 
 ---
 
+UNetDriver
+  UDemoNetDriver
+  replay 기록·재생용 가상 네트워크 driver
+
+  UIpNetDriver
+  IP/UDP 기반
+
+---
+
+UObject
+UPlayer
 UNetConnection
   자신을 관리하는 UNetDriver
+  OwningActor
+  ViewTarget - 이 연결의 플레이어가 현재 세상을 관찰하는 기준점으로 삼는 액터
+
+  UPackageMap - 원격과 객체 참조를 합의하는 맵 // UPackageMapClient
+
   RemoteAddr, URL원격 주소와 접속 정보
   State - 연결·닫힘 등의 연결 상태
-  OwningActor - 이 연결을 소유한 APlayerController
-  ViewTarget - 이 연결의 플레이어가 현재 세상을 관찰하는 기준점으로 삼는 액터
-  PackageMap - 원격과 객체 참조를 합의하는 맵
+  
   Channels - 채널 번호로 접근하는 채널 배열
-  ActorChannels - AActor → UActorChannel의 연결별 대응표
-  Handler - 송수신 패킷을 가공하는 패킷 핸들러
+  FActorChannelMap ActorChannels - AActor -> UActorChannel
+
+  Handler: PacketHandler - 송수신 패킷을 가공하는 패킷 핸들러
+  
+---
+
+Beacon 연결에서는 Beacon 계열 Actor가 소유자가 될 수 있다
 
 ---
 
-UNetConnection
-  InitBase: 드라이버·소켓·주소·초기 상태를 연결에 설정
-  ReceivedPacket: 패킷을 읽어 확인 응답, 채널 번호, FInBunch로 분해
-  FlushNet: 여러 채널이 쌓아 둔 데이터를 실제 패킷으로 묶어 보낸다
+UNetDriver가 FSocket을 소유
+
+서버면 리슨 소켓 하나
+
+수신: UDP는 connectionless라 모든 클라가 그 한 소켓으로 들어와
+NetDriver가 소켓을 읽어 보낸 주소로 구분(demux) 해서 
+맞는 UNetConnection으로 라우팅(새 주소면 새 connection 생성)
 
 ---
 
-패킷
-  = 실제 전송 단위
+송신: UNetConnection(IpConnection)이 자기 remote 주소로 SendTo 를 그 소켓에 호출
+즉 소켓은 드라이버 소유지만, 보낼 땐 connection이 자기 주소를 얹어 그걸 통해 내보내.
 
-번치
-  = 특정 Channel 번호를 가진 논리 메시지 조각
-    하나의 패킷에 여러 번치가 들어갈 수 있다
+---
+
+IpConnection ↔ IpNetDriver 커플링
+
+NetDriver는 NetConnectionClass(어떤 UNetConnection 서브클래스를 만들지)를 갖고
+UIpNetDriver는 UIpConnection을 만들어
+
+transport마다 드라이버+커넥션이 한 쌍으로 커플링
+
+UIpNetDriver ↔ UIpConnection
+UDemoNetDriver ↔ UDemoNetConnection
+Steam / EOS / WebSocket 계열 — 각자 드라이버+커넥션 쌍
+
+---
+
+Beacon
+
+정식 게임 세션(전체 월드 복제)을 안 열고, 특정 목적으로만 서버와 대화
+
+AOnlineBeaconHost
+AOnlineBeaconClient
+
+용도: 접속 전 자리 예약(reservation), 매치메이킹 핸드셰이크, 로비/파티 상태 조회
+
+---
+
+FHttpModule / IHttpRequest
+
+NetDriver/NetConnection/FSocket 스택과 완전히 별개 서브시스템
+
+FHttpModule::Get().CreateRequest()
+  → SetURL / SetVerb(GET·POST) / 헤더 / 바디
+  → ProcessRequest()        // 비동기
+  → OnProcessRequestComplete 콜백으로 응답
+
+플랫폼 HTTP 구현(libcurl 등) 위 TCP/HTTP로 나가
+소켓도 커넥션도 공유 안 해
+
+게임 클라 ──HTTP(FHttpModule)──▶ 백엔드 웹 API ──▶ DB
+
+---
+---
+---
+
+UNetConnection::InitBase
+└─ Driver/URL/mode/packet state 초기화
+
+ReceivedRawPacket
+├─ PacketHandler::Incoming (설정된 경우)
+└─ ReceivedPacket
+   └─ FInBunch로 분리 → channel dispatch
+
+UChannel::SendBunch
+└─ UNetConnection::FlushNet
+   └─ packet 확정 → PacketHandler::OutgoingHigh → LowLevelSend
+
+Connection에 쌓인 outgoing bunch를 packet 경계로 확정해 하위 transport로 내린다
+
+---
+
+ReceivedRawPacket
+handler 적용 전의 raw 진입점
+
+ReceivedPacket
+Unreal packet header와 bunch를 해석
+
+---
+
+UNetConnection packet
+├─ packet header / sequence / ACK
+└─ 여러 Bunch
+   └─ 각 FInBunch/FOutBunch의 ChIndex와 ChName
+
+송신: FOutBunch → packet에 병합
+수신: packet parse → FInBunch → 해당 UChannel
+
+---
+
+번치 
+
+FNetBitWriter
+└─ FOutBunch
+   └─ FControlChannelOutBunch
+
+FNetBitReader
+└─ FInBunch
+
+특정 Channel 번호를 가진 논리 메시지 조각
+하나의 패킷에 여러 번치가 들어갈 수 있다
+Bunch는 Channel의 논리적 데이터 단위
+한 packet에 여러 Bunch가 들어갈 수 있고, 큰 Bunch는 partial bunch로 여러 packet에 나뉠 수 있다
 
 ---
 
 UChannel
+├─ UControlChannel     : handshake/control message
+├─ UActorChannel       : 고전 Actor/subobject 상태와 RPC
+├─ UVoiceChannel       : voice data
+└─ UDataStreamChannel  : Iris DataStream 운반
+
+
+UChannel
+  UNetConnection
   ChIndex: 이 연결 안에서의 채널 번호
-  OpenAcked, Closing, Dormant: 채널 수명 상태
+
+  OpenAcked / Closing / Dormant / OpenTemporary / Broken: 채널 수명 상태
+
+  FInBunch* InRec / FOutBunch* OutRec
+  FInBunch* InPartialBunch
 
   Init: 연결과 채널 번호를 붙인다
   ReceivedBunch: 해당 채널용 수신 메시지를 처리한다
@@ -95,117 +251,253 @@ UChannel
 
 ---
 
+Channel은 하나의 Connection 안에서 논리적 데이터 흐름을 분리한다
+파생 Channel마다 Bunch payload의 의미가 다르고
+
+base `UChannel`은
+reliable sequence, partial bunch 조립 같은 공통 전송 규칙을 제공한다
+
+---
+
 UActorChannel
   Actor - 이 채널이 담당하는 액터
-  ActorNetGUID - 원격에서도 통용되는 액터 식별자
+  ActorNetGUID - 현재 client에서만 유효
+
   ActorReplicator - 액터 자신의 프로퍼티 복제기
-  ReplicationMap - 액터의 복제 서브오브젝트별 복제기
+  TMap<UObject*, TSharedRef<FObjectReplicator>> ReplicationMap - 액터의 복제 서브오브젝트별 복제기
+
   RelevantTime - 이 연결에서 마지막으로 relevant였던 시각
   LastUpdateTime - 마지막 복제 시각
+
   QueuedBunches - 객체 참조 해석을 기다리는 수신 번치
-  PendingGuidResolves - 아직 실체를 찾지 못한 객체 식별자
+  FQueuedBunchObjectReference
+
+---
+
+[송신]
+UActorChannel::ReplicateActor
+├─ FObjectReplicator::ReplicateProperties (ActorReplicator)
+├─ subobject replicator 순회
+└─ FOutBunch 작성/전송
+
+이미 선택된 Actor의 property/subobject payload를 만드는 실행 단계
+액터와 서브오브젝트의 현재 상태를 번치로 직렬화
+
+---
+
+[수신]
+UActorChannel::ReceivedBunch
+├─ channel open / Actor spawn
+├─ content block 분해
+├─ FObjectReplicator::ReceivedBunch
+└─ property/RPC 적용
+
+프로퍼티 수신, RPC 수신을 분기한다
+
+---
+
+FRepLayout (schema/command layout)
+   ├─ TArray<FRepParentCmd> Parents
+   ├─ TArray<FRepLayoutCmd> Cmds
+
+   ├─ lifetime condition / RepNotify
+
+   ├─ CompareProperties
+   ├─ SendProperties / ReceiveProperties
+   └─ SendPropertiesForRPC / ReceivePropertiesForRPC
+
+---
+
+`UNetDriver` AP
+GetObjectClassRepLayout, GetFunctionRepLayout, GetStructRepLayout
+
+객체별 비교 상태 ──> FReplicationChangelistMgr / FRepChangelistState
+연결별 송신 상태 ──> FRepState
+
+---
+
+FNoncopyable
+├─ FReceivingRepState
+├─ FSendingRepState
+└─ FRepState
 
 ---
 
 UActorChannel
-  ReplicateActor: 액터와 서브오브젝트의 현재 상태를 번치로 직렬화한다
-  ReceivedBunch: 액터 생성, 프로퍼티 수신, RPC 수신을 분기한다
-  ProcessBunch: 실제 수신 내용을 적용한다
+├─ ActorReplicator
+│  └─ FObjectReplicator
+└─ ReplicationMap
+   ├─ Subobject A ─────────> FObjectReplicator
+   └─ Subobject B ─────────> FObjectReplicator
 
 ---
-
-액터 채널만으로는 어느 프로퍼티가 바뀌었는지 알 수 없다
-
-FRepLayout은 클래스의 복제 가능한 프로퍼티 구조를 해석해 둔 공유 레이아웃
-
-어떤 프로퍼티가 복제 대상인지
-프로퍼티를 비트 스트림으로 어떻게 읽고 쓸지
-
-레이아웃은 드라이버가 캐시해 재사용
-
-GetObjectClassRepLayout, GetFunctionRepLayout, GetStructRepLayout
-
----
-
+  
 FObjectReplicator
+├─ identity / object
+│  ├─ FNetworkGUID 
+│  ├─ UClass ObjectClass / UObject* ObjectPtr
+
+
+├─ shared/per-connection state
+│  ├─ TSharedPtr<FReplicationChangelistMgr> ChangelistMgr
+│  ├─ TSharedPtr<FRepLayout> RepLayout
+│  ├─ TUniquePtr<FRepState> RepState (이 Connection용)
+
+
+├─ FRepState
+│  ├─ TUniquePtr<FReceivingRepState>
+│  │  ├─ StaticBuffer / GuidReferencesMap
+│  │  └─ RepNotifies / RepNotifyMetaData
+
+│  └─ TUniquePtr<FSendingRepState>
+│     ├─ bOpenAckedCalled
+│     ├─ HistoryStart / HistoryEnd / NumNaks
+│     ├─ LastChangelistIndex / LastCompareIndex / CustomDeltaChangeIndex
+│     ├─ RepFlags / RepChangedPropertyTracker
+│     ├─ ChangeHistory[MAX_CHANGE_HISTORY] / Retirement / PreOpenAckHistory
+│     ├─ LifetimeChangelist
+
+├─ UNetConnection* / UActorChannel* 
+├─ FOutBunch* RemoteFunctions
+├─ RemoteFuncInfo / PendingLocalRPCs
+
+---
+
+UObject 하나를 특정 Connection에 복제하는 실행 객체
+
+Connection별 ACK/history와 pending RPC, RepNotify, 미해결 참조 상태를 결합
+동일 UObject에도 연결마다 별도 상태가 필요
 
 이전에 보낸 값과 현재 값을 비교
 변경된 프로퍼티를 직렬화
 수신한 프로퍼티를 대상 객체에 적용
 객체 참조가 아직 도착하지 않았으면 보류
 
-수신 후 PreNetReceive, PostNetReceive, RepNotify 호출
-
 ---
 
 FObjectReplicator
-  ReplicateProperties
-  ReceivedBunch
-  ReceivedRPC
-  CallRepNotifies
-  UpdateUnmappedObjects
+├─ lifecycle
+│  ├─ InitWithObject / CleanUp
+│  └─ StartReplicating / StopReplicating
+
+├─ 송신·delivery
+│  ├─ ReplicateProperties_r(FOutBunch&, FReplicationFlags, FNetBitWriter&)
+│  ├─ PostSendBunch 
+
+├─ 수신·reference
+│  ├─ ReceivedBunch / ReceivedRPC
+│  ├─ UpdateGuidToReplicatorMap / MoveMappedObjectToUnmapped
+│  ├─ PostReceivedBunch / 
+
+├─ RPC·notify/property payload
+│  ├─ CallRepNotifies
+
+└─ UObject receive hooks: PreNetReceive / PostNetReceive
 
 ---
 
-객체 참조에는 FNetworkGUID가 쓰인다.
+UNetDriver
+└─ TSharedPtr<FNetGUIDCache>
+   ├─ UObject/path <-> FNetworkGUID
 
-FNetworkGUID: 네트워크 문맥에서 객체를 가리키는 식별자
-FNetGUIDCache: 객체와 식별자의 대응표
-SerializeObject: 객체 포인터를 네트워크 표현으로 바꾸거나, 받은 식별자를 객체로 해석한다
-UPackageMapClient: 객체 참조를 읽고 쓰는 맵
+UObject
+└─ UPackageMap
+   └─ UPackageMapClient
 
+UNetConnection
+└─ TObjectPtr<UPackageMap>
+   └─ game connection의 runtime instance: UPackageMapClient
+      ├─ 직렬화 중 UObject ↔ NetworkGUID 변환
+      ├─ export / must-be-mapped 처리
+      └─ Driver의 FNetGUIDCache 사용
+
+---
+
+FNetworkGUID
+packet 안의 UObject 참조 식별자
+
+UPackageMapClient
+Connection별 serialization 문맥을 제공
+GUID↔object의 중심 cache는 Driver에 있어 연결들이 공유
+
+Iris는 NetRefHandle/ObjectReference/Token 체계로 재구성
+Iris에서 `GuidCache/FNetworkGUID`를 사용하지 않는다
+
+---
+---
 ---
 
 UNetDriver::ServerReplicateActors
-  각 UNetConnection에 대해
+├─ ServerReplicateActors_PrepConnections
+├─ ServerReplicateActors_BuildConsiderList
+│  └─ FNetworkObjectList에서 candidate 수집
+├─ Connection별 loop
+│  ├─ relevance / dormancy / channel 조건
+│  ├─ 우선순위 계산
+│  └─ ServerReplicateActors_ProcessPrioritizedActorsRange
+│     ├─ 필요 시 UActorChannel 생성
+│     └─ UActorChannel::ReplicateActor
+
+
+각 UNetConnection에 대해
   이 액터가 이 연결에 relevant한가?
   우선순위와 대역폭 여유가 있는가?
   채널이 없다면 UActorChannel 생성
-  UActorChannel::ReplicateActor
+    UActorChannel::ReplicateActor
+
+
+Actor, Connection별 relevance, 전송 우선순위를 정한 뒤 Actor Channel의 serialization으로 내려간다
+Replication Graph를 사용하면 후보 수집과 정책 일부가 `UReplicationDriver` 쪽으로 이동한다
 
 ---
 
-UReplicationDriver
+UObject
+└─ UReplicationDriver
+   └─ UReplicationGraph
+      ├─ TArray<TObjectPtr<UReplicationGraphNode>> GlobalGraphNodes
+      ├─ TArray<TObjectPtr<UNetReplicationGraphConnection>> Connections
+      └─ ServerReplicateActors(float) override
+
 
 “어떤 액터를 어떤 연결에 보낼지”의 정책을 바꾸기 위한 확장점
 Replication Graph는 이 기반을 이용해 후보 액터를 공간·팀·게임 규칙 단위로 빠르게 골라내는 전략
 
 ---
 
-로컬 코드가 Net UFunction 호출
-  AActor의 원격 함수 호출 경로
-  UNetDriver::ProcessRemoteFunction
-  대상 UNetConnection과 UActorChannel 결정
-  함수 식별자 + 인자를 FOutBunch에 직렬화
-  전송
+Net UFunction 호출
+└─ UObject::ProcessEvent
+   └─ UNetDriver::ProcessRemoteFunction
+      └─ UActorChannel / FObjectReplicator
+         └─ FOutBunch → UNetConnection
 
-수신 측
-  UNetConnection::ReceivedPacket
-  UActorChannel::ReceivedBunch
-  FObjectReplicator::ReceivedRPC
-  UFunction의 수신 실행 경로
-  생성된 thunk를 거쳐 _Implementation 실행
+대상 UNetConnection과 UActorChannel 결정
+함수 식별자 + 인자를 FOutBunch에 직렬화
+전송
+
+---
+
+UNetConnection::ReceivedPacket
+└─ UActorChannel::ReceivedBunch
+   └─ FObjectReplicator::ReceivedRPC
+         UObject::ProcessEvent
+      └─ UFunction::Invoke / generated exec thunk
+         └─ _Implementation
 
 ---
 ---
 ---
-
-계층                    데이터 단위      
-
-Gameplay                property 값 / RPC    무엇을 공유할지 선언 (DOREPLIFETIME, UFUNCTION)
 
 FObjectReplicator       changelist → 비트    FRepLayout 이 property↔비트 변환
 
 UChannel                bunch                
-
 UNetConnection          packet               bunch 들을 packet 으로 패킹, 대역폭 예산
 
 PacketHandler           변형된 packet        handshake·암호화·압축 (HandlerComponent 체인)
-
 FSocket                 UDP datagram         전송
 
+(UIpNetDriver/UIpConnection)
 
-변환: property 변화 → bunch (객체 단위 메시지) → packet (전송 단위)
+UIpNetDriver/UIpConnection
 
 ---
 
@@ -219,24 +511,32 @@ UNetDriver
 ├─ NetworkObjects:FNetworkObjectList*             // 복제 대상 actor 집합
 └─ ReplicationDriver:UReplicationDriver*          // 정책 교체점 — ReplicationGraph
 
+---
+
 UNetConnection : UPlayer                          // 원격 플레이어
 ├─ Channels:UChannel*[]                           // ChIndex 인덱싱. 0 = Control, 나머지 Actor/Voice
-├─ PackageMap:UPackageMap*                        // 실체는 UPackageMapClient — GUID export/ack 의 연결별 상태
+├─ PackageMap:UPackageMap*                        // UPackageMapClient — GUID export/ack 의 연결별 상태
 ├─ Handler:PacketHandler*
 │   └─ HandlerComponents:HandlerComponent*[]      // StatelessConnect, 암호화, Oodle 압축
 ├─ PacketNotify:FNetPacketNotify                  // packet 수준 seq/ack/nak 창
 ├─ SendBuffer:FBitWriter                          // 조립 중인 outgoing packet
 └─ OwningActor:AActor*                  
 
+---
+
 UActorChannel : UChannel                          
 ├─ Actor:AActor*
-└─ ReplicationMap:<UObject*->FObjectReplicator>   // actor 본체 + replicated subobject 마다 1개
+└─ ReplicationMap:<UObject*->FObjectReplicator>   // replicated subobject
+
+---
 
 FObjectReplicator                                 
-├─ RepLayout:FRepLayout*                          // 클래스당 1개 공유 — property 배치·직렬화 스키마
-├─ RepState:FRepState*                            // 이 연결 전용 — changelist 이력 (shadow state)
+├─ RepLayout:FRepLayout*                          // 클래스당 1개 공유
+├─ RepState:FRepState*                            // 이 연결 전용의 송수신/ack history
 └─ ChangelistMgr:FReplicationChangelistMgr*       // 객체당 1개 공유 — 값 비교는 프레임당 1회만
 
+---
+---
 ---
 
 UWorld::Tick()
@@ -250,7 +550,7 @@ UNetDriver::TickFlush()
 {
   this::ServerReplicateActors()
   {
-    this::ServerReplicateActors_PrepConnections();     // connection 별 viewer 확정
+    this::ServerReplicateActors_PrepConnections();     
     this::ServerReplicateActors_BuildConsiderList();   // NetworkObjects 중 NextUpdateTime 도달·비-dormant 만
 
     for each connection
@@ -258,52 +558,77 @@ UNetDriver::TickFlush()
     this::ServerReplicateActors_ProcessPrioritizedActorsRange()
     {
       // 대역폭 예산 안에서 상위부터:
-      Connection:UNetConnection*::CreateChannelByName();  // 첫 복제면 channel open — 클라쪽 spawn 의 근원
-      Channel:UActorChannel*::ReplicateActor()
+      UNetConnection*::CreateChannelByName();  // 첫 복제면 channel open — 클라쪽 spawn
+
+      UActorChannel*::ReplicateActor()
       {
-        Replicator:FObjectReplicator::ReplicateProperties(Bunch)
+        FObjectReplicator::ReplicateProperties(Bunch)
         {
           // ChangelistMgr: 이번 프레임 값 비교는 객체당 1회 (모든 connection 공유)
           this::RepLayout::ReplicateProperties();  // changelist − (이 연결이 ack 한 것) → 비트 기록
         }
         // replicated subobject 도 ReplicationMap 의 replicator 로 동일 반복
-        this::SendBunch(&Bunch);        // bunch 가 Connection::SendBuffer 에 패킹됨
+
+        this::SendBunch(&Bunch);        // FOutBunch 가 Connection::SendBuffer 에 패킹
       }
     }
   }
-  Connection::FlushNet()                // 모인 비트가 packet 이 되어 PacketId 부여
-  {
+
+  UNetConnection::SendRawBunch/FlushNet    
     this::Handler:PacketHandler*::Outgoing();   // 압축 → 암호화
     this::LowLevelSend();                       // socket 송신
-  }
 }
 
 ---
+---
 
-UNetDriver::TickDispatch()      // UIpNetDriver 는 socket recv 루프
+PacketHandler
+이 연결의 패킷을 변환하는 파이프라인
+
+암호화: 커넥션마다 자기 키를 협상
+핸드셰이크(StatelessConnect) 상태
+
+---
+
+connectionless용 PacketHandler
+
+UNetDriver
+└─ ConnectionlessHandler : PacketHandler*   ← (StatelessConnect 핸드셰이크)
+
+아직 커넥션이 없는 주소에서 온 패킷을 처리
+핸드셰이크가 끝나 커넥션이 생기면, 그 커넥션이 자기 per-connection 핸들러를 갖게 돼
+
+---
+---
+---
+
+
+UNetDriver::TickDispatch()
 {
-  Connection:UNetConnection*::ReceivedRawPacket(Data)
+  UNetConnection*::ReceivedRawPacket(Data)
   {
     this::Handler:PacketHandler*::Incoming(); // 복호화·압축해제
-                                              //미연결 주소의 packet 은 StatelessConnectHandlerComponent 가 cookie 검증
-                                              // 통과 전엔 connection 자체가 없음
+
     this::ReceivedPacket(Reader)
     {
       // PacketNotify: header 의 seq/ack 처리
       //   내 packet 의 nak → 거기 실렸던 reliable bunch 를 다음 packet 에 재수록 (UChannel::ReceivedNak)
       //   ack → replicator 의 "ack 된 changelist" 갱신
-      // packet 내 bunch 순회:
-      Channel:UChannel*::ReceivedRawBunch()
+
+      // packet 내 FInBunch 분리 및 순회
+      UChannel*::ReceivedRawBunch()
       {
         // reliable: channel 별 sequence 로 순서 보장, 결번이면 보류 큐에 대기
         // partial bunch 는 재조립 후 전달
+
         UActorChannel::ReceivedBunch()
         {
-          // open bunch 면: PackageMap:UPackageMapClient* 가 NetGUID→archetype resolve → actor spawn
-          Replicator:FObjectReplicator::ReceivedBunch()
+          // open bunch 면: UPackageMapClient* 가 NetGUID→archetype resolve → actor spawn
+
+          FObjectReplicator::ReceivedBunch()
           {
-            this::RepLayout:FRepLayout*::ReceiveProperties();  // 객체 메모리에 기록 + RepNotify 큐잉
-            // RPC 필드면: ReceivedRPC() → 로컬 UFunction 실행
+            this::FRepLayout*::ReceiveProperties();  // 객체 메모리에 기록 + RepNotify 큐잉
+            // RPC 필드면: ReceivedRPC() → UFunction 실행
           }
         }
       }
@@ -312,242 +637,215 @@ UNetDriver::TickDispatch()      // UIpNetDriver 는 socket recv 루프
 }
 
 ---
+---
+---
 
-// gameplay: PC->ServerFire() 호출 — UHT 생성 thunk 가 로컬 실행 대신
 AActor::CallRemoteFunction()
-  NetDriver:UNetDriver*::ProcessRemoteFunction(Actor, Function, Parms)
+  UNetDriver*::ProcessRemoteFunction(Actor, Function, Parms)
   {
     // Server/Client/NetMulticast 플래그 × 이 머신의 role → 방향·대상 connection 결정
     // 해당 actor 의 UActorChannel 확보 후, FRepLayout 이 파라미터 직렬화 → bunch 로 송신
-    // reliable 여부는 UFUNCTION 지정자가 bunch 플래그로
+    // reliable 여부 UFUNCTION 지정자가 bunch 플래그로
   }
 
----
-
-Client                                            Server
-UPendingNetGame::InitNetDriver()                  (listen 중 UNetDriver)
-  [PacketHandler] initial ⇄ cookie                StatelessConnectHandlerComponent:
-                                                    상태 할당 없이 cookie 로 응답, 검증 통과 시에만
-                                                    UNetConnection 생성 (DoS 방어)
-  [Control channel — 이후는 reliable 메시지]
-  NMT_Hello ───────────────────────▶              버전·플랫폼 확인
-  ◀─────────────────── NMT_Challenge
-  NMT_Login ───────────────────────▶              AGameModeBase::PreLogin()   // 거부 시 NMT_Failure
-  ◀───────────────────── NMT_Welcome              map 이름 등
-  (map 로드, NetDriver를 UPendingNetGame → UWorld 로 인계)
-  NMT_Join ────────────────────────▶              UWorld::SpawnPlayActor() → PlayerController spawn,
-                                                  Connection::PlayerController 로 결합
-  이후 ServerReplicateActors() 가 
-  이 connection의 관점으로 세계를 복제하기 시작
+호출을 네트워크로 보낼지 판단하는 입구
 
 ---
+
+수신 exec thunk는 parameter를 풀고 `_Implementation`을 부른다
+
+---
+
+클라이언트                           서버
+UPendingNetGame                       UWorld/UNetDriver
+    │ NMT_Hello ----------------------->│  버전·플랫폼 확인
+    │<------------------- NMT_Challenge │
+    │ NMT_Login ----------------------->│
+    │                                 AGameModeBase::PreLoginAsync
+    │<--------------------- NMT_Welcome │  map 이름 등
+    │ NMT_Netspeed -------------------->│  (map 로드, NetDriver를 UPendingNetGame → UWorld 로 인계)
+    │ NMT_Join ------------------------>│
+    │                                UWorld::SpawnPlayActor()
+    │<-------------------------------Connection::PlayerController 결합
+
+
+---
 ---
 ---
 
-UNetDriver
-  월드의 네트워크 프레임 한 프레임을 구동
-
-UNetConnection
-  상대 한 명과의 연결 상태 
+               UNetDriver
+                     │
+              FNetGUIDCache
+          (공유 GUID↔object 사전)
+                 ▲       ▲
+                 │       │
+UNetConnection A │       │ UNetConnection B
+└─ PackageMap A ─┘       └─ PackageMap B
+   (A용 export 상태)        (B용 export 상태)
 
 ---
 
 FNetGUIDCache
-  = 세계 전체의 객체 주민등록소
+  = UNetDriver 스코프의 객체 주민등록소
     “이 객체는 420번이다.”
 
 UPackageMapClient
   = 클라이언트 한 명을 위한 전달·확인 장부
     “A 클라이언트는 420번이 Rifle임을 이미 확인했는가?”
-(원격은 그 식별자가 무엇을 가리키는지 이미 아는가?)
+    "원격은 그 식별자가 무엇을 가리키는지 이미 아는가?"
+    Connection 문맥의 질문
 
 ---
 
-UConnection::ViewTarget 
-이 연결의 관점을 대표할 actor 를 하나 지정
+UNetConnection
+├─ PlayerController
+│  └─ APlayerController::GetViewTarget()
+├─ ViewTarget: AActor
 
-PlayerController(연결의 주인)는 그대로지만 지금 내 화면에 필요한 세계는 B 주변
+AActor::IsNetRelevantFor(RealViewer, ViewTarget, SrcLocation)
 
----
----
----
----
----
----
 
-고전 스택의 비용 항목
-
-상태 저장   : FObjectReplicator 가 (객체 × 연결) 쌍마다        → 메모리 ∝ N×C
-변화 감지   : shadow 와 비교 = UObject 레이아웃 산책 (pull)    → 캐시 비협조, 매 프레임
-정책       : IsNetRelevantFor() = 객체당 가상함수 호출         → 배치 불가
-직렬화     : bunch 조립이 game thread 에 직렬                  → 병렬화 불가
+PlayerController(연결의 주인)는 그대로지만 
+관전자 카메라나 다른 Actor를 보는 경우
+"지금 내 화면에 필요한 세계는 B 주변"
 
 ---
-
-상태를 내부 표현으로 복사(quantize)해 데이터 지향 버퍼에 두고, 
-변화는 비교(pull)가 아니라 통지(push)로 받고, 
-
-비교·직렬화 산출물은 connection 들이 공유하며(연결별로는 "무엇을 보냈나" 기록만), 
-정책(filter/prioritize)은 config 로 등록되는 시스템으로 만든다. 
-
 ---
-
-계층                      고전                                Iris
-gameplay 선언             DOREPLIFETIME / UFUNCTION           동일 (+ push model 이 사실상 전제)
-상태 스키마               FRepLayout                          FReplicationStateDescriptor + FNetSerializer
-변화 감지                 shadow 비교 (pull)                  FGlobalDirtyNetObjectTracker (push) + 보조 poll
-객체 identity             FNetworkGUID / UPackageMapClient    FNetRefHandle + FObjectReferenceCache + NetToken
-객체×연결 상태            FObjectReplicator                   (소멸) 중앙 quantized 상태 + 연결별 Writer 기록
-채널                      UActorChannel × actor 수            UDataStreamChannel 1개 (그 안에서 스트림 다중화)
-connection / packet       UNetConnection·FNetPacketNotify·PacketHandler   그대로
-접속 수립                 StatelessConnect + NMT login                    그대로
-
 ---
 
 UNetDriver
-├─ (기존 그대로) ServerConnection / ClientConnections, GuidCache
+└─ ReplicationSystem:UReplicationSystem*            // Iris 의 루트. NetDriver 당 1개 
+     FReplicationSystemImpl
+      ├─ FReplicationSystemInternal
+           UReplicationBridge
 
+           FReplicationProtocolManager
+           FReplicationStateDescriptorRegistry
 
-└─ ReplicationSystem:UReplicationSystem*          // Iris 의 루트. NetDriver 당 1개
-    ├─ ReplicationBridge
-    │    : UReplicationBridge                       // IrisCore: UObject 몰라도 되는 추상
-    │    └─ UObjectReplicationBridge                // UObject/property 일반론
-    │        └─ UEngineReplicationBridge            // Engine 쪽: actor·subobject 결합
+           NetRefHandleManager
+           FDirtyNetObjectTracker
+           FReplicationConnections
 
-    └─ Internal:FReplicationSystemInternal, FReplicationSystemImpl
+           FReplicationStateStorage // 중앙 quantized internal 상태 버퍼
+           FChangeMaskCache
+           UIrisObjectReferencePackageMap
 
-        ├─ NetRefHandleManager        // FNetRefHandle ↔ 내부 index
-        ├─ ReplicationStateStorage    // 중앙 quantized 상태 버퍼
-        ├─ DirtyNetObjectTracker      // push 로 통지된 dirty 집합
-        ├─ FReplicationFiltering      // 누구에게 보이나 (grid/owner/group)
-        ├─ FReplicationConditionals   // COND_OwnerOnly 류의 후신
-        ├─ FReplicationPrioritization // 얼마나 급한가
-        ├─ DeltaCompressionBaselineManager      // 연결별 ack 된 baseline
-        ├─ ObjectReferenceCache                 // 객체 참조 직렬화 — PackageMap 의 후신
-        ├─ FNetBlobManager                      // attachment(RPC 등) 계열
-        ├─ FWorldLocations                      // 공간 정책용 위치 캐시
-        └─ Connections:FReplicationConnections
-             └─ FReplicationConnection[]                  
-                 ├─ FReplicationWriter* // 뭘 보냈고 뭐가 ack 됐나
-                 └─ FReplicationReader* // 수신 재조립
-
-UNetConnection[ConnectionId]::Channels[ChIdx] // Control channel 은 여전히 index 0
+           FReplicationFiltering
+        ├─ FReplicationConditionals   
+        ├─ FReplicationPrioritization 
+           FNetObjectGroups
+           FWorldLocations
+           FDeltaCompressionBaselineManager
+           
+---
+   
+UNetConnection::Channels[ChIdx]
   └─ UDataStreamChannel
       ├─ UDataStreamManager
           └─ UReplicationDataStream
-               ├─ FReplicationWriter
-               └─ FReplicationReader
+              ├─ FReplicationWriter
+              └─ FReplicationReader
+
+FReplicationConnections Connections
+├─ TArray<FReplicationConnection> Connections
+   └─ [ConnectionId]
+      ├─ FReplicationWriter*
+      ├─ FReplicationReader*
+      ├─ UDataStreamManager
+      ├─ FObjectPtr UserData
+
+---
+---
+---
+
+FReplicatedObjectData
+├─ FNetRefHandle / FNetHandle
+├─ FReplicationProtocol*
+├─ FReplicationInstanceProtocol*
+
+├─ uint8* ReceiveStateBuffer
+
+├─ SubObjectRootIndex / SubObjectParentIndex
+
+└─ uint16 Flags
 
 ---
 
-게임 객체
-AActor, UActorComponent, UObject
-        │
-        │ UEngineReplicationBridge
-        ▼
-Iris 데이터
-NetObject, Handle, Protocol, State Buffer
-        │
-        │ FReplicationWriter / FReplicationReader
-        ▼
-연결·패킷
-UDataStreamChannel, UNetConnection, Packet
+SubObjectRootIndex    
+이 서브오브젝트의 RootObject(최상위 루트=액터)의 index
+
+SubObjectParentIndex  
+이 서브오브젝트의 직속 Parent(한 단계 위)의 index
 
 ---
-
-NetObject
-= Replication System에 등록되어
-  Handle, Protocol, 상태 버퍼를 가진 복제 단위
-
-Actor보다 넓은 개념
-Actor, Actor Component, SubObject가 NetObject가 될 수 있다.
-
+---
 ---
 
-FInternalNetRefIndex = 57
+UEngineReplicationBridge::StartReplicatingActor(AActor*)
+  등록을 오케스트레이션
+  그 안에서 handle 발급은 manager에 위임
 
-FNetRefHandleManager          ObjectData[57] : Handle, Protocol, SubObject 관계
+수신 시 CreateNetRefHandleFromRemote
 
-FReplicationStateStorage      StateBuffer[57] : Quantized State
-
-FDirtyNetObjectTracker        DirtyBits[57] : 이번 복제 프레임의 변경 후보
-
-FWorldLocations               Location[57] : 공간 Filter와 Prioritizer가 사용할 위치
-
-FReplicationFiltering         FilterInfo[57] : 적용할 Filter와 그룹
-
-FReplicationPrioritization    PriorityInfo[57] : 적용할 Prioritizer
-
-연결 3의 FReplicationWriter   ConnectionState[57] : 생성됨, 전달됨, 갱신 대기 등의 상태
-
+---
+---
 ---
 
 FNetRefHandleManager
+  ├─ FRefHandleMap RefHandleToInternalIndex
+  ├─ FNetHandleMap NetHandleToInternalIndex
+  ├─ AssignedInternalIndices // free internal index 탐색
 
-다음 관계를 유지
-
-FNetRefHandle
-↔ FInternalNetRefIndex
-↔ FReplicatedObjectData
-
----
-
-클래스 스키마 
-
-FRepLayout 자리에 
-FReplicationStateDescriptor(상태 배치·changemask)와 
-타입별 FNetSerializer(Quantize/Serialize/Delta)가 오고
-
-클래스당 FReplicationProtocol 로 묶여 
-인스턴스에는 FReplicationInstanceProtocol 이 붙는다
-
-기존 UPROPERTY(Replicated)는 PropertyNetSerializerInfoRegistry 를 통해 자동 변환
-
----
-
-UWorld::Tick()
-BroadcastTickFlush()
-UNetDriver::TickFlush()
-{
-  this::UpdateIrisReplicationViews();     // connection 마다 FReplicationView 구성
-                                          // FView { Controller, ViewTarget, Pos, Dir, FoVRadians }[]
-                                          // FNetViewer 의 후신
-
-  this::UReplicationSystem*::NetUpdate(DeltaSeconds)
-  {
-    // ① 수확: FGlobalDirtyNetObjectTracker 의 push 통지 + (비-push 객체는 주기 poll)
-    //    → Bridge 가 UObject 상태를 quantize 해 ReplicationStateStorage 에 복사
-    // ② Filtering — grid/owner/group 필터가 연결별 가시 집합을 FNetBitArray 로 산출
-    // ③ Conditionals·Prioritization — 연결별 우선순위 (view 의 Pos/Dir/FoV 사용)
-  }
+  ├─ TNetChunkedArray<FReplicatedObjectData>
   
-  // connection tick 중:
-  Channel:UDataStreamChannel*::Tick()
-  {
-    this::WriteData()
-    {
-      UDataStreamManager*::WriteData(Context);
-        // → UReplicationDataStream → Writer:FReplicationWriter*::Write():
-        //   예산 내 우선순위순으로, baseline 대비 delta + changemask 를 비트 기록
-      this::SendBunch(&OutBunch);   // 이하 경로 그대로: bunch → packet → PacketHandler → socket
-    }
-  }
-  this::ReplicationSystem::PostSendUpdate();
-}
+  ├─ GlobalScopableInternalIndices / AssignedInternalIndices
+
+  ├─ FNetDependencyData SubObjects // subobject·child-subobject·dependent-parent index arrays 관계도 제공
+  ├─ SubObjectInternalIndices / DependentObjectInternalIndices
+  ├─ DependentObjectsWithParentFilter
+  └─ ObjectsWithDependentObjectsInternalIndices
+
+FReplicationWriter / Reader / Bridge
+└─ InternalIndex를 통해 동일 object record 접근
 
 ---
+---
+---
 
-UNetDriver::TickDispatch()
+UReplicationSystem::NetUpdate
+├─ UpdateDirtyObjectList
+├─ UpdateWorldLocations
+
+├─ UpdateFiltering
+
+├─ UReplicationBridge::CallPreSendUpdate ──> Fragment poll
+├─ UpdateDirtyListPostPoll 
+
+   UpdateConditionals
+
+├─ QuantizeDirtyStateData
+
+├─ UpdateObjectScopes
+   PropagateDirtyChanges
+
+├─ UpdatePrioritization
+   baseline preparation // optional
+
+---
+---
+---
+
+UNetDriver::TickDispatch
+UNetDriver::InternalTickDispatch
 {
   this::ReplicationSystem::PreReceiveUpdate();
 
-  // 경로 그대로: socket → PacketHandler::Incoming → UNetConnection::ReceivedPacket → bunch 분배
+  // socket → PacketHandler::Incoming → UNetConnection::ReceivedPacket → bunch 분배
 
-  Channel:UDataStreamChannel*::ReceivedBunch(Bunch)
+  UDataStreamChannel*::ReceivedBunch
   {
     UDataStreamManager*::ReadData(Context);
       // → UReplicationDataStream → Reader:FReplicationReader*::Read():
-      //    · 새 객체: Bridge 의 creation 정보로 instantiate (actor spawn)
       //    · 상태: dequantize → FReplicationInstanceProtocol 로 UObject property 적용, RepNotify
       //    · attachment(RPC): NetRPCHandler → 로컬 UFunction 실행
       //    · 미해결 참조: ObjectReferenceCache 가 로드 후 지연 적용
@@ -557,76 +855,67 @@ UNetDriver::TickDispatch()
 }
 
 ---
+---
+---
 
 RPC — attachment 로의 일반화
+대상 Net Object에 붙는 Net Blob attachment
 
-AActor::CallRemoteFunction()   // 같은 진입점
+UObject + INetBlobReceiver
+└─ UNetBlobHandler
+   └─ UNetRPCHandler
+
+FNetBlob
+└─ FNetObjectAttachment
+   └─ FNetRPC
+
+AActor::CallRemoteFunction()
 {
   (Iris 분기)
-  ReplicationSystem:UReplicationSystem*::SendRPC(RootObject, SubObject, Function, Parameters)
+  UReplicationSystem*::SendRPC()
   {
-    // NetBlobManager 가 FNetRPC(NetBlob) 생성 — "객체에 붙는 attachment"
-    // 대상 객체의 복제 스트림에 함께 실림
+    // FNetRPC(NetBlob) 생성 — "객체에 붙는 attachment"
+    // 대상 객체의 attachment queue가 관리
   }
 }
 
-수신
-  FNetRPCHandler 가 blob 복원
-  ForwardNetRPCCallDelegate(RootObject, SubObject, Function, Params)
-  engine 이 바인딩한 delegate 가 로컬 호출
-
 ---
 ---
----
-
-기존 
-
-UNetDriver
-
-ServerReplicateActors
-연결별 UActorChannel
-FObjectReplicator
-FRepLayout
-
-FOutBunch
-
-
-Iris
-
-UNetDriver
-UReplicationSystem
-Filter / Prioritizer
-연결별 FReplicationWriter
-UReplicationDataStream
-UDataStreamChannel
-
-FOutBunch
-
 ---
 
 UReplicationBridge
   UObjectReplicationBridge
     UEngineReplicationBridge
 
-게임의 UObject <-> Iris의 NetObject
-
 ---
 
-FReplicationConnections
-FReplicationWriter
-FReplicationReader
+FReplicationConnections 
+  FReplicationConnection
+    FReplicationWriter
+    FReplicationReader
+    UDataStreamManager
 
 
 UDataStreamChannel
   UDataStreamManager
-    UReplicationDataStream
-
-Iris가 만든 데이터를 기존 UNetConnection의 패킷 전송 구조에 실어 보낸다
+    
 
 ---
 
-기존 복제에서는 TickFlush가 ServerReplicateActors를 호출한다
-Iris가 있으면 UpdateIrisReplicationViews, UReplicationSystem::NetUpdate를 호출
+UNetDriver::TickFlush
+  UpdateIrisReplicationViews
+  SendClientMoveAdjustments
+  UReplicationSystem::NetUpdate
+
+  per-connection
+  UNetConnection::Tick
+  UDataStreamChannel::Tick
+
+  ReplicationSystem::PostSendUpdate()
+
+UNetDriver::TickFlush
+  ServerReplicateActors
+    ActorChannel/Replicator
 
 ---
 ---
@@ -637,15 +926,20 @@ FRepLayout
 스키마    : Cmds:FRepLayoutCmd[]            // property 순회·직렬화 명령 리스트
 비교      : CompareProperties()             // shadow 대비 changelist 생성
 직렬화    : SendProperties()/ReceiveProperties()
-RPC      : SendPropertiesForRPC()/…
-인스턴스   : shadow buffer 구성
-(연결별 상태는 FRepState 로 바깥에, 그러나 로직은 여기)
+RPC       : SendPropertiesForRPC()/ReceivePropertiesForRPC
+
+mutable 값
+├─ 객체 공통: FRepChangelistState
+└─ 연결별  : FRepState
 
 ---
 
-FReplicationStateDescriptor        
-FReplicationProtocol               
-FReplicationInstanceProtocol       
+FReplicationInstanceProtocol
+  FReplicationFragment
+  FFragmentData
+    ExternalSrcBuffer
+  EReplicationInstanceProtocolTraits
+  FragmentCount
 
 ---
 ---
@@ -653,173 +947,228 @@ FReplicationInstanceProtocol
 ---
 ---
 
-UReplicationBridge                              // handle 수명주기: Begin/EndReplication
-  ◁ UObjectReplicationBridge                    // UObject 일반론
-  │   ├─ FObjectPollFrequencyLimiter*  // 비-push 객체의 poll 주기 (NetUpdateFrequency 의 후신)
-  │   ├─ ClassesWithDynamicFilter:<FName->FClassFilterInfo> // 클래스→기본 filter 배정 (config 주도)
-  ◁ UEngineReplicationBridge                    // actor 세계: BeginReplication(Actor), subobject 등록,
+UReplicationBridge
+├─ UReplicationSystem*
+
+├─ FReplicationProtocolManager*
+├─ FReplicationStateDescriptorRegistry*
+├─ FNetRefHandleManager*
+├─ FObjectReferenceCache*
+
+├─ FNetObjectGroups*
+├─ TMap<FObjectKey, FNetObjectGroupHandle> LevelGroups
+
+├─ TMap<FNetRefHandle, EEndReplicationFlags> HandlesToStopReplicating
+├─ TMap<FNetRefHandle, FDestructionInfo> StaticObjectsPendingDestroy
+└─ TArray<FPendingEndReplicationInfo> HandlesPendingEndReplication
 
 ---
 
-FNetRefHandleManager 
-├─ RefHandleToInternalIndex:<FNetRefHandle->FInternalNetRefIndex>
-├─ NetHandleToInternalIndex:<FNetHandle->FInternalNetRefIndex>   // NetCore(push 통지) 세계와의 교차점
+UObjectReplicationBridge
+  StartReplicatingRootObject
 
-├─ FReplicatedObjectData[]  // index → { RefHandle, Protocol*, InstanceProtocol*, subobject 관계 }
-
-├─ ReplicatedInstances:UObject*[]                // index → 실체 (poll/apply 순간에만 사용)
-
-├─ GlobalScopableInternalIndices:FNetBitArray    // '복제 대상 전체' 집합
-
-├─ SubObjectInternalIndices:FNetBitArray
-└─ ScopeFrameData { CurrentFrame/PrevFrame ScopableInternalIndices }
-
----
-
-FObjectReferenceCache                           // PackageMap 의 후신
-├─ <UObject*->FNetRefHandle>
-
-├─ <FNetRefHandle->FCachedNetObjectReference>  // path·outer 체인 캐시
-
-├─ FNetTokenStore* / FStringTokenStore*  
-
-├─ <FName->FPendingAsyncLoadRequest>           // package async load (StartAsyncLoadingPackage)
-
-└─ QueuedBatchObjectReferences:<FNetRefHandle->?>
-
----
-
-FReplicationConnection[]                     
-  ├─ FReplicationWriter*    // 송신 상태기계
-  │   ├─ ReplicatedObjects:FReplicationInfo[]   // 객체별 송신 상태 — EReplicatedObjectState 상태기계
-  │   │                                         //   (PendingCreate → WaitOnCreateConfirmation → Created → …)
-  │   ├─ ObjectsWithDirtyChanges / ObjectsInScope:FNetBitArray
-  │   ├─ FReplicationRecord   // packet 별 '무엇을 실었나'의 기록 —
-  │   │                       //   ack/nak 시 Handle Delivered / Dropped / Discarded Record() 로 회수
-
-  │   ├─ Attachments:FNetObjectAttachmentsWriter  // blob(RPC 등) 큐, reliable 창 관리
-  │   └─ NetExports:FNetExports*                  // 이 packet 에 동봉할 token·참조 export
-
-
-  └─ FReplicationReader*    // 수신 재조립
-      ├─ (객체별) FReplicatedObjectInfo
-      │   ├─ UnresolvedObjectReferences:FObjectReferenceTracker    
-      │   ├─ UnresolvedChangeMaskOrPointer                         
-      │   └─ UnresolvedHandleCount:<FNetRefHandle->int16>
-
-      ├─ FDispatchObjectInfo[]                  // 이번 수신분의 적용 목록
-      └─ ResolveAndDispatchUnresolvedReferences()  // 늦게 도착·로드된 참조의 지연 적용
-
----
-
-send:    FGlobalDirtyNetObjectTracker → FDirtyNetObjectTracker
-         → Bridge(poll·quantize) → FReplicationStateStorage
-         → FReplicationFiltering(Groups·WorldLocations) → FReplicationConditionals → FReplicationPrioritization
-         → (연결별) FReplicationWriter(+BaselineManager, NetBlobManager, ObjectReferenceCache 의 export)
-         → UReplicationDataStream → UDataStreamChannel → bunch/packet (고전 계층)
+UEngineReplicationBridge
+  StartReplicating / StopReplicating Actor / Component / SubObject
 
 ---
 ---
 ---
 
-복제할 값을 UObject 에서 꺼내 내부 전용 버퍼에 복사해 두고
-이후의 모든 처리(변화 판정·직렬화)는 그 버퍼 위에서 한다
+FNetRefHandleManager
+├─ FRefHandleMap RefHandleToInternalIndex
+├─ FNetHandleMap NetHandleToInternalIndex
+
+├─ FNetBitArray CurrentFrameScopableInternalIndices
+└─ FNetBitArray PrevFrameScopableInternalIndices
+├─ FNetBitArray GlobalScopableInternalIndices / RelevantObjectsInternalIndices
+├─ FNetBitArray PolledObjectsInternalIndices / DirtyObjectsToQuantize
+└─ FNetBitArray AssignedInternalIndices / ObjectsWithPreUpdate
+├─ FNetBitArray SubObjectInternalIndices / DependentObjectInternalIndices
+├─ FNetBitArray DependentObjectsWithParentFilter
+├─ FNetBitArray ObjectsWithDependentObjectsInternalIndices
+├─ FNetBitArray DestroyedStartupObjectInternalIndices
+└─ FNetBitArray WantToBeDormantInternalIndices / DormantObjectsPendingFlushNet
+
+---
+---
+---
+
+FObjectReferenceCache
+
+TMap<const UObject*, FNetRefHandle>
+TMap<FNetRefHandle, FCachedNetObjectReference>
+TMap<FNetRefHandle, FQueuedBatchObjectReference>
+TMultiMap<FNetRefHandle, FNetRefHandle>
+
+FNetObjectReference
+├─ FNetRefHandle RefHandle
+├─ FNetToken PathToken
+└─ ENetObjectReferenceTraits Traits
+
+---
+---
+---
+
+FReplicationWriter (로컬 → 원격 송신 상태 기계)
+  FReplicationParameters Parameters
+  FReplicationRecord ReplicationRecord
+
+  TArray<FReplicationInfo> ReplicatedObjects // 객체별 송신 상태
+
+FReplicationInfo 
+├─ FChangeMaskStorageOrPointer
+├─ ChangeMaskBitCount / State / HasDirtySubObjects / IsSubObject
+├─ HasDirtyChangeMask / HasAttachments / HasChangemaskFilter
+├─ IsDestructionInfo / IsCreationConfirmed / TearOff
+├─ SubObjectPendingDestroy / IsDeltaCompressionEnabled
+├─ LastAckedBaselineIndex / PendingBaselineIndex / FlushFlags
+└─ HasDirtyConditionals / HasCannotSendInfo
+
+---
+
+FReplicationWriter
+  cached subsystem pointers
+    FReplicationSystemInternal
+    FNetRefHandleManager
+    UReplicationBridge
+    FDeltaCompressionBaselineManager
+    FObjectReferenceCache
+    FReplicationFiltering
+    FReplicationConditionals
+    UPartialNetObjectAttachmentHandler
+    UNetObjectBlobHandler
+    FNetExports
+    FNetTypeStats
+
+---
+
+FReplicationReader (원격 → 로컬)
+  TMap<uint32, FReplicatedObjectInfo> ReplicatedObjects
+
+FReplicatedObjectInfo
+  UnresolvedChangeMaskOrPointer
+  UnresolvedObjectReferences / ResolvedDynamicObjectReferences
+  UnresolvedHandleCount / ResolvedDynamicHandleCount
+  uint8* StoredBaselines[2] / uint32 InternalIndex
+  ChangeMaskBitCount / bHasUnresolvedReferences
+  bHasUnresolvedInitialReferences / bHasAttachments
+  bDestroy / bTearOff / bIsDeltaCompressionEnabled
+  LastStoredBaselineIndex / PrevStoredBaselineIndex / Padding
+
+---
+
+FGlobalDirtyNetObjectTracker → FDirtyNetObjectTracker
+→ Bridge(poll·quantize) → FReplicationStateStorage
+→ FReplicationFiltering(Groups·WorldLocations) → FReplicationConditionals → FReplicationPrioritization
+→ (연결별) FReplicationWriter(+BaselineManager, NetBlobManager, ObjectReferenceCache 의 export)
+→ UReplicationDataStream → UDataStreamChannel → bunch/packet
+
+---
+---
+---
 
 UObject 를 만지는 순간은 복사해 올 때와 수신측에서 되돌려 쓸 때뿐
 
+UEngineReplicationBridge::StartReplicatingActor
+  Fragment 생성·등록
+
+Poll: UObject → External State
+Apply: External State → UObject / RepNotify
+
+UObject 접근을 줄인 내부 경로
+Internal State → Filtering/Prioritization/Writer/Baseline
+
+---
+---
 ---
 
 external representation : C++ 멤버 선언 그대로의 값 형태 
 
-internal representation : 전송 친화적으로 변환(quantize)된 형태 — 위치를 정수 격자로
-                          회전을 압축 비트로 바꾸는 식. 내부 버퍼는 이 형태로 저장
+internal representation : serializer-defined quantized layout
 
 replication state       : 함께 관리되는 프로퍼티들의 묶음 1벌. 한 클래스는 여러 state 를 가질 수 있다
 
-changemask              : state 안에서 "어느 member 가 변했나"를 나타내는 고정 크기 비트 지도
+changemask              : state 안에서 "어느 member 가 변했나"를 나타내는 Descriptor가 정한 비트 지
 
 ---
-
-
-UPROPERTY(Replicated)  float Health;    // 복제 대상 표시 — UHT가 RepIndex(프로퍼티 번호) 부여
+---
+---
 
 // 클래스당 1회 호출되는 정적 등록
 void AMyCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutProps) const
 {
   FDoRepLifetimeParams Params;                             
-  Params.bIsPushBased = true;                              //    push model 선언
+  Params.bIsPushBased = true;                              // push model 선언
 
   DOREPLIFETIME_WITH_PARAMS_FAST(AMyCharacter, Health, Params);
 }
 
+FLifetimeProperty
+├─ RepIndex
+├─ RepNotifyCondition
+└─ bIsPushBased
+
+RepIndex
+
+---
+---
 ---
 
 Iris 초기화 시 FReplicationStateDescriptorBuilder 가 UClass 를 순회하며 위 선언을 읽고, 
 복제 프로퍼티들을 몇 벌의 state 로 묶어 state 마다 descriptor 를 하나씩 굽는다
 
-FReplicationStateDescriptor            
-├─ MemberDescriptors                   // member 마다: external offset, internal offset — 두 표현에서의 자리
-├─ MemberSerializerDescriptors         // member 마다: 어느 FNetSerializer 로 변환하나
-├─ MemberChangeMaskDescriptors         // member 마다: changemask 의 몇 번 비트(들)인가 { BitOffset, BitCount }
-├─ MemberTraitsDescriptors
-├─ ExternalSize / InternalSize         // 두 표현 각각의 총 크기 (정렬 포함)
-├─ ChangeMaskBitCount
-└─ Traits:EReplicationStateTraits      
-                                      
----
-
-FReplicationProtocol                   // '타입'당 1개 — 이 타입은 이런 state 들로 복제된다
-├─ FReplicationStateDescriptor*[]      // 순서 있는 descriptor 목록
-├─ ReplicationStateCount / InternalTotalSize                    // 내부 표현 총 크기
-├─ ProtocolIdentifier                  // 모든 descriptor 로부터의 해시 — 서버·클라 스키마 일치 검증
-
-
-FReplicationInstanceProtocol           // '인스턴스'당 1개 — 스키마를 실제 객체 메모리에 결선
-├─ Fragments:FReplicationFragment*[]   // state 마다 1개: "이 state 의 값을 이 인스턴스 어디서 읽고 쓰나"
-└─ FragmentCount                      
+FReplicationStateDescriptorBuilder
+  CreateDescriptorsForClass
+  CreateDescriptorForStruct
+  CreateDescriptorForFunction
 
 ---
-
-void AMyCharacter::SetHealth(float NewHealth)
-{
-  Health = NewHealth;
-  MARK_PROPERTY_DIRTY_FROM_NAME(AMyCharacter, Health, this);
-}
-
+---
 ---
 
-UEPushModelPrivate::MarkPropertyDirty(Object, PushId, RepIndex)
-  // PushId:FNetPushObjectId = Object->GetNetPushIdDynamic() — 객체에 심어진 '통지용 주소'
-  //   uint64 하나에 두 백엔드를 인코딩: 상위 32bit 가 전부 1이면 고전 스택용 id,
-  //   아니면 Iris 용 (FNetHandle 기반)
 
-  ↓ Iris 쪽이면, 등록된 delegate 로:
+MARK_PROPERTY_DIRTY_FROM_NAME(AMyActor, Health, this)
+UEPushModelPrivate::MarkPropertyDirty(this, PrivatePushId, GET_PROPERTY_REP_INDEX(AMyActor, Health))
+
+PushId:FNetPushObjectId = Object->GetNetPushIdDynamic() // 객체에 심어진 '통지용 주소'
+//   uint64 하나에 두 백엔드를 인코딩: 상위 32bit 가 전부 1이면 고전 스택용 id
+//   아니면 Iris 용 (FNetHandle 기반)
+
+↓ Iris 쪽이면, 등록된 delegate 로
 
 FNetHandleLegacyPushModelHelper::MarkPropertyOwnerDirty(Object, PushId, RepIndex)
 {
   ::MarkNetObjectStateDirty(Handle.GetNetHandle());
 }
 
-  ↓
+---
+
+Dirty macro
+
+“이 object를 확인하라”는 scheduling signal
+“그 object를 poll 필요 대상으로 표시”하는 신호
+
+실제 값 비교와 member mask는 poll 때
+internal 변환은 quantize 때
+Connection별 전송은 Writer 때
+
+---
 
 FGlobalDirtyNetObjectTracker (프로세스 전역 수신함, NetCore 모듈)
   // dirty 객체의 FNetHandle 집합을 프레임 동안 누적.
-  // 복제 시스템이 여럿(게임·리플레이 녹화·beacon 등)이라 소비자(poller)도 여럿 
+  // 복제 시스템이 여럿(게임·리플레이 녹화)이라 소비자(poller)도 여럿 
 
-  ↓ 프레임 송신 시작 시, 시스템마다:
+↓ 프레임 송신 시작 시, 시스템마다
 
 FDirtyNetObjectTracker::UpdateDirtyNetObjects()
   // 전역 집합의 FNetHandle 을 자기 내부 index 로 번역
-  //   DirtyNetObjects:FNetBitArray 에 비트 세팅
-수확(poll): dirty 비트가 선 객체만 방문
-  // FPropertyReplicationState::Set() — 현재 UObject 값과 보관된 사본을 member 별로 비교,
-  //   실제로 변한 member 의 changemask 비트만 세팅, quantize 해 internal buffer 갱신
+  // DirtyNetObjects:FNetBitArray 에 비트 세팅
 
   ↓
 
 FDirtyNetObjectTracker::ReconcilePolledList(ObjectsPolled)
   // 이번에 실제 방문한 객체만 클리어 — 예산상 못 간 객체는
-  //   AccumulatedDirtyNetObjects 에 남아 다음 프레임으로 이월
+  // AccumulatedDirtyNetObjects 에 남아 다음 프레임으로 이월
 
 ---
 ---
@@ -830,16 +1179,16 @@ FNetHandle            FNetHandleManager         프로세스 전역     ✗
 FNetRefHandle         서버 ReplicationSystem    양 끝단           ✓       
 FInternalNetRefIndex  FNetRefHandleManager      한 시스템 내부    ✗       장부의 배열 좌표
 
-FNetPushObjectId      PushModel 계층            매크로↔백엔드     ✗       NetHandle 의 봉투
-FNetObjectReference   FObjectReferenceCache     직렬화 값         ✓       
+FNetPushObjectId      PushModel 계층            매크로↔백엔드     ✗       
+FNetObjectReference                             직렬화 값         ✓       
 FNetToken             FNetTokenStore            연결 간 사전      ✓       문자열의 사전 번호
 
 ---
 
 프로세스 (NetCore)
-  FNetHandle { Id:uint32 }
+  FNetHandle { Id:uint32, Epoch:uint32 }
   · 발급: FNetHandleManager. UObject 하나당 하나, 앱 수명 동안 유일
-  · 통용: 프로세스 전역 — 복제 시스템이 몇 개든 공용
+  · 통용: 프로세스 전역 — 다수 복제 시스템들 공용
   · wire: ✗
 
 복제 세계 (Iris, 양 끝단 공유)
@@ -847,69 +1196,86 @@ FNetToken             FNetTokenStore            연결 간 사전      ✓      
   · 발급: 서버(권위측)의 ReplicationSystem
   · 통용: 서버·클라이언트가 공유
   · 홀짝 규약: static 객체(레벨 배치물·에셋 — 이름으로 찾을 수 있는 것)는 홀수 Id,
-    dynamic 객체(런타임 spawn — 만들어야 하는 것)는 짝수 Id.
+    dynamic 객체(런타임 spawn — 만들어야 하는 것 / 서버권위)는 짝수 Id.
     Id 의 홀짝이 곧 수신측의 resolve 방법을 말해준다
 
 한 시스템의 작업장 좌표 (Iris 내부)
   FInternalNetRefIndex = uint32 (typedef)
   · 발급: 그 ReplicationSystem 의 FNetRefHandleManager
   · 통용: 그 시스템 내부
-  · 역할: 조밀한 배열 index — 내부 부품들이 전부 이 좌표 위의 FNetBitArray 로 대화
-    handle 로 map 조회는 입구에서 한 번, 이후는 index 산술
+  · 역할: 조밀한 배열 index — handle 로 map 조회는 입구에서 한 번, 이후는 index 
 
 ---
 
-운반 봉투
-FNetPushObjectId { Value:uint64 }     // 매크로↔백엔드 사이에서만 사는 봉투.
-                                      //   legacy id 또는 FNetHandle 을 인코딩. wire ✗
-
-지칭 표현 (직렬화되는 '값')
-FNetObjectReference                   // 프로퍼티 값으로 wire 를 왕복
-                                      // 대상이 복제 객체면 RefHandle 로, 아니면(에셋 등)
-                                      // 경로 기반으로. FObjectReferenceCache 가 발급·해석
-
-FNetToken { TypeId:3bit, Index:20bit } // 문자열·이름을 사전 번호로 바꾼 것 (NetCore).
-                                       // 경로 문자열 같은 것을 매번 보내지 않기 위한 사전
-                                       // 사전 자체는 전용 스트림으로 별도 동기화. wire ✓
+FNetTokenDataStore
+  FStringTokenStore
+  FNameTokenStore
+    FGameplayTagTokenStore
 
 ---
 
-BeginReplication(Actor)
-  ① FNetHandleManager: Actor 에 FNetHandle 발급 (이미 있으면 재사용)     
-  ② ReplicationSystem: FNetRefHandle 발급 (dynamic 이므로 짝수 Id)
-  ③ FNetRefHandleManager: FInternalNetRefIndex 배정, 장부에
-     { RefHandle, Protocol*, InstanceProtocol* } 기록
-  ④ bridge: SetNetPushID(Actor, …) — 통지 봉투를 객체에 심음
-이후 이 actor 의 프로퍼티가 다른 객체를 참조하면, 직렬화 순간
-  ⑤ FObjectReferenceCache 가 그 참조를 FNetObjectReference 로 번역하고,
-     그 안의 경로 문자열은 FNetToken 이 된다
+FNetTokenStore
+TArray<TTuple<FName, TUniquePtr<FNetTokenDataStore>>> TokenDataStores
+
+FNetToken
+Index 20-bit / TypeId 3-bit / bIsAssignedByAuthority 1-bit / Padding 8-bit
+
+---
+
+FNetObjectReference
+├─ RefHandle ──> 동적/replicated object identity
+├─ PathToken ──> stable named object path
+
+대상이 복제 객체면 RefHandle 로
+아니면(에셋 등) 경로 기반으로
+
+FObjectReferenceCache
+└─ create / export / read / resolve
+
+---
+---
+---
+
+FReplicationSystemUtil::BeginReplication
+  UEngineReplicationBridge::StartReplicatingActor
+    UObjectReplicationBridge::StartReplicatingRootObject
+      UObjectReplicationBridge::StartReplicatingNetObject
+        1 FObjectReferenceCache::CreateObjectReferenceHandle
+        2 CallRegisterReplicationFragments
+            FReplicationProtocolManager::CreateInstanceProtocol
+        3 FNetHandleManager::GetOrCreateNetHandle
+        ...
 
 ---
 ---
 ---
 
 [서버 — 값 저장소]
+
 V1  AMyCharacter::Health:float                  // 원본. 게임 스레드 소유
 
-V2  external state buffer 의 member 슬롯        // FPropertyReplicationState 가 관리하는 GT 형식 사본
-    [FReplicationStateHeader][changemask][members]
+V2  external state buffer 의 member 슬롯        // FPropertyReplicationState 가 관리
 
-V3  internal state buffer 의 member 슬롯        // FReplicationStateStorage 소유, quantized 형식
-                                                // 모든 연결이 공유하는 마스터 사본
+V3  internal state buffer 의 member 슬롯        
 
-V4  baseline                                    // FDeltaCompressionBaselineManager 소유, 연결당.
-                                                // '상대가 ack 한 시점'의 quantized 사본
+Writer A       Writer B          Writer C
 
+V4  baseline                                   // 각 Connection의 '상대가 ack 한 시점'의 quantized 사본
+                                             
+---
+---
 ---
 
 [서버 — 신호 저장소 (값이 아니라 '어디가 변했나')]
-S1  FGlobalDirtyNetObjectTracker 의 dirty 집합               // FNetHandle 단위 (객체 단위)
-S2  FDirtyNetObjectTracker::DirtyNetObjects:FNetBitArray     // 시스템 내부 index 단위
-S3  V2 안의 FReplicationStateHeader dirty + changemask 비트  // state·member 단위
-S4  FChangeMaskCache                                         // 이번 프레임에 확정된 마스크들의 수집처
+S1  FGlobalDirtyNetObjectTracker 의 dirty 집합                // FNetHandle 
+S2  FDirtyNetObjectTracker::DirtyNetObjects:FNetBitArray      // 시스템 내부 index 
+S3  V2 안의 FReplicationStateHeader dirty + changemask 비트   // state·member
+S4  FChangeMaskCache                                          // 이번 프레임에 확정된 마스크들의 수집처
 S5  FReplicationWriter::ReplicatedObjects:FReplicationInfo[] 의 pending mask   // 연결별 미전송분
-S6  FReplicationRecord                                       // packet 별 '무엇을 실었나' (in-flight 마스크)
+S6  FReplicationRecord                                        // packet 별 '무엇을 실었나' (in-flight 마스크)
 
+---
+---
 ---
 
 [클라이언트 — 값 저장소]
@@ -1268,6 +1634,104 @@ non-POD 컨테이너 → POD 헤더 + heap
 원본 float를 그냥 비교했다면 매 프레임 미세 노이즈로 재전송했을 것
 
 ---
+---
+---
+---
+
+액터마다 × 커넥션마다 UActorChannel, FObjectReplicator
+N액터 × C커넥션 = N×C개 채널 객체
+
+IRIS 대응: 액터당 채널 대신 커넥션당 DataStream 하나
+오브젝트는 그 스트림 안 batch로
+
+---
+
+hot loop가 액터→컴포넌트→UProperty 링크드리스트를 걷고
+IsNetRelevantFor·GetNetPriority 같은 virtual 호출을 액터×커넥션마다 해
+포인터 체이싱 → 캐시 미스 폭발
+
+---
+
+FRepLayout::CompareProperties가 shadow와 비교해 changelist(뭐가 바뀌었나)를 만드는데, 
+이건 FReplicationChangelistMgr로 액터당 1회 계산해 커넥션들이 공유
+
+---
+
+FNetRefHandleManager
+  ReplicatedObjectData::ReceiveStateBuffer
+  ReplicatedObjectStateBuffers 
+
+둘 다 uint8* internal(quantized) 버퍼고 크기도 같아
+FReplicationProtocol::InternalTotalSize
+
+차이는 송신/수신 방향
+
+---
+
+FNetRefHandleManager::ReplicatedObjectStateBuffers:TNetChunkedArray<uint8*>[i]
+
+송신(outgoing) current 상태
+quantize가 여기에 쓰고(Impl::QuantizeDirtyStateData()), writer가 여기서 읽어 delta 직렬화
+
+---
+
+FNetRefHandleManager::ReplicatedObjectData:TNetChunkedArray<FReplicatedObjectData>[i]::ReceiveStateBuffer:uint8* 
+
+수신(incoming) current 상태
+reader가 deserialize해 여기에 넣고, dequantize→apply
+
+TODO: 사용 패턴별로 배열 분리 주석
+
+---
+
+송신 버퍼는 매 프레임 전체를 index로 훑는 hot 루프
+포인터만 담은 dense 컬럼으로 빼면 캐시 친화적
+
+수신 버퍼는 apply 때 그 오브젝트 하나만 만지니 레코드 안에 둬도 충분
+
+---
+
+FReplicationStateStorage 
+
+Replication Internal의 서브시스템
+
+baseline(과거 스냅샷) 소유
+현재 상태는 GetState(CurrentSend)로 위임
+
+---
+
+Buffer 블록 하나 = 시점 하나
+Storage 저장고 = 과거를 함축
+
+---
+
+UDataStreamChannel
+  UDataStreamManager: UDataStream
+  비트스트림 버퍼(2048B) — 조립 중 패킷
+
+---
+
+UReplicationDataStream
+
+한쪽: 범용 DataStream 프레임워크
+다른쪽: IRIS 복제 로직(FReplicationWriter/Reader)
+
+UReplicationDataStream::WriteData(Context) → ReplicationWriter->Write(Context)
+UReplicationDataStream::ReadData(Context)  → ReplicationReader->Read(Context)
+
+---
+---
+---
+---
+---
+
+Descriptor (per-class)
+  HOW = MemberProperties[](FProperty→UObject offset)
+
+Fragment   (per-instance)
+  WHICH = Owner:UObject*
+  Descriptor ref + ExternalBuffer
+
 ---
 ---
 ---
