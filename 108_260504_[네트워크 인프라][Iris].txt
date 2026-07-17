@@ -1177,15 +1177,6 @@ FEngineLoop::Tick
 
 ---
 
-미완성 지도
-
-잠시 Network Replication에서 좀 벗어나서 
-AI, TimerManager, Rendering, Audio, GC, 플랫폼 Input Mesasge Pump, Niagara, ECS, Asset Loading 등은 어디에 꽂히지?
-이 지도를 더 풍성하게 해줄레?
-
-
----
-
 GEngine
 UGameEngine or UEditorEngine
 
