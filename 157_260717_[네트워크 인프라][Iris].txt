@@ -1,0 +1,697 @@
+게임 코드(UPROPERTY Replicated, RPC, RepNotify)는 최소 수정으로 호환
+transport 계층(NetDriver, socket, PacketHandler)은 재사용
+Iris가 교체하는 것은 "무엇을, 누구에게, 언제 보낼지 결정하고 직렬화하는" 중간 계층
+
+---
+
+Legacy의 비용 모델
+
+net update마다 connection × actor를 순회하며
+actor마다 가상함수(IsNetRelevantFor, GetNetPriority)
+
+데이터 기반 일괄 처리로 대체
+
+
+FRepLayout이 게임 오브젝트의 메모리를 shadow state와 직접 비교(polling)해서 변경을 감지
+
+---
+
+actor당 channel/bunch 구조를 없애고
+connection당 소수의 stream
+
+ReplicationDataStream: state 데이터
+NetTokenDataStream:FName·object path 같은 반복 데이터를 작은 token으로 동기화
+
+RPC는 오브젝트에 붙는 attachment(NetBlob)로 전송
+
+---
+---
+---
+
+PreSendUpdate
+게임 데이터를 만지는 유일한 구간
+
+legacy mode 오브젝트만 poll
+dirty state를 Copy → Quantize → 내부 buffer 갱신, dirty reset
+Filtering 갱신 → connection별 scope
+connection별 Prioritization 갱신
+
+---
+
+SendUpdate
+내부 데이터만 사용, connection별 병렬화 가능
+
+connection마다 data stream을 tick하여 packet 구성
+
+ReplicationDataStream:
+      dirty object 스케줄 → priority·dependency 정렬
+      → NetSerializer로 serialize (baseline 대비 delta)
+
+NetDriver / socket (기존 transport)
+ 
+---
+
+packet 수신 → delivery notification(ack) 갱신
+→ ReplicationDataStream:
+    state 데이터 읽기
+    새 오브젝트는 Bridge가 즉시 instantiate (protocol 구성에 필요)
+    packet을 전부 읽은 뒤 dispatch:
+      dequantize → 게임 오브젝트에 apply → RepNotify → RPC attachment 실행
+
+---
+
+Iris 전체가 UE_WITH_IRIS로 감싸져 legacy와 공존하는 구조가 
+빌드 시스템 수준에서 강제됩니다
+
+---
+
+actor 생성 로직이 bridge에서 분리되어 NetActorFactory / NetSubObjectFactory(NetObjectFactoryRegistry에 등록)로 나왔습니다
+수신 측 spawn을 factory 교체로 커스터마이즈할 수 있는 구조
+
+---
+
+Transport 접점은 Engine의 DataStreamChannel
+
+---
+
+IrisCore의 Private 디렉토리 구성 자체가 아키텍처 지도
+
+ReplicationWriter/Reader, 
+NetRefHandleManager,
+DirtyNetObjectTracker, 
+ObjectReferenceCache, 
+ReplicationRecord, 
+NetExports
+
+Filtering
+Prioritization
+DeltaCompression
+Polling
+Conditionals
+NetBlob
+ChunkedDataStream
+
+---
+
+FRecordInfo
+FReplicatedObjectInfo
+
+---
+---
+---
+
+FNetHandle
+Net/Core
+legacy와 Iris가 공유하는 인프라 계층
+
+MARK_PROPERTY_DIRTY가 발생하는 순간에는 
+이 오브젝트를 어떤 replication system이 복제 중인지 알 수 없습니다
+
+그래서 dirty 통지는 시스템 중립적인 이 handle로 이루어지고
+각 시스템의 dirty tracker가 자기 쪽 internal index로 번역합니다
+
+---
+
+FNetRefHandle
+IrisCore
+ReplicationSystem별 namespace
+
+상대 peer와 "그 오브젝트"를 지칭할 때 쓰는 이름
+
+---
+
+FNetObjectReference
+
+Property가 다른 UObject를 가리킬 때 wire에 실리는 형태
+{RefHandle, PathToken(FNetToken), CanBeExported}
+
+asset이나 레벨 지오메트리처럼 경로로만 지칭 가능한 대상은 PathToken으로
+복제 중인 오브젝트는 RefHandle로
+
+ObjectReferenceCache가 이 값을 만들고
+수신측에서 해석하며, 즉시 해석이 안 되면 unresolved 추적으로 넘어갑니다
+
+---
+
+FReplicationConnection과 UserData
+
+IrisCore에게 connection은 uint32 ConnectionId가 전부
+UNetConnection이라는 타입은 코어의 의존성 그래프에 존재하지 않습니다
+
+그런데 Iris 파이프라인에서 엔진 쪽 사실이 필요한 순간들이 있습니다. 
+FReplicationConnection의 FObjectPtr UserData가 그 탈출구
+
+SetConnectionUserData(ConnectionId, Connection)
+UNetConnection 자신을 넣어둡니다
+
+EngineReplicationBridge의 PIE 경로 remap
+Cast<UNetConnection>(UserData)로 꺼내 GEngine->NetworkRemapPath에 넘깁니다
+
+---
+
+[로그인 경로 — ReplicationSystem 쪽]
+NetDriver/NetConnection
+  └ ReplicationSystem->AddConnection(ParentConnectionId)
+      └ Connections[Id] 슬롯 생성
+          Connection->ReplicationWriter = new FReplicationWriter
+          Connection->ReplicationReader = new FReplicationReader
+  └ SetConnectionUserData(Id, NetConnection)
+
+[채널 경로 — Engine 쪽]
+DataStream channel 생성 (정적 index, 양측 초기 채널)
+  └ UDataStreamChannel::Init
+      └ UDataStreamManager 생성
+      └ ReplicationSystem->InitDataStreamManager(ParentConnectionId, Manager)
+          └ 슬롯에 Manager 약참조 저장
+          └ Manager가 ini 의 DataStreamDefinitions 대로 stream 생성
+              (FInitParameters { ReplicationSystemId, ConnectionId, NetExports … } 전달)
+
+[결선 — stream 자신이 pull]
+UReplicationDataStream::Init(Params)
+  └ GetReplicationSystem(Params.ReplicationSystemId)
+      → Connections.GetConnection(Params.ConnectionId)
+      → ReplicationWriter/Reader 포인터 복사, Writer에 NetExports 연결
+
+---
+---
+---
+
+FReplicationInfo 
+
+connection당 Writer가 object마다 하나씩 갖는 상태
+이 connection에 대해 이 object를 어떻게 보내야 하나
+
+ChangeMaskOrPtr(보내야 할 변경의 누적분)
+
+64bit 비트필드(현재 State 5bit, 
+HasDirtyChangeMask, HasAttachments, IsDeltaCompressionEnabled, 
+LastAckedBaselineIndex / PendingBaselineIndex, 
+FlushFlags 등)
+
+---
+
+FReplicationRecord
+
+connection당 하나 있는 in-flight 원장(ledger)
+
+"아직 ack/nak가 안 온 packet들에 각각 무엇이 실렸나"를 보관
+Packet 단위로 PushRecord/PopRecord 되고
+
+object별로 FRecordInfoList로 꿰어져 있어 
+"이 object의 in-flight 변경 전부"를 훑을 수 있습니다
+
+---
+
+FRecordInfo 
+
+"packet 하나에 실린 object 하나"의 스냅샷
+object index, 실었을 당시의 EReplicatedObjectState, 그 packet에 실린 changemask 사본(ChangeMaskOrPtr)...
+
+---
+
+object 하나를 packet에 직렬화한 직후 
+CreateObjectRecord → CommitObjectRecord로 
+위 스냅샷을 만들어 원장에 넣는 단계
+
+---
+
+Object batch에 state 값 외에 함께 실리는 세 부류
+References / Attachments / Exports
+
+References는 state 안의 object 참조(FNetObjectReference)
+Attachments는 object에 부착되어 나가는 NetBlob, 실질적으로 RPC
+Exports는 상대가 참조를 해석하는 데 필요한 부속 데이터(경로 문자열 같은 NetToken류)
+
+---
+---
+---
+
+FReplicationWriter
+  FReplicationInfo
+
+FReplicationReader
+  FReplicatedObjectInfo 
+
+---
+
+FReplicatedObjectInfo
+
+참조 해석의 지연 처리
+UnresolvedObjectReferences / ResolvedDynamicObjectReferences
+
+미해석 변경을 UnresolvedChangeMaskOrPointer 에 누적
+
+---
+---
+---
+
+SubObjectInternalIndices 
+subobject인 모든 internal index의 bitset
+
+자체 scope/filter/우선순위 없이 root object의 batch에 묶여 원자적으로 복제
+수명도 root에 종속
+
+---
+
+DependentObjectInternalIndices 
+ObjectsWithDependentObjectsInternalIndices
+
+subobject와 달리 독립적인 replicated object인데 전송 스케줄만 parent에 결합된 것
+
+AddDependentObject(FNetRefHandle Parent, FNetRefHandle DependentObject)
+특별한 내장 관계가 아니라, 의존을 선언할 때 지정하는 임의의 다른 replicated object
+
+등록하면 NetDependencyData에 parent → dependent 목록으로 저장
+
+ex) PlayerController가 Pawn을 possess할 때
+클라이언트가 Controller를 받았을 때 Pawn이 아직 없으면 참조가 미해석 상태로 남습니다. 
+그래서 "Pawn을 Controller보다 먼저 스케줄하라"고 묶는 것
+
+
+AddDependentObjectWithParentRelevancy
+parent가 relevant할 때만 relevant
+
+---
+
+소유 클래스 안의 private 중첩 struct
+
+FReplicationWriter::FReplicationInfo
+per-connection object send state
+
+FReplicationReader::FReplicatedObjectInfo
+per-connection object receive state
+
+---
+
+FReplicationRecord
+connection당 하나 있는 in-flight 원장(journal)
+
+FRecordInfo와 FRecordInfoList는 FReplicationRecord 클래스 안의 중첩 타입
+
+PushRecord(InfoCount) / PopRecord()가 packet 단위의 기입·소거
+내부는 FRecordInfo들의 저장소 + object별 체인
+
+---
+
+Params.bIsServer              = !bInitAsClient;
+Params.bAllowObjectReplication = !bInitAsClient;
+
+클라이언트의 ReplicationSystem은 bAllowObjectReplication = false로 만들어지고
+NetUpdate 안의 object 복제 블록 전체(poll → quantize → filtering → prioritization → scope 전파)가 
+if (bAllowObjectReplication)로 감싸져 통째로 건너뜁니다
+
+---
+
+클라의 Writer는 주로 attachment(RPC)
+
+UReplicationSystem::SendRPC로 들어온 Server RPC가 NetBlob이 되어 Writer의 송신 경로를 타고
+자기가 복제하지 않는 object에 붙는 attachment를 위해 
+특수 internal index(AttachmentToObjectNotInScope)까지 준비되어 있습니다
+
+---
+
+▼ WriteData(Context ↓, Record ↑)     ─ 송신
+Channel ⇄ Manager ⇄ Stream ⇄ Writer/Reader
+          ▲ ReadData(Context ↓)                ─ 수신
+          ▼ ProcessPacketDeliveryStatus(Status, Record ↓) ─ 배달 통지
+
+다형성 지점이 Manager→Stream 한 곳뿐이고, 
+그 지점이 ini로 열려 있습니다
+
+---
+---
+---
+
+화물이 도착하는 항구
+
+운송 포장 상태(quantized — 부피가 작고, 스캐너로 훑어 비교하기 좋은 형태)
+개봉된 실물(external — FVector 같은 실제 타입, 게임 코드가 만질 수 있는 형태)
+집에 배치된 상태(게임 오브젝트의 property — 실제로 사용되는 곳)
+
+항구의 보세창고(ReceiveStateBuffer — 도착 화물을 포장 그대로 보관)
+접이식 개봉 작업대(임시 external staging — MemStack에서 폈다가 접음)
+집(게임 오브젝트)
+
+---
+
+배(packet)가 들어오면 화물은 일단 포장 그대로 창고에 입고됩니다
+(Reader가 ReceiveStateBuffer에 직접 deserialize). 
+
+배 한 척을 다 내린 뒤에야
+(packet 완독 후 dispatch) 
+
+창고에서 상자를 꺼내 작업대에서 개봉하고(dequantize), 
+기사(fragment)가 집 안 제자리에 배치하고(apply), 
+입주 절차(PreApply → Apply → PostApply/RepNotify)를 정해진 순서로 밟습니다.
+
+---
+
+어떤 화물은 "지난번 화물에서 달라진 부분만" 보내옵니다(delta compression)
+복원하려면 지난번 화물(StoredBaselines)이 창고에 있어야 합니다
+
+조립 지시서에 "부품 B는 별도 화물로 옵니다"라고 적힌 상자가 있습니다
+(미해석 object reference)
+가 도착할 때까지 상자를 창고에 두고, 도착하면 그 상자만 다시 꺼내 개봉·조립합니다
+(UnresolvedChangeMask가 어떤 상자가 대기 중인지 표시)
+
+---
+
+새 부품으로 교체하기 전에 옛 부품을 보고 싶어하는 사람
+(이전값을 인자로 받는 RepNotify)이 있을 때만, 옛 상태 상자를 잠깐 챙겨둡니다
+
+PrevReplicationState, "필요할 때만 들고 다니는" 상태
+
+---
+
+개봉 담당자(serializer)는 상자를 "표준 진열 규격"(descriptor가 정의한 external state struct)까지만 풀 줄 알고, 
+그 물건이 이 집의 어느 방 어느 선반에 가는지(object property layout)는 기사(fragment)만 압니다. 
+
+두 담당자의 인수인계 지점이 작업대입니다. 
+
+또 반쯤 연 상자를 거실에 두지 않는다는 규칙(원자성 — 게임 코드가 어중간한 상태를 관측하면 안 됨)과, 
+지연된 상자를 몇 번이고 다시 개봉할 수 있어야 한다는 요구(반복 가능성) 때문에도, 
+창고→집 직행이 아니라 "매번 새로 펴는 작업대"가 맞는 형태입니다
+
+접이식(MemStack)이라 유지비는 0입니다.
+
+---
+---
+---
+
+Trait
+
+UClass reflection을 hot path에서 걷어내는 대신, 
+등록 시점에 descriptor/protocol이라는 타입 기술을 만듭니다
+
+그런데 타입에는 레이아웃만 있는 게 아니라 성질이 있습니다
+"이 타입은 가변 크기 메모리를 갖는가", "참조를 품는가", "RepNotify가 있는가"
+
+파이프라인의 안쪽 루프는 오브젝트도 가상함수도 없이 버퍼와 descriptor만 봅니다
+"이 state에 동적 메모리가 있나?"를 그 자리에서 알아내려면 
+가상 호출이나 reflection 질의가 필요한데, 둘 다 금지된 세계입니다
+
+그래서 모든 질문을 등록 시점에 미리 물어 bit로 저장해 두고, 실행 시점에는 bit test 하나로 경로 전체를 건너뜁니다
+
+---
+---
+---
+
+내륙에 공장(게임 오브젝트, game thread)이 있습니다. 
+항구에는 수출 창고(ReplicatedObjectStateBuffers)가 있어서 
+모든 수출품의 규격 포장본을 1부씩 보관
+공장 상태를 비추는 거울
+
+부두에는 목적지(connection)마다 배가 뜹니다.
+공장은 물건을 바꿀 때마다 벨을 누릅니다 — "3번 라인 바뀜"(MARK_PROPERTY_DIRTY → DirtyNetObjectTracker의 bit 하나). 
+벨을 안 다는 구식 공장(legacy mode)만 검수원이 주기적으로 돕니다(poll). 
+
+출항 준비 시간(NetUpdate)이 되면 항구는 벨이 울린 물건만 가져와 재포장을 한 번 합니다(quantize). 
+포장은 물건당 1회, 선적은 목적지 수만큼. 100척의 배가 떠도 포장대는 한 번만 돕니다.
+
+---
+
+목적지마다 서류가 따로 있습니다. 
+수출 허가 목록(filtering → ObjectsInScope: 이 품목을 이 나라에 보낼 수 있는가), 
+선적 우선순위표(prioritization — 배는 적재량이 한정이라, 오래 못 실린 화물일수록 누적 점수로 앞줄에 서고, 
+"이 화물은 저 화물보다 먼저/같이"라는 동반 조항도 있습니다 — dependent objects). 
+
+---
+
+그리고 각 목적지별 거래 대장(FReplicationInfo)이 있습니다
+
+이 거래처에 아직 못 보낸 변경 목록(accumulated mask), 
+그리고 거래 상태 — 첫 거래라 카탈로그와 사업자 등록(creation header, archetype 정보)을 동봉해야 하는 단계
+(PendingCreate → WaitOnCreateConfirmation), 
+정상 거래 중(Created), 
+거래 종료 절차 중(PendingDestroy → WaitOnDestroyConfirmation).
+
+---
+
+상대가 "지난번 화물 잘 받았음"을 확인해준 경우, 
+그 확인된 선적 사진(acked baseline)을 기준으로 "달라진 부분만" 싸서 보냅니다(delta)
+
+확인 안 된 사진은 기준으로 못 씁니다
+상대 창고에 없을지도 모르는 물건과의 차이는 무의미
+
+한 배에 안 들어가는 초대형 화물은 분할 선적하고(HugeObject), 
+내용물이 "그 순간 그대로" 전달되어야 하는 특송 등기(RPC attachment)는 
+접수 순간 봉인해서(호출 시점 quantize) 도착 확인이 올 때까지 재발송 목록에 둡니다.
+
+---
+
+배가 떠날 때마다 선하증권을 끊습니다(FRecordInfo → FReplicationRecord)
+"이 배에, 이 화물의, 이 변경분(changemask 사본)을 실었음."
+
+배가 침몰하면 어떻게 하나 
+그때 그 상자를 다시 만들지 않습니다. 
+선하증권을 펼쳐 "그 배에 실렸던 품목" 중 "이후 배에 이미 다시 실린 것"을 지우고(AndNot), 
+남은 품목만 거래 대장의 미선적 목록에 되돌립니다(OrOp). 
+
+다음 배에 실리는 건 창고의 최신 포장본입니다. 
+고객이 원하는 건 잃어버린 그 상자가 아니라 지금의 물건
+
+---
+
+수신측 항구와의 대비로 요약하면
+수신측 창고는 "도착했지만 아직 소화 안 된 진실의 대기실"이었고, 
+송신측 창고는 "공장을 방해하지 않고 몇 번이고 실어 보낼 수 있는 진실의 거울"
+
+---
+
+상대 항구는 "그 배 침몰했어요"라는 전보를 보내지 않습니다. 
+대신 상대는 자기가 보내는 모든 답신의 겉봉에 수령 명단을 적어 보냅니다
+"지금까지 받은 가장 최신 배 번호, 그리고 최근 배들의 수령 여부 체크리스트."
+
+NAK은 이 명단의 구멍을 보고 우리 쪽이 내리는 선고입니다. 
+"7번, 8번은 받았다는데 6번 칸이 비어 있고, 명단이 이미 6번을 지나쳤다"
+
+상대가 보낸 packet 도착
+ └ UNetConnection::ReceivedPacket
+    └ PacketNotify.Update(Header, HandlePacketNotification)
+        Header = { 상대의 송신 Seq, 상대가 받은 최신 AckedSeq, 수령 여부 History 비트열 }
+        → 지난 판정 지점(LastNotifiedPacketId)부터 배 번호를 하나씩 순서대로:
+            bDelivered ? ReceivedAck(id) : ReceivedNak(id)
+
+ └ UDataStreamChannel::ReceivedAck / ReceivedNak(PacketId)
+    └ WriteRecords(FIFO) 선두의 PacketId와 일치 확인
+    └ DataStreamManager->ProcessPacketDeliveryStatus(Delivered | Lost, record)
+        └ 각 stream이 자기 몫의 record 해석 → Writer의 HandleDelivered / DroppedRecord
+
+---
+---
+---
+
+[송신]                                                         [수신]
+게임 오브젝트                                                게임 오브젝트
+   │ ① Poll  (비교+복사+bit set)                                 ▲ ④ Apply/Push (+RepNotify)
+   ▼                                                              │
+external ─ SrcReplicationState (상주, fragment 소유)             external ─ 임시 staging (MemStack, dispatch 수명)
+   │ ② Quantize (dirty member만)                                 ▲ ③ Dequantize (dispatch 시)
+   ▼                                                              │
+internal quantized buffer (상주) ── serialize ▶ bitstream ▶ deserialize ── ReceiveStateBuffer (상주)
+
+---
+
+매 프레임 NetUpdate의 CallPreSendUpdate 단계
+filtering 후, quantize 전
+
+"이번 프레임 poll 대상" bit array
+dirty 통지된 것 ∪ poll 주기가 도래한 것 ∪ 강제 poll — 를 만들고
+FObjectPoller::PollAndCopyObjects가 일괄 순회
+
+---
+
+FPropertyReplicationState
+  PollPropertyReplicationState(SrcData)
+    게임 오브젝트의 property 값을 자기 사본과 비교
+    다르면 사본에 복사하고(= external에 쓰기)
+    그 member의 changemask bit를 set
+
+송신측 external이 임시가 아니라 상주인 이유
+fragment가 SrcReplicationState를 계속 들고 있는 것은
+비교하려면 이전 값이 필요하기 때문
+
+---
+
+명시적으로 선언한 native replication state는 
+external struct(changemask가 내장된) 자체를 게임 코드가 직접 쓰고, setter가 bit를 직접 마킹
+
+---
+
+Dispatch가 일어나는 순간(packet 완독 후, 또는 미해석 참조가 해석된 순간)
+DequantizeAndApplyHelper가 ReceiveStateBuffer에서 임시 external을 만들고
+그 자리에서 fragment에 넘깁니다
+
+---
+
+ApplyReplicatedState
+
+이미 만들어진 external 버퍼(Context의 ExternalStateBuffer)를 FPropertyReplicationState로 감싸기만 하고
+이전값 RepNotify가 필요한 모드면 apply 직전에 오브젝트의 현재 값을 PrevReplicationState에 백업하고
+PushPropertyReplicationState
+descriptor의 지도를 따라 state struct의 값을 property 단위로 오브젝트 메모리에 복사
+RepNotify 호출은 그 다음 단계
+
+---
+---
+---
+
+이 데이터를 매 프레임 누가, 어떤 패턴으로 훑는가
+루프의 주인이 데이터의 주인
+이렇게 하면 각 루프는 자기 컬럼만 조밀하게 훑을 수 있다(cache)
+
+
+ReplicatedObjectData[i]                                   // 핸들·프로토콜·플래그·ReceiveStateBuffer
+FNetRefHandleManager::ReplicatedObjectStateBuffers[i]     // 송신 quantized 현재본
+FReplicationStateStorage::FPerObjectInfo[i]               // 현재본 "참조" 등록 + baseline 스냅샷 "소유"
+
+---
+
+FReplicationWriter (×C)  FReplicationInfo[i] // 거래처별: 뭘 아직 못 보냈나
+FReplicationReader (×C)  FReplicatedObjectInfo[i] //거래처별: 뭘 받는 중인가
+
+---
+---
+---
+
+────────── 하나의 항구 (ReplicationSystem) ──────────
+
+[수출부 — 내가 진실의 주인인 오브젝트]       [수입부 — 남이 주인인 오브젝트]
+
+ 공장 = 게임 오브젝트 (권위)                   집 = 게임 오브젝트 (수신본)
+   │ 벨 = DirtyNetObjectTracker                ▲ Push (+ 옛부품함 = PrevReplicationState, 필요시만)
+   ▼ Poll                                      │
+ 견본실 = SrcReplicationState (external 상주)  접이식 작업대 = temp external (MemStack)
+   │ Quantize                                  ▲ Dequantize (dispatch 때만)
+   ▼                                           │
+ 수출 창고 =                                  수입 창고 = ReceiveStateBuffer
+   ReplicatedObjectStateBuffers[i]              ├ 지난 화물 사진 = StoredBaselines[2]
+   │                                            └ 대기 표시판 = UnresolvedChangeMask
+   ├ 오늘의 갱신 공고판 = FChangeMaskCache
+   ├ 거래처별 거래 대장 = Writer FReplicationInfo (항로 수만큼)
+   ├ 선하증권 철 = FReplicationRecord/FRecordInfo (항로 수만큼)
+   └ 특송 접수대 = NetBlobManager attachment 큐 (창고를 안 거침)
+   ▼
+ 부두 사무소 = DataStreamChannel (출항 기록 FIFO = WriteRecords)
+   ▼                                            ▲
+   배(packet) ───────── 항로 = connection ──────┘
+
+        [두 날개 사이 복도: 창고업자 = FReplicationStateStorage]
+        (수출 창고든 보세창고든 CurrentSend/CurrentRecv라는 하나의
+         주소 체계로 접근하며, baseline 원판 보관실을 직접 운영)
+
+---
+
+CreateNetObject 
+
+수출창고 칸 ReplicatedObjectStateBuffers[i])이 할당되고 
+수입창고 칸 (ReceiveStateBuffer)는 null로
+
+CreateNetObjectFromRemote 
+
+회선 저편의 creation 정보로 남의 진실을 본떠 생성된 오브젝트
+반대로, 보세창고만 할당
+
+---
+---
+---
+
+"지금 이 오브젝트의 quantized 상태를 사진 찍어 보관해 달라"는 요청이 시스템 곳곳에서 나옵니다. 
+송신측 delta compression이 그렇고(ack된 시점의 상태 사진 = baseline), 
+수신측 Reader도 그렇습니다(받은 상태의 사진 = StoredBaselines). 
+
+첫째, 원본의 위치가 오브젝트마다 다릅니다
+내가 주인인 오브젝트면 수출 창고(ReplicatedObjectStateBuffers), 
+남이 주인이면 보세창고(ReceiveStateBuffer). 
+
+사진을 원하는 쪽마다 이 구분을 알게 하면 비대칭이 코드 전체에 번집니다. 
+
+해법 = FReplicationStateStorage
+
+(a) 안내 장부: 오브젝트마다 원본 포인터를 두 칸(FPerObjectInfo의 Send칸/Recv칸)에 등록해 두고, 
+손님에게는 GetState(오브젝트, CurrentSendState 또는 CurrentRecvState)라는 단일 창구만 보여줍니다. 
+
+없는 쪽을 물으면 null이 답입니다("수신측에서 CurrentSendState를 요청하면 null")
+
+원본은 소유하지 않습니다 — 어느 서랍에 있는지 아는 것뿐
+
+---
+---
+---
+
+FNetRefHandleManager (등기소)
+  ├ ReplicatedObjectData[i]
+  │   └ .ReceiveStateBuffer ─ CreateNetObjectFromRemote가 malloc   [보세창고]
+  └ ReplicatedObjectStateBuffers[i]
+      └ 각 원소 ─ CreateNetObject가 malloc                         [수출 창고]
+
+
+FReplicationStateStorage 
+  ├ FPerObjectInfo[i].StateBuffers[Send|Recv] ─ 위 둘의 등록된 참조
+  └ baseline 원판 메모리 ─ AllocBaseline로 대여                     [사진 원판 보관함]
+      (대여자: 송신측 DeltaCompressionBaselineStorage · 수신측 Reader)
+
+
+FReplicationConnection[ConnId]
+  ├ FReplicationWriter 
+  │   ├ FReplicationInfo[i] ─ .ChangeMaskOrPtr                 [거래 대장·누적 mask]
+  │   ├ FReplicationRecord ─ FRecordInfo들의 changemask 사본   [선하증권 철]
+  │   └ attachment 큐                                          [특송 보관대]
+
+  ├ FReplicationReader (new/delete로 직접 소유)
+  │   └ FReplicatedObjectInfo[i]
+  │       ├ .UnresolvedChangeMaskOrPointer                      [대기 표시판]
+  │       └ .StoredBaselines[2] ─ 복사집에서 대여               [지난 화물 사진]
+
+
+---
+
+Bridge ─ FReplicationInstanceProtocol (오브젝트마다, EndReplication 때 파기)
+  └ FPropertyReplicationFragment 
+      ├ SrcReplicationState ─ 내부 external 버퍼                    [견본실]
+      └ PrevReplicationState ─ 필요할 때만                          [옛 부품함]
+
+---
+
+보세창고의 소비자는 사실상 Reader/dispatch 하나
+접근은 "batch가 도착한 그 오브젝트"에 대한 점(point) 접근
+그 순간에는 어차피 같은 행의 protocol 포인터, flags, factory id를 함께 읽어야 합니다
+
+여러 시스템이 대량 순회하는 데이터는 컬럼으로 꺼내고
+한 시스템이 이웃 필드와 함께 점 접근하는 데이터는 행에 묻는다
+
+배치가 접근 패턴
+
+---
+
+이 시스템의 자기 인식에서 기본 서사는 권위측(송신)
+기본 저장소에는 방향 표시를 붙이지 않았습니다
+
+Storage가 서비스 API를 만들면서 선택한 어휘는 CurrentSendState / CurrentRecvState
+방향을 명시
+
+---
+
+수출 창고 배열을 통째로 받아 가는 소비자
+quantize, connection별 serialize에 더해 Filtering과 Prioritization
+
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
