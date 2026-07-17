@@ -680,18 +680,980 @@ quantize, connection별 serialize에 더해 Filtering과 Prioritization
 ---
 ---
 ---
+
+같은 대상의 상태를, 조금씩만 바뀌는데, 계속 반복해서 보내야 한다. 그렇다면 "반복"을 어디까지 제거할 수 있는가
+
+0단: 매번 전체 상태를 보낸다
+1단: 바뀐 멤버만 보낸다. 이게 changemask입니다
+2단: 바뀐 멤버조차, 통째로 말하지 않고 "기준 대비 차이"로 말한다. 이게 delta compression입니다
+
+---
+
+인벤토리 100칸 중 1칸이 바뀌어 bit가 서면, 1단만으로는 100칸을 다 보냅니다.
+2단이 있으면 99칸은 "기준과 같음" 1비트씩으로 끝납니다
+
+
+값이 A→B→A로 진동했거나, packet 유실로 changemask가 OR-back되어 되살아난 경우, 
+bit는 서 있지만 값은 기준과 같을 수 있습니다
+
+---
+
+규칙 1: "받았어"라고 답장 온 편지만 기준으로 삼는다
+상대의 수령 확인만이 "우리 둘이 같은 과거를 공유한다"의 증명
+기준(baseline)은 ack된 것만. 그 전까지는 후보(pending)일 뿐
+
+---
+
+규칙 2: 기준 편지의 사본을 나도 보관한다. 
+
+내 근황(현재 상태)은 계속 변합니다. 
+3주 뒤 "그 편지 기준으로 뭐가 달라졌지?"라고 물으려면 
+그때 뭐라고 썼는지가 남아 있어야 합니다
+
+송신측이 사진을 찍어 동결하는 이유
+
+---
+
+규칙 3: 친구도 편지를 버리면 안 된다
+
+"지난번 대비 달라진 것"이라는 문장은 지난 편지를 옆에 펴 놓아야만 해독됩니다
+수신측 StoredBaselines
+
+---
+
+규칙 4: 기준이 없으면 그냥 전부 쓴다
+
+첫 편지, 또는 기준 편지가 분실 판정
+언제든 절대값 폴백이 가능
+
 ---
 ---
 ---
+
+기준은 connection별
+친구가 열 명이면 수령 확인 시점이 제각각
+오브젝트당 사진 하나가 아니라 거래처마다 따로
+
+사진 = POD 버퍼의 복제
+"기준과 같은가?" = memcmp
+상태를 게임 타입 그대로 두었다면 비교도 복제도 이렇게 값싸지 않습니다
+
+---
+
+사진 한 장 = 오브젝트 전체 상태 크기 × 거래처 수 × 최대 2장
+
 ---
 ---
 ---
+
+이름의 경제
+
+0단: 매번 전체 경로를 보낸다
+
+1단: 양쪽이 합의한 짧은 번호로 바꾼다. 
+단, 첫 만남에는 "번호 = 이 이름"이라는 정의를 한 번은 보내야 합니다. 이게 export입니다.
+
+2단: 정의를 "딱 한 번만" 보내려면 상대가 정의를 받았는지 알아야 합니다. 
+못 받았는데 번호만 보내면 해독 불능이니까요
+ack만이 화폐입니다
+그래서 export에도 자기 장부가 필요합니다
+
+3단: 이름에 두 종류
+살아있는 복제 오브젝트는 이미 번호가 있습니다 — NetRefHandle
+경로로만 지칭 가능한 것(asset, 레벨의 정적 오브젝트)은 이름을 접어 번호로 만듭니다 — NetToken
+
 ---
 ---
 ---
+
+FNetObjectReference
+
+RefHandle
+주소 약어(PathToken)
+"이 명함은 처음 보는 사람에게 소개 가능"(CanBeExported) 도장
+
+사람을 찾는 방법의 기술
+
+---
+
+FObjectReferenceCache
+
+소개(export)할 때는 상사의 상사까지 거슬러 올라가 체인 전체를 소개
+OuterNetRefHandle
+
+주소란 결국 "누구 안의 누구"
+
+---
+
+약어 사전은 공용이 아닙니다
+양쪽이 같은 데이터에 서로 다른 로컬 번호를 매길 수 있다
+
+수신자는 "상대의 사전"을 따로 보관
+FNetTokenStore의 RemoteNetTokenStoreStates[ConnectionId]
+
+---
+
+명함을 받았는데 그 사람이 아직 입사 전일 수 있습니다(오브젝트 미생성)
+주소의 건물이 아직 건설 중일 수 있습니다(package 미로드)
+
+그래서 명부 항목에 pending/broken/bIgnoreWhenMissing 같은 상태 bit가 있고
+async load 중에는 GC가 건물을 철거하지 못하게 strong reference로 붙들며(FQueuedBatchObjectReference)
+
+"이 명함이 해석될 때까지 이 화물은 개봉 금지"(must-be-mapped)면 
+batch째 PendingBatches에 보류
+
 ---
 ---
 ---
+
+RPC는 상태가 아니라 사건(event)
+
+최신값으로 대체될 수 없고, 두 번 실행되면 안 되며, 종종 순서까지 지켜져야 하고
+호출 순간의 인자 그대로 전달되어야
+
+"최신값이 이긴다"로 설계된 파이프라인에, "말한 그대로, 한 번만, 순서대로"를 요구하는 화물을 어떻게 싣는가
+
 ---
+
+사건을 오브젝트에 부착(attachment)하여, 오브젝트가 이미 가진 주소·scope·배송망에 승차시킨다.
+
+부착하려면 사건을 화물의 형태로 동결해야 합니다
+
+UFunction의 인자 목록이란 결국 struct
+그렇다면 함수 인자에도 FReplicationStateDescriptor를 만들면, 
+상태를 위해 지은 기계 전부 — quantize, serializer, trait, 참조 수집(exports) — 를 씁니다
+
+RPC는 "일회용 replication state"
+
+---
+
+함수의 신원 
+이름 문자열이 아니라 스키마 좌표
+FunctionLocator = {protocol 내 descriptor index, descriptor 내 function index}
+
+---
+
+FNetBlob
+  취급 스티커: Flags ( Reliable / Ordered / 소개장 HasExports)
+  BlobDescriptor        
+  QuantizedBlobState
+
+FNetObjectAttachment
+  NetObjectReference       
+       
+FNetRPC
+  FunctionLocator {descriptor 몇 번, 함수 몇 번}
+  호출 인자 스냅샷 (+ 인자 속 참조들의 소개장 목록)
+
+---
+
+게임 코드가 SendRPC를 부르는 순간 인자가 즉시 quantize되어 봉인됩니다
+호출 뒤 인자 원본이 바뀌어도 소포 속은 그대로
+
+소포는 먼저 접수대(FNetBlobManager의 게임 스레드 큐)에 쌓입니다
+
+PreSendUpdate에서 접수대가 비워지며 
+scope·정책 검사를 거쳐 각 항로 사무소의 발송대(Writer의 FNetObjectAttachmentsWriter
+오브젝트별 reliable/unreliable 창구,
+OutOfBand·HugeObject 전용의 특수 창구)로 분배
+
+---
+
+거기서 오브젝트 batch에 동승해 packet에 실리고
+도착하면 Reader가 창구 번호로 개봉 담당(UNetRPCHandler)을 찾아 넘기고
+담당이 수취인과 함수를 해석하고 authority 검증을 거쳐 UFunction을 실행합니다
+
+---
+
+dormant 오브젝트에 RPC를 보내면 정책에 따라 그 오브젝트의 상태 flush를 자동으로 깨웁니다
+RPC가 도착했는데 그 대상의 상태가 한참 뒤처져 있으면 사건이 무의미해질 수 있으니까
+
+---
+---
+
+전부 등기소에 넣으면 등기소의 캐시라인은 온갖 소비자의 데이터로 오염됩니다
+신상, 위치, 우선순위, 사진 원판, 그룹, 조건
+
+---
+
+오브젝트의 출생·사망과 원자적으로 함께 갱신되어야 하는가?
+그렇다면 등기소 안
+CreateNetObject / CreateNetObjectFromRemote
+
+다른 곳에 두면 "태어났는데 아직 등록 안 됨"이라는 찢어진 순간이 생깁니다
+
+---
+
+특정 정책의 소관이며, 교체·비활성·치수조정이 가능한가?
+
+Filter는 플러그인(UNetObjectFilter 파생들)
+prioritizer도 교체 가능
+delta compression은 opt-in에 예산(2048)이 있고
+WorldLocations는 "위치"라는 특정 입력의 캐시 서비스
+Groups는 별도 개념 축
+
+---
+
+Index 공간이 자라면(오브젝트 수가 선할당을 넘으면) 
+등기소가 OnMaxInternalNetRefIndexIncreased를 방송하고, 
+그 수신자 목록이 곧 세입자 명부
+
+Conditionals, DirtyTracker, DC Manager
+InvalidationTracker, Groups, Filter
+
+등기소는 index 공간의 땅주인이고, 
+부처들은 그 좌표 위에 자기 컬럼을 세든 세입자라서, 
+땅이 넓어지면 각자 자기 대장을 늘려야 합니다
+
+소유권이 흩어져 있어도 좌표 체계는 하나
+
+---
+
+FReplicationSystemInternal = 내각 (부처를 값으로 품은 캐비닛)
+│
+├─ FNetRefHandleManager = 등기소 (땅주인)
+│
+└─ 부처들 (세입자: 주민번호를 키로 각자 대장 유지)
+     Filtering, Prioritization, WorldLocations,
+     Groups, DC Manager(사진 원판 보관소), Conditionals,
+     DirtyTracker, StateStorage(복사집), NetBlobManager,
+     Connections(항로별 사무소 → 그 안에 Writer/Reader)
+
+---
+---
+---
+
+net.Iris.ExecuteReliableRPCsBeforeApplyState=true
+이미 존재하는 객체의 Reliable RPC에만 적용
+
+현재 Health=100이고 다음 데이터가 함께 도착했다면
+
+Health = 50
+ClientHitReaction() Reliable RPC
+
+ClientHitReaction() 실행   // 아직 Health == 100
+Health = 50 적용
+OnRep_Health() 실행
+
+---
+
+한 프레임
+그 함수가 프레임 시간표의 어디에 사는지
+
+시계
+
+필터를 바꿔도 되는 시간
+게임 메모리를 만져도 되는 시간
+packet을 써도 되는 시간
+
+---
+
+UNetDriver
+TickDispatch(수신 처리)
+PostTickDispatch
+
+---
+
+Pre-/Post-는 괄호
+
+PreSendUpdate/PostSendUpdate
+PreReceiveUpdate/PostReceiveUpdate
+
+Begin/End는 괄호 중에서도 트랜잭션 괄호
+BeginWrite/EndWrite
+커밋/롤백 의미(bitstream rollback scope, record 확정)를 약속
+
+---
+
+ensureMsgf(CurrentSendPass == Invalid, "PostSendUpdate was not called after the last Tick")
+일종의 시간 타입 시스템
+
+---
+
+구동의 방향
+
+UpdateFiltering, UpdateConditionals — 파이프라인의 능동 단계
+OnStartPreSendUpdate, OnPostSendUpdate, OnMaxInternalNetRefIndexIncreased - On은 "통지받는다"
+
+---
+
+게임 메모리를 만지는 구간들이 Call- 함수들
+외부(게임) 코드를 호출한다
+
+CallPreSendUpdate, CallRepNotifies, CallPostApplyInitialState
+
+---
+
+                Send                         Receive
+  Pre    NetUpdate (≒PreSendUpdate)     PreReceiveUpdate
+  본체   SendUpdate                    (채널의 ReceivedBunch→ReadData)
+  Post   PostSendUpdate                 PostReceiveUpdate
+
+송신 본체는 채널의 Tick→WriteData가
+수신 본체는 채널의 ReceivedBunch→ReadData가 구동
+
+SendUpdate에는 "미래에 ReplicationSystem이 직접 send를 맡을 자리의 placeholder"
+
+---
+---
+---
+
+Dispatch
+들어온 것을 담당 처리자에게 라우팅하다
+
+virtual dispatch
+event dispatcher
+interrupt dispatch
+
+TickDispatch
+
+socket에서 packet을 읽고
+그 packet을 connection으로,
+bunch를 channel로, 
+내용물을 handler로 분배하는 것
+
+---
+
+수신이란 "받았다"에서 끝나지 않고 "제 주인에게 배달 완료했다"까지
+배가 닿는 게 수신이 아니라, 하역한 화물을 각 부서로 파견하는 것까지
+
+---
+
+TickFlush
+
+네트워크 송신
+본질적으로 buffered write
+
+printf는 보내는 행위가 아니라 버퍼에 쌓는 행위고, 실제로 내보내는 것은 fflush(stdout)
+
+프레임 내내 게임 코드는 dirty 표시를 쌓고 RPC를 큐에 넣을 뿐
+프레임 자체가 하나의 쓰기 버퍼
+
+---
+
+driver가 자기 버퍼에 하는 일의 어휘
+TickDispatch와 TickFlush
+send/receive라는 wire의 어휘가 아니라
+이름의 주어가 회선이 아니라 버퍼
+
+---
+
+SendUpdate
+송신 회차
+
+PreSendUpdate
+Pre-(SendUpdate)
+송신 회차의 앞괄호
+
+---
+
+packet은 프레임을 모르고 아무 때나 도착합니다
+박자 불일치(impedance mismatch)
+
+박자가 다른 두 세계를 잇는 보편적 도구는 버퍼입니다
+OS가 socket receive buffer에 쌓아둡니다
+
+게임은 이산적입니다 — 프레임 단위로만 세계를 갱신합니다
+
+NetDriver
+외부 박자로 쌓인 것을 프레임 박자에 맞춰 분배하고
+(TickDispatch — 프레임 시작에 OS 버퍼를 비워 각 connection/channel로)
+
+내 박자로 쌓인 것을 회선의 박자로 방류한다
+(TickFlush — 프레임 끝에)
+
+---
+---
+---
+
+
+프레임 동안 쌓이는 것
+
+dirty bit 하나(값이 아니라 "값을 보내야 한다는 어음")
+pending create/destroy 표시
+
+프레임은 완성품을 쌓는 게 아니라 미뤄둔 출력 의무의 원장을 쌓습니다
+
+MARK_PROPERTY_DIRTY가 1비트만 쓰는 이유
+쓰기 순간은 싸게, 정산은 나중에 몰아서
+몰아서 정산하기 때문에 합쳐집니다
+한 프레임에 HP가 다섯 번 바뀌어도 어음은 한 장, 결제는 최종값 한 번
+
+---
+
+TickFlush의 flush
+
+지연시킨 출력 의무의 강제 완결
+
+그 완결에 제조(poll → quantize → serialize)가 포함되는 것은
+지연 평가(lazy evaluation)의 핵심
+
+---
+---
+---
+
+Dispatch는 충실의 세계
+
+도착한 packet의 내용과 순서는 발신자가 이미 결정했고, 
+수신자에게 허용된 것은 정확한 해석뿐
+(선별도 병합도 예산도 없습니다 — 유일한 재량인 "미해석 참조 보류"조차 '언제 적용하나'이지 '무엇을 적용하나'가 아닙니다)
+송신자는 작곡가고 수신자는 연주자입니다.
+
+---
+---
+---
+
+Impedance
+1886년 Oliver Heaviside
+어떤 매질이 흐름 1단위를 통과시키는 데 얼마의 압력을 요구하는가 비율
+모든 매질은 이 고유 비율을 갖습니다
+
+두 매질을 이어 붙일 때 일어나는 일
+
+신호가 임피던스 50Ω짜리 케이블을 달리다가 75Ω짜리 장비를 만나면,
+신호 전체가 건너가지 못하고 일부가 경계에서 반사되어 되돌아옵니다. 
+
+반사파는 원래 신호와 겹쳐 왜곡(메아리, 정재파)을 만듭니다. 
+
+반대로 양쪽 비율이 일치하면(matched) 신호는 경계를 느끼지 못하고 전부 통과
+
+---
+
+첫째, 모든 매질/시스템은 고유한 특성 비율을 갖는다
+둘째, 비율이 다른 두 시스템의 경계에서는 전달이 불완전하다
+셋째, 해법은 변압기(transformer)다
+
+비율을 변환해 주는 중간 장치
+전기의 변압기, 자전거의 기어비
+초음파 검사의 젤
+
+넷째, 급격한 경계 하나보다 완만한 경계 여럿이 낫다
+
+금관악기의 나팔이 점점 벌어지는 이유는 
+관 내부와 바깥 공기의 임피던스를 점진적으로 정합해 
+소리가 반사 없이 빠져나가게 하기 위해서
+
+안경의 반사방지 코팅 
+유리와 공기 사이에 중간 굴절률 층을 끼워 넣는 기법
+
+인체의 중이(中耳)에 뼈가 세 개(망치뼈·모루뼈·등자뼈)
+공기(낮은 임피던스)와 달팽이관 림프액(높은 임피던스) 사이의 단계적 변압기
+
+---
+
+1990년대의
+object-relational impedance mismatch
+
+객체 세계(그래프, identity, 상속, 행위)와 관계형 세계(집합, 값, join, 정규화)
+둘을 이으면 경계에서 "반사"가 일어납니다
+
+그 반사의 소프트웨어적 형태가 glue code의 부피, 어색한 매핑, N+1 쿼리
+
+ORM은 변압기
+
+---
+
+이후 이 어휘는 모든 종류의 경계로 일반화됐습니다
+동기/비동기, push/pull, 스트림/배치, 이벤트 기반/프레임 기반, 가변/불변, 행 지향/열 지향
+
+회선은 "아무 때나 도착"이라는 박자를, 
+게임은 "프레임마다 한 번"이라는 박자를 갖고, 
+버퍼는 시간의 변압기
+댐이 불규칙한 강우를 일정한 급수로 바꾸듯이
+
+---
+---
+---
+
+Stream 
+연속성
+하나
+
+연속성은 stream이 지어내는 구축물
+
+---
+
+FReplicationWriter
+
+비트를 쓰는 것(serialize)은 마지막 한 걸음이고
+connection별 원격 지식 모델 + 수렴 엔진
+
+ObjectsInScope(이 상대가 알아야 할 것)
+FReplicationInfo의 상태기계(이 상대가 각 오브젝트를 아는 단계: 모름 → 소개했으나 미확인 → 앎 → 잊으라고 통보 중 → 잊음)
+accumulated mask(상대의 앎과 현재 진실 사이의 알려진 격차)
+acked baseline(상대가 갖고 있음이 증명된 지식의 스냅샷)
+ReplicationRecord(그 앎을 갱신하러 날아가는 중인 전언들)
+
+---
+
+구독자마다 전담 편집자(Writer)가 붙습니다
+그 구독자에 대한 서류철이 놓여 있습니다
+
+이 분의 관심 범위(scope), 
+이 분이 이미 아는 것과 모르는 것(상태기계), 
+지난 발송 이후 세상이 달라진 목록(accumulated mask), 
+이 분이 "잘 받았다"고 엽서로 확인해 준 기준판(acked baseline — 이후로는 "그 판에서 달라진 것만" 써도 통함), 
+발송했지만 아직 엽서가 안 온 우편물의 발송 대장(record)
+
+지면은 한정이라(예산) 중요한 것부터 싣고, 
+오래 밀린 소식일수록 앞으로 당깁니다
+
+---
+---
+---
+
+Writer의 예산
+
+MaxPackets 
+채널이 connection의 포화도/송신 창을 보고 계산해 BeginWrite에 넘겨주는 값
+PostTickDispatch 긴급 발송은 1로 고정
+
+bunch 한도
+Writer는 이 안에서 쓰다가 넘치면 그 batch를 rollback하고 
+다음 bunch으로 이월
+
+ReplicationRecord ring이 가득 차면 더 보낼 수 없습니다
+보낸 것을 기록할 수 없으면 보내면 안 되니까
+
+---
+
+prioritizer가 정한 축적 속도(거리 기반 sphere, 정적 중요도 등)
+보내지 못한 프레임만큼 쌓이므로
+누적치 ≈ 중요도 × 기다린 시간
+
+새로 태어난 오브젝트(CreatePriority 1.0), TearOff, 
+유실로 재전송이 필요해진 것(LostStatePriorityBump)은 
+즉시 문턱값(SchedulingThreshold 1.0)을 넘겨 앞줄에 세웁니다
+
+---
+
+scope ∩ dirty 후보를 모으고, 
+dependent 오브젝트에 parent 우선순위를 전파하고,
+partial sort(한 번에 최대 128개 후보 덩어리씩만 정렬 — 전체 정렬은 낭비이므로 예산만큼만 정렬)를 한 뒤, 
+위에서부터 packet에 채워 넣다가 예산이 끝나면 멈춥니다
+
+---
+
+못 실린 오브젝트는 dirty인 채로 남아 다음 프레임에 더 굶주린 우선순위로 돌아옵니다
+
+---
+
+Destroy를 보내고 확인을 안 받으면
+(WaitOnDestroyConfirmation 없이 잊어버리면), 
+그 packet이 유실됐을 때 상대 세계에는 유령이 남습니다
+
+종료 통보는 다른 어떤 상태보다도 reliable해야 합니다
+
+---
+---
+---
+
+Reader
+내가 아직 할 수 없는 것의 목록
+자신의 무지를 장부에 적는 자
+
+지금 적용할 수 없는 것을 언제 다시 시도할 것인가
+방금 실패한 참조는 매번 재시도(hot), 오래 실패한 참조는 고정 주기로만(cold).
+
+UnresolvedChangeMask
+Unresolved/ResolvedDynamic
+PendingBatches
+
+---
+
+Writer는 자기 데이터를 신뢰하지만 
+Reader는 신뢰하지 않습니다
+
+Bit 수를 읽자마자 overflow와 상한(batch count ≥ 8192면 즉시 에러)을 검사하고, 
+protocol 호환을 검증하고, 
+RPC는 실행 전에 authority 검사를 통과해야 합니다
+
+해석 불가능이 확정된 오브젝트는 BrokenObjects로 격리합니다
+회선 너머는 신뢰 경계 밖이고
+Reader가 그 국경의 검역소
+
+---
+
+packet을 끝까지 읽은 뒤에 dispatch하고
+root → subobject 순서를 지키고
+PreApply → Apply → RepNotify라는 단계를 가지고, 초기 상태면 PostApplyInitialState 훅까지
+
+---
+
+"지난 확정판 대비 변경분"으로 온 기사는 
+보관 중인 확정판(StoredBaselines)을 펴서 완전한 기사로 복원
+
+아직 인물 소개가 도착하지 않은 사람이 언급된 문단은 
+자리를 비워둔 채 나머지를 먼저 조판(unresolved changemask — 빈자리 북마크)
+
+---
+---
+---
+
+Relevance
+"이 (object, connection) 쌍에서, 이 connection이 이 object를 알아야 하는가?"
+
+Filter
+그 질문에 일괄로 답을 계산하는 기구
+
+Scope
+이 connection에 relevant한 것들의 집합
+Writer의 ObjectsInScope bit array
+
+Cull
+NetCullDistance는 grid filter에 들어가는 입력 파라미터
+
+---
+
+Legacy에서 relevance는 actor의 속성
+각 actor가 자기 판단 로직(가상함수)을 들고 있고, 매 프레임 connection마다 물어봤습니다
+
+Iris는 그 판단을 actor에서 떼어내 중앙의 일괄 filtering 공정으로 바꿨고
+공정의 산출물을 지속되는 집합으로 물화했습니다 (scope)
+
+---
+
+Scope는 "상대가 지금 사본을 갖고 있어야 하는 목록"
+
+어떤 오브젝트가 scope에 들어오는 순간 = 구독 시작 = 상대에게 생성(creation)을 보내야 하고, 
+나가는 순간 = 해지 = 파괴/정리를 보내야 합니다
+
+Writer의 UpdateScope가 이전 scope와 새 scope를 diff해서 
+create/destroy 전이를 만들어내는 게 그 구현
+
+---
+
+RelevantObjects = "어느 connection의 scope에든 들어 있는 것들의 합집합"
+아무도 안 보는 오브젝트는 poll/quantize조차 하지 않기 위한 상위 게이트
+
+NetUpdate에서 filtering이 poll보다 먼저 도는 이유
+
+---
+---
+---
+
+Writer
+connection마다 하나
+
+전체 object index 공간 [0, MaxInternalIndex)에 대한 ObjectsInScope bit array를 자기 것으로 가집니다
+Writer는 같은 index 공간 크기의 배열을 여러 벌 들고 있습니다
+
+FReplicationInfo[i](64bit 거래 상태)
+SchedulingPriorities[i](float)
+RecordInfoLists[i](in-flight 체인 머리)
+ObjectsWithDirtyChanges/ObjectsPendingDestroy
+
+---
+
+                object 0   object 1   object 2  
+connection A  [    ..         ..         ..      ] 
+connection B  [    ..         ..         ..      ]
+
+---
+
+RecordInfoLists[i]
+
+전표는 날짜철에 시간순으로 꽂습니다
+동시에 거래처마다 실을 꿰어 둡니다
+그 거래처의 미결 전표만 당기면 주르륵 딸려 나오게
+
+물리적 보관은 하나, 색인은 둘(시간순 + 주제순)
+
+자료구조 용어로는 ring buffer를 관통하는 intrusive linked list
+
+---
+---
+---
+
+(관심사 concern) × (connection) × (object)  →  값
+
+시트 "scope"       : bit           시트 "priority"  : float
+시트 "거래상태"    : 64bit 구조    시트 "baseline"  : 포인터 2칸
+시트 "conditional" : bit들         시트 "token 사전": (object 축 퇴화)
+
+시트 "현재 상태본" : (connection 축 퇴화 — 전역 테이블)
+
+---
+
+전역 per-object 테이블(등기소, WorldLocations)은 connection 축이 접힌 시트이고
+connection당 하나뿐인 것들(ReplicationView, UserData)은 object 축이 접힌 시트입니다
+
+---
+
+시트 "scope 계산본"   (bit, 매 프레임 재계산, Filtering 소유)
+시트 "scope 작업본"   (bit, 프레임 넘어 지속, Writer 소유 — 이전 프레임과 diff해 create/destroy 도출)
+
+시트 "priority 계산본" (float, 재계산, Prioritization 소유)
+시트 "priority 작업본" (float, 누적·리셋 상태, Writer 소유)
+
+시트 "거래 상태"       (64bit struct = 상태기계+mask+baseline index, 지속, Writer 소유)
+시트 "in-flight 실 머리" (index쌍 {first,last}, 지속, Writer 소유)
+시트 "조건부 열람권"    (조건 mask, Conditionals 소유)
+
+
+                 obj0  obj1  obj2 …
+ connA          [  1     0     1   ]   ← ConnectionInfos[A].ObjectsInScope
+ connB          [  0     0     1   ]
+
+
+---
+
+"진실은 하나"의 시트들
+
+                obj0  obj1  obj2 …
+connA          [  1     0     1   ] 
+
+시트 "신상 명부"     FReplicatedObjectData[i]        (struct, 등기소)
+시트 "수출 창고"     ReplicatedObjectStateBuffers[i] (uint8*, 등기소)
+시트 "refcount"        [i] (uint16)   
+시트 "인스턴스 역참조" [i] (TObjectPtr)
+시트 "전역 집합들"   Scopable/Polled/DirtyToQuantize/SubObject/Dependent/Dormant… (bit ×15장)
+시트 "주소지 대장"   WorldLocations[i]
+시트 "민원 접수함"   AccumulatedDirtyNetObjects[i] (bit, DirtyTracker)
+시트 "filter 배속"   NetObjectFilteringInfos[i]  ← "이 오브젝트는 어느 filter 소관인가" — 판정이 아니라 배속이라 connection 무관
+
+---
+
+항로 자체의 시트들
+
+시트 "항로 슬롯"     FReplicationConnection[c] = {Writer*, Reader*, Manager약참조, UserData}
+시트 "시점"          ReplicationView[c] (filter·prioritizer의 입력)
+시트 "번역 사전"     RemoteNetTokenStoreStates[c]   ← object 축이 token 축으로 대체됨
+시트 "export 장부"   NetExports[c]                  ← object 축이 packet(시간) 축으로 대체됨
+
+---
+
+FReplicationRecord는 [connection × packet순서]의 시트
+
+---
+
+인수분해
+
+[object × group]      : FNetObjectGroups 멤버십 ("이 오브젝트는 레벨L 그룹 소속")
+[group × connection]  : group filter status  ("레벨L은 connA에게 열람 허용")
+     → 곱하면 [object × connection] 판정이 유도됨
+
+큰 행렬을 저랭크 곱으로 압축
+레벨 하나가 로드/언로드될 때 시트 한 줄만 바꾸면 수천 오브젝트의 판정이 일괄로 뒤집히는 이유
+
+---
+---
+---
+
+NetUpdate 전체를 데이터 흐름 그래프로 그리면 하나의 깔때기이고, 그 출구가 두 곳
+
+공유 창고(quantized state buffers)
+각 Writer의 행(작업본들)
+
+인계 지점
+UpdateScope(scope 계산본 → Writer의 scope 작업본, diff로 create/destroy 도출)
+UpdatePriorities(priority 계산본 → Writer의 SchedulingPriorities)
+PropagateDirtyChanges(이번 프레임 changemask → 각 Writer의 pending mask)
+
+---
+
+poll/quantize의 산출물은 Writer 외에 DC baseline과 export 수집도 먹고
+WorldLocations는 Writer가 아니라 filtering/prioritization(Writer 상류)이 먹습니다
+모든 상류가 packet의 순간을 향해 수렴하고, Writer는 그 마지막 역
+
+---
+---
+---
+
+"싼 컬럼 대수로 '비싼 작업의 대상 목록'을 극소로 줄인 뒤, 
+비싼 작업(포인터 추적, 게임 메모리 방문)은 그 목록에만 한다."
+
+
+오브젝트 65536개 = 2048 word = 16KB, 배열 서너 개를 
+lockstep으로 AND/OR 해도 L1~L2 안에서 순식간
+(명령 하나가 오브젝트 64개를 처리)
+
+---
+
+오브젝트당 포인터 추적 — 게임 인스턴스 방문, fragment 호출, 캐시 미스의 세계
+아래층으로 위층의 횟수 n을 깎는 것
+비싼 계산을 드물게 만듭니다
+
+---
+---
+---
+
+poll 대상 목록 만들기
+
+재료(전부 bit 컬럼)
+  Dirty                 ← 접수함(GlobalDirtyTracker) + ForceNetUpdate        [OR]
+  Relevant              ← 모든 connection scope의 합집합                     [OR 여러 장]
+  PollDue               ← ObjectPollFrequencyLimiter (주기 도래)             
+
+조리:
+  PolledObjects = (Dirty ∪ ForceNetUpdate) ∩ Relevant ∩ PollDue    ← word 단위 AND/OR
+
+그 다음에 비싼 일
+  PolledObjects의 켜진 bit마다: 
+    ReplicatedInstances[i]로 게임 오브젝트 방문
+    → PreUpdate 콜백 → fragment Poll (포인터 추적의 세계)
+
+---
+---
+---
+
+connection별 scope 만들기 (filtering)
+
+
+공유 준비(오브젝트 축 1회)
+  WorldLocations[i] 갱신 → grid filter가 위치 컬럼을 한 번 쓸어 cell에 binning
+
+connection마다
+  Scope[c] =  GlobalScopable
+             ∧ ¬GroupExcluded[c]      ← (object×group)×(group×conn) 인수분해에서 유도
+             ∧ DynamicResult[c]       ← view 주변 cell들을 모아 만든 bit 컬럼
+
+
+100 connection × 2048 word ≈ 20만 word 연산
+조 단위 사이클을 가진 CPU에게 미미한 로드
+
+---
+
+UNetDriver::TickFlush
+  ReplicationSystem->NetUpdate
+
+  각 UNetConnection::Tick(Dt)
+    UChannel::Tick
+
+  UNetDriver::PostTickFlush
+
+---
+
+DataStreamManager->BeginWrite
+  UReplicationDataStream::BeginWrite
+    FReplicationWriter::BeginWrite
+
+
+while (쓸 게 남았고 && packet 예산 허용):
+  DataStreamManager->WriteData
+    FReplicationWriter::Write
+  BitWriter.CommitWrites
+  OutBunch.SerializeBits
+  SendBunch
+  WriteRecords.Enqueue
+
+
+루프 1회전 = packet 한 통 분량
+Writer는 채널의 스테이징 버퍼(8KB)에 쓰고, 그것이 통째로 bunch 하나가 됩니다
+
+---
+
+UNetConnection::FlushNet()
+  LowLevelSend(SendBuffer.GetData())
+    PacketHandler 체인 통과
+      UIpConnection::LowLevelSend
+        FSocket::SendTo
+          OS의 UDP 송신 버퍼
+---
+---
+---
+
+Filter/Scope가 오브젝트 단위 질문
+이 connection이 이 오브젝트를 받나
+
+Conditionals
+property 단위 질문
+받기로 한 오브젝트에서, 이 connection은 어느 필드까지 보나
+
+Legacy의 COND_* 가족의 Iris 구현이 FReplicationConditionals
+
+---
+
+NIC → OS의 UDP 수신 버퍼          ← 프레임 사이에도 쌓임 (1차 완충은 OS가)
+─── 프레임 시작 ───
+UNetDriver::TickDispatch          (world tick 초입에 등록된 delegate)
+  IpNetDriver: Socket->RecvFrom 루프로 datagram 소진
+  발신 주소 → UNetConnection 조회
+  Connection->ReceivedRawPacket
+    PacketHandler 수신 체인
+      UNetConnection::ReceivedPacket
+        bunch 분해 → 채널별 ReceivedRawBunch → ReceivedBunch → Iris Reader
+          
+---
+---
+---
+
+UDP의 소켓은 연결이 아니라 사서함
+포트 7777에 묶인 우편구 하나
+
+OS가 해주는 일은 "발신 주소가 붙은 datagram을 이 우편구에 넣어준다"가 전부
+연결이라는 개념 자체가 없습니다
+
+TCP의 head-of-line blocking(잃어버린 packet 하나가 뒤 전부를 세움)을 피하고
+신뢰성·재전송·전송 페이싱의 정책을 직접 쥐기 위해
+
+---
+
+그 선택의 대가로, "연결"을 유저스페이스에서 직접 지어야 합니다
+UNetConnection = 유저스페이스의 TCB
+
+TCP 커널이 연결마다 유지하는 제어 블록(TCB, Transmission Control Block)
+
+세션의 신원(상대 주소 + 핸드셰이크로 확립된 세션), 
+packet 시퀀스(OutPacketId)
+수령 명단(PacketNotify — ack/nak의 원천),
+신뢰성 장부, 
+흐름 제어(대역폭 예산, QueuedBits, 포화 판정), 
+타이머들(keepalive, timeout), 
+암호화 세션(connection별 PacketHandler 체인 — 키가 세션마다 다릅니다), 
+조립대(SendBuffer — packet은 세션 도장이 찍혀야 하므로), 
+그리고 그 위의 다중화(채널들)
+
+전부 "한 상대와의 대화 상태"
+
+---
+
+세션의 버퍼(조립 중인 SendBuffer, 부분 bunch 조립 등)는 connection 소유
+커널의 datagram 버퍼(소켓의 send/recv 버퍼)는 사서함에 딸린 것이라 driver의 소켓 하나에 공유
+
+---
+
+UNetDriver 
+역다중화기
+
+사서함에는 모든 상대의 편지가 섞여 도착합니다. 
+"이 주소는 어느 세션인가"(address → UNetConnection 해시)를 풀어 배달하는 것
+
+그리고 미지의 주소를 세션 할당 없이 싸게 검문하는 것(stateless handshake — DDoS 방어의 핵심: 상태를 만들기 전에 거른다)
+
+---
+
+driver는 점점 얇아지는 중
+Legacy 시절 driver의 가장 큰 내용물은 ServerReplicateActors
+
+Iris 시대에 그 두뇌가 통째로 ReplicationSystem으로 이주
+
+---
+---
+---
+
+UDP 소켓은 관이 아닙니다. 
+소포 투입구입니다
+
+sendto(데이터, 주소) 한 번 = 완결된 datagram 하나가 원자적으로 커널에 인계됩니다
+
+커널은 datagram마다 UDP/IP 헤더를 씌워 독립된 소포로 NIC 큐에 넣고, 
+상대의 recvfrom도 정확히 소포 단위로 꺼냅니다
+
+---
+
+UNetDriver::TickFlush
+  ReplicationSystem->NetUpdate
+  for each UNetConnection: Tick
+    채널들 tick
+    Tick 말미: FlushNet()
+      SendBuffer 완성 = packet 하나
+      헤더 도장
+      PacketHandler 
+      Socket->SendTo(완성된 소포, 상대 주소)
+  PostTickFlush
+    PostSendUpdate
+
+
 ---
 ---
