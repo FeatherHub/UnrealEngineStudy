@@ -634,3 +634,420 @@ priority를 bump(LostStatePriorityBump)
 baseline은 전진 안 함
 
 ---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+
+UNetDriver◦
+  FNetTokenStore◦
+  UReplicationSystem◦
+  ServerConnection:UNetConnection◦
+  ClientConnections:UNetConnection◦
+
+---
+
+UReplicationSystem
+  UReplicationBridge◦
+  FReplicationSystemImpl◦
+
+---
+
+FReplicationSystemImpl
+  FReplicationSystemInternal◦
+
+---
+
+FReplicationSystemInternal
+  ├─ FReplicationProtocolManager◦
+  ├─ FNetRefHandleManager◦
+  ├─ FDirtyNetObjectTracker◦
+  ├─ FReplicationStateStorage◦
+  ├─ FReplicationStateDescriptorRegistry◦
+  ├─ FChangeMaskCache◦
+  ├─ FReplicationConnections◦
+
+  ├─ FReplicationFiltering◦
+  ├─ FNetObjectGroups◦
+  ├─ FReplicationConditionals◦
+  ├─ FReplicationPrioritization◦
+  ├─ FObjectReferenceCache◦
+  ├─ FWorldLocations◦
+
+  ├─ FNetBlobManager◦
+  ├─ FDeltaCompressionBaselineManager◦
+  └─ FDeltaCompressionBaselineInvalidationTracker◦
+
+---
+
+UDataStreamChannel
+  UDataStreamManager◦
+
+---
+
+UDataStreamManager
+  UDataStream◦[UReplicationDataStream, UNetTokenDataStream, UChunkedDataStream]
+    
+---
+
+UReplicationDataStream
+  ReplicationWriter:FReplicationWriter*
+  ReplicationReader:FReplicationReader*
+
+---
+
+UObject
+├─ UNetDriver
+├─ UNetConnection
+├─ UReplicationSystem
+├─ UReplicationBridge
+├─ UChannel
+│  └─ UDataStreamChannel
+└─ UDataStream
+   ├─ UDataStreamManager
+   ├─ UReplicationDataStream
+   ├─ UNetTokenDataStream
+   └─ UChunkedDataStream
+
+---
+
+FNetRefHandleManager::FReplicatedObjectData
+
+FNetRefHandle
+FNetHandle
+FReplicationProtocol◦
+FReplicationInstanceProtocol◦
+ReceiveStateBuffer:uint8◦
+
+SubObjectRootIndex:FInternalNetRefIndex
+SubObjectParentIndex:FInternalNetRefIndex
+
+Flags:uint16
+
+
+InstanceProtocol은 모든 object에 항상 존재하는 것이 아니다. remote object가 아직 instance에 attach되지 않은 구간도 있다
+local/current send state는 FReplicatedObjectData 안이 아니라 manager의 parallel chunked array에 있다
+
+---
+---
+---
+
+FNetRefHandleManager
+├─ ReplicationSystemId:uint32
+├─ MaxActiveObjectCount:uint32
+├─ ActiveObjectCount:uint32
+├─ InternalNetRefIndexGrowSize:FInternalNetRefIndex
+├─ CurrentMaxInternalNetRefIndex:FInternalNetRefIndex
+├─ HighestNetChunkedArrayInternalIndex:uint32
+├─ NextStaticHandleIndex:uint64                                
+├─ NextDynamicHandleIndex:uint64                               
+
+├─ RefHandleToInternalIndex:<FNetRefHandle->FInternalNetRefIndex>
+├─ NetHandleToInternalIndex:<FNetHandle->FInternalNetRefIndex>
+├─ AssignedInternalIndices:FNetBitArray
+├─ ReplicationProtocolManager:FReplicationProtocolManager&    // constructor로 받은 manager reference
+
+├─ ReplicatedObjectData:FReplicatedObjectData[]                // TNetChunkedArray
+├─ ReplicatedObjectStateBuffers:uint8*[]                       // TNetChunkedArray; local send state
+├─ ReplicatedInstances:UObject*[]                              // TNetChunkedArray<TObjectPtr<UObject>>
+
+├─ ScopeFrameData:FScopeFrameData
+│  ├─ CurrentFrameScopableInternalIndices:FNetBitArray
+│  └─ PrevFrameScopableInternalIndices:FNetBitArray
+├─ GlobalScopableInternalIndices:FNetBitArray
+
+├─ RelevantObjectsInternalIndices:FNetBitArray
+├─ PolledObjectsInternalIndices:FNetBitArray
+├─ DirtyObjectsToQuantize:FNetBitArray
+
+├─ SubObjectInternalIndices:FNetBitArray
+├─ DependentObjectInternalIndices:FNetBitArray
+├─ DependentObjectsWithParentFilter:FNetBitArray
+├─ ObjectsWithDependentObjectsInternalIndices:FNetBitArray
+├─ SubObjects:FNetDependencyData◦                              // root/subobject dependency topology
+
+├─ DestroyedStartupObjectInternalIndices:FNetBitArray
+├─ WantToBeDormantInternalIndices:FNetBitArray
+├─ DormantObjectsPendingFlushNet:FNetBitArray
+├─ DestroyedStartupObject:<uint32->uint32>
+├─ PendingDestroyInternalIndices:FInternalNetRefIndex[]
+├─ ReplicatedObjectRefCount:uint16[]                           // writer들이 scope에서 참조하는 수
+
+---
+---
+---
+
+
+UReplicationBridge
+├─ UReplicationSystem*
+├─ FReplicationProtocolManager*
+├─ FReplicationStateDescriptorRegistry*
+
+├─ FNetRefHandleManager*
+├─ FObjectReferenceCache*
+
+├─ FNetObjectGroups*
+├─ LevelGroups:<FObjectKey->FNetObjectGroupHandle>            // streaming level별 filter group
+
+├─ HandlesToStopReplicating:<FNetRefHandle->EEndReplicationFlags> // receive 중 들어온 stop 요청을 지연
+├─ DestructionInfoProtocol:FReplicationProtocol◦        // AddRef/Release하는 destruction-info protocol
+├─ StaticObjectsPendingDestroy:<FNetRefHandle->UReplicationBridge::FDestructionInfo>
+└─ HandlesPendingEndReplication:UReplicationBridge::FPendingEndReplicationInfo[]
+
+---
+
+UObjectReplicationBridge
+├─ PreUpdateInstanceFunction:FInstancePreUpdateFunction       // poll 직전 PreReplication류 callback
+
+├─ PollFrequencyLimiter:FObjectPollFrequencyLimiter◦->
+
+├─ ClassesWithPollPeriodOverride:<FName->UObjectReplicationBridge::FPollInfo>
+├─ ClassesWithoutPollPeriodOverride:FName[]                   
+├─ ClassesWithPrioritizer:<FName->UObjectReplicationBridge::FClassPrioritizerInfo>
+├─ ClassesWithDeltaCompression:<FName->bool>
+
+---
+
+UObjectReplicationBridge::FPollInfo
+├─ PollFrequency:float
+└─ Class:UClass*
+
+UObjectReplicationBridge::FClassPrioritizerInfo
+├─ PrioritizerHandle:FNetObjectPrioritizerHandle
+└─ bForceEnable:bool
+
+UEngineReplicationBridge: UObjectReplicationBridge
+├─ ActorFactoryId: FNetObjectFactoryId                         // UNetActorFactory의 registry id
+├─ SubObjectFactoryId: FNetObjectFactoryId                     // UNetSubObjectFactory의 registry id
+└─ ObjectReferencePackageMap:UIrisObjectReferencePackageMap◦->
+
+---
+
+
+FReplicationStateDescriptor
+├─ FReplicationStateMemberDescriptor*[]
+├─ FReplicationStateMemberChangeMaskDescriptor*[]
+├─ FReplicationStateMemberSerializerDescriptor*[]
+├─ FReplicationStateMemberTraitsDescriptor*[]
+├─ FReplicationStateMemberFunctionDescriptor*[]
+├─ FReplicationStateMemberTagDescriptor*[]
+├─ FReplicationStateMemberReferenceDescriptor*[]
+├─ MemberProperties:FProperty*[]                        
+├─ FReplicationStateMemberPropertyDescriptor*[]
+├─ FReplicationStateIdentifier
+├─ ConstructReplicationStateFunc
+├─ DestructReplicationStateFunc
+├─ CreateAndRegisterReplicationFragmentFunc
+├─ EReplicationStateTraits
+└─ DefaultStateBuffer:uint8* 
+
+---
+
+FReplicationStateMemberSerializerDescriptor
+├─ Serializer:FNetSerializer*
+└─ SerializerConfig:FNetSerializerConfig*
+
+FReplicationStateMemberChangeMaskDescriptor
+├─ BitOffset:uint16                                           // protocol change mask 안의 member 시작 bit
+└─ BitCount:uint16                                            // array 등은 1보다 클 수 있음
+
+FReplicationStateMemberTraitsDescriptor
+└─ Traits:EReplicationStateMemberTraits
+
+FReplicationStateMemberReferenceDescriptor
+├─ Offset:uint32
+├─ Info:FNetReferenceInfo
+├─ MemberIndex:uint16
+└─ InnerReferenceIndex:uint16
+
+FReplicationStateMemberPropertyDescriptor
+├─ RepNotifyFunction:UFunction*
+└─ ArrayIndex:uint16
+
+FReplicationStateMemberFunctionDescriptor
+├─ Function:UFunction*
+└─ Descriptor:FReplicationStateDescriptor◦
+
+---
+
+
+FReplicationProtocol
+├─ ReplicationStateDescriptors:FReplicationStateDescriptor◦[]
+├─ FReplicationProtocolIdentifier
+├─ EReplicationProtocolTraits
+
+---
+
+FReplicationInstanceProtocol
+├─ FFragmentData[] 
+│  └─ ExternalSrcBuffer:uint8*
+├─ FReplicationFragment*[]                         
+└─ EReplicationInstanceProtocolTraits
+
+---
+---
+---
+
+FPropertyReplicationFragment: FReplicationFragment
+├─ SrcReplicationState:FPropertyReplicationState◦           
+├─ PrevReplicationState:FPropertyReplicationState◦           // KeepPreviousState일 때 사용
+├─ FReplicationStateDescriptor◦
+└─ Owner:UObject*              
+
+FPropertyReplicationState
+├─ FReplicationStateDescriptor◦
+├─ StateBuffer:uint8*
+└─ bOwnState:uint32:1
+
+---
+---
+---
+
+FNetSerializer
+├─ ENetSerializerTraits
+
+├─ NetSerializeFunction
+├─ NetDeserializeFunction
+├─ NetSerializeDeltaFunction
+├─ NetDeserializeDeltaFunction
+├─ NetQuantizeFunction
+├─ NetDequantizeFunction
+├─ NetIsEqualFunction
+
+├─ NetCloneDynamicStateFunction
+├─ NetFreeDynamicStateFunction
+├─ NetCollectNetReferencesFunction
+
+├─ FNetSerializerConfig*
+
+---
+
+FNetSerializationContext
+├─ ErrorContext:FNetErrorContext
+
+├─ ReadJournal:FNetJournal
+├─ BitStreamReader:FNetBitStreamReader*
+├─ BitStreamWriter:FNetBitStreamWriter*
+
+├─ ExportContext:FNetExportContext*
+├─ ChangeMask:FNetBitArrayView*
+├─ NetBlobReceiver:INetBlobReceiver*
+
+├─ LocalConnectionId:uint32
+├─ PacketId:int32
+├─ bIsInitState:uint32:1
+└─ bIsInitializingDefaultState:uint32:1
+
+---
+---
+---
+
+FReplicationStateStorage
+├─ FNetRefHandleManager*
+├─ FNetSerializationContext
+├─ ObjectIndexToObjectInfoIndex:ObjectInfoIndexType[]
+
+└─ ObjectInfos:FPerObjectInfo[]
+
+FReplicationStateStorage::FPerObjectInfo
+├─ Protocol:FReplicationProtocol*
+├─ StateBuffers:uint8*[2]  // SendState, RecvState
+
+---
+---
+---
+
+FDirtyNetObjectTracker
+├─ AccumulatedDirtyNetObjects:FNetBitArray                    // 여러 frame에 걸쳐 아직 처리되지 않은 dirty
+├─ ForceNetUpdateObjects:FNetBitArray                         // 이번 frame 강제 poll/update 요청
+├─ DirtyNetObjects:FNetBitArray                               // 이번 frame local dirty list
+
+├─ GlobalDirtyTrackerPollHandle:FGlobalDirtyNetObjectTracker::FPollHandle
+├─ ReplicationSystemId:uint32
+
+---
+---
+---
+
+FChangeMaskCache::FCachedInfo
+├─ InternalIndex:uint32
+├─ StorageOffset:uint32:24
+├─ bMarkSubObjectOwnerDirty:uint32:1
+└─ bHasDirtyChangeMask:uint32:1
+
+---
+---
+---
+
+FReplicationFiltering
+├─ FNetObjectGroups*
+├─ FReplicationConnections*
+├─ ObjectIndexToOwningConnection:uint16[]
+
+├─ ObjectsWithDirtyOwner:FNetBitArray
+├─ ObjectsWithOwnerFilter:FNetBitArray
+├─ ExclusionFilterGroups:FNetBitArray
+├─ InclusionFilterGroups:FNetBitArray
+├─ ObjectScopeHysteresisFrameCounts:uint8[]
+
+---
+
+FReplicationFiltering::Filter()
+  ResetRemovedConnections();
+  InitNewConnections();
+  
+  UpdateObjectsInScope();
+  UpdateGroupExclusionFiltering();
+  UpdateGroupInclusionFiltering();
+  
+  UpdateOwnerAndConnectionFiltering();
+  UpdateSubObjectFilters();
+  
+  PreUpdateObjectScopeHysteresis();
+  UpdateDynamicFilters();
+
+---
+---
+---
+
+UNetObjectFilter
+   ├─ UNopNetObjectFilter 
+   ├─ UFilterOutNetObjectFilter
+   ├─ UAlwaysRelevantNetObjectFilter
+   ├─ UNetObjectConnectionFilter
+   └─ UNetObjectGridFilter 
+      └─ UNetObjectGridWorldLocFilter
+
+---
+
+FNetObjectGroup
+├─ Members:FInternalNetRefIndex[]
+├─ GroupName:FName
+├─ GroupId:uint32
+└─ Traits:ENetObjectGroupTraits
+
+---
+
+FReplicationConditionals
+├─ <FInternalNetRefIndex->FObjectDynamicConditions>
+├─ ObjectsWithDirtyLifetimeConditionals:FNetBitArray
+   ObjectConditionals:FReplicationConditionals // 이 connection에서 object별 lifetime conditions
+
+---
+
+UNetObjectPrioritizer
+   ├─ UNetObjectCountLimiter
+   └─ ULocationBasedNetObjectPrioritizer
+      ├─ USphereNetObjectPrioritizer
+      │  └─ USphereWithOwnerBoostNetObjectPrioritizer
+      └─ UFieldOfViewNetObjectPrioritizer
+
+filtering은 connection scope에 들어올 자격을 결정
+prioritization은 scope 안에서 packet budget을 먼저 쓸 순서를 결정
+
+---
