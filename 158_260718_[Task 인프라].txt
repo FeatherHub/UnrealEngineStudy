@@ -1,0 +1,544 @@
+while (살아있는 동안):
+   Task = try_pop_local() 또는 try_steal()
+   if Task: Task.Execute()
+   else:    sleep_on_semaphore()   
+
+---
+
+Launch(task):
+   push(task)
+   semaphore.signal()   // 잠든 worker 1개를 runnable로
+
+---
+
+큐를 하나 두고 worker 전부가 거기서 꺼내기
+vs
+worker마다 개인 큐를 준다
+
+---
+
+Oversubscription 
+실제 용량보다 더 많이 배정·판매
+
+항공사 overbooking(좌석 180인데 190장 판매, no-show 예상)
+cloud VM(물리 코어 16개 호스트가 vCPU 40개 판매)
+ISP 대역폭(동시 전송 가능량보다 많은 회선 판매)
+CPU 코어 수보다 많은 thread를 띄우는 것
+
+다 동시에 쓰진 않겠지에 베팅하는 개념
+
+---
+
+코어당 실행 중 worker 1개
+
+worker가 가끔 멈춰서 기다려야 한다(Task.Wait(), I/O 완료, GPU fence 등)
+기다리는 worker는 코어 자리를 차지한 채 아무 일도 안 한다
+병렬도가 (코어수 − 1)로 떨어진다
+blocking wait가 코어에 "빈 구멍"을 낸다
+
+---
+
+oversubscription
+
+그 worker를 그냥 재운다. 
+대신 여분 thread(standby) 하나를 잠깐 깨워 빈 코어 자리를 메운다
+기다림이 끝나면 여분 thread를 다시 재워 1:1로 복귀한다
+
+---
+---
+---
+
+worker가 일이 없을 때 곧바로 깊게 자지 않고 아주 짧게 spin 한 뒤 잔다
+sleep→wakeup 왕복에도 µs 단위 지연이 있어서, 일이 곧 올 것 같으면 그 왕복을 아끼려는 것
+
+---
+
+fork-join 구조
+
+한 Task가 자기가 방금 만지던 데이터를 쪼개서 자식 Task들을 push 한다
+같은 데이터의 부분집합이거나, 그것이 만든 결과를 소비하는 후속
+
+---
+---
+---
+
+thread
+
+커널 쪽
+스레드마다 커널 객체 하나
+Linux task_struct, Windows ETHREAD/KTHREAD
+
+register 저장 영역, kernel stack 포인터, scheduling 상태 등을 담은 구조체
+
+---
+
+유저 쪽
+
+그 커널 객체를 가리키는 handle/ID를 든다
+POSIX pthread_t, Windows HANDLE + thread id
+
+UE는 이걸 FRunnableThread(플랫폼별 subclass)로 감싸 handle을 보관한다
+
+---
+
+커널 객체 할당
+
+task_struct + kernel stack(8~16 KB) 확보, 
+TID 배정, scheduler entity 초기화, 프로세스 thread 목록에 링크, accounting/cgroup 등록
+
+---
+
+user stack: 기본 예약이 Linux 8 MB / Windows 1 MB
+
+가상 주소만 reserve(VMA 삽입, 저렴)하고 
+실제 물리 페이지는 처음 건드릴 때 page fault(~1 µs/4 KB)로 lazy하게 채운다. 
+
+여기에 TLS 초기화(모든 thread_local·라이브러리 몫, 개수에 비례), 
+libc/pthread 부기, signal mask 설정
+새 스레드의 cold start(code·data·TLB가 차가워 warmup)까지 붙는다
+
+---
+
+futex 
+Fast Userspace muTEX
+
+lock은 대부분 경합이 없다(아무도 안 잡고 있음)
+그 흔한 경우엔 커널을 부를 이유가 없어야 한다(syscall은 ~70 ns+)
+그래서 futex는 유저 메모리의 int 하나(주소)로 두고
+
+경합 없을 때(fast path): lock/unlock을 순수 userspace atomic CAS(compare-and-swap)로 끝낸다. 커널 개입 0, 나노초 단위
+경합할 때(slow path): 그제야 futex() syscall — 잡은 쪽이 놓을 때까지 FUTEX_WAIT로 자고, 놓는 쪽이 FUTEX_WAKE로 깨운다.
+
+비어 있으면 걸쇠만 딸깍(관리인 안 부름), 
+누가 안에 있으면 그제야 관리인(커널)에게 "나면 깨워줘" 하고 명단에 올린 뒤 잔다
+
+---
+---
+---
+
+Thread Control Block
+Linux, task_struct
+Windows, ETHREAD/KTHREAD
+
+process의 PCB(Process Control Block)에 대응하는
+커널이 스레드마다 하나씩 갖는 데이터 구조
+
+thread ID, 안 돌 때 저장해둔 register 상태(PC·SP·범용 레지스터 → 재개용), 
+scheduling 정보(우선순위, running/ready/blocked 상태, 어느 queue에 있나), 
+kernel stack 포인터, 
+소속 프로세스 주소공간 포인터, 
+CPU 사용 시간 
+
+---
+---
+---
+
+thundering herd
+
+자원 1개가 생겼는데 대기자 여럿을 전부 깨워 경쟁시키는 낭비 현상
+
+condition variable에 worker 10개가 대기 중인데 
+task 1개 도착 시 broadcast(전부 깨움)하면 1명만 얻고 9명은 헛깨움
+
+손님 1명 들어왔는데 점원 10명이 우르르 달려나가는 것 
+
+---
+---
+---
+
+같은 메모리를 여러 스레드가 동시에 만지면 깨진다
+counter++ 한 줄도 CPU에겐 세 단계
+"읽고-고치고-쓰는" 사이에 남이 끼어든 것
+
+lock은 이 임계구역(critical section)을 한 번에 한 스레드만 들어가게 막는 도구
+
+mutex(MUTual EXclusion)는 그 lock의 대표 형태
+
+---
+
+한 프로세스의 모든 스레드는 같은 주소공간을 공유
+A가 그 주소에 쓰면 B가 그 주소를 읽을 때 보인다
+
+코어 간 일관성은 cache coherence가 보장
+
+유저 메모리의 int = 그 프로세스 안의 평범한 변수
+
+---
+
+CAS(compare-and-swap)
+
+CAS(addr, expected, new):     // ← 이 전체가 CPU 명령 하나. 중간에 못 끼어듦
+   if *addr == expected:
+       *addr = new
+       return true            // 성공
+   else:
+       return false           // 그 사이 남이 바꿔놨음
+
+---
+
+lock:   while (CAS(&s, 0, 1) == false) { /* 계속 재시도 = spin */ }
+unlock: s = 0
+
+누가 lock을 오래 쥐고 있으면 기다리는 스레드가 CPU를 태우며 계속 헛도는(busy waiting) 낭비
+spinner가 코어 하나를 통째로 낭비한다
+
+---
+
+futex = spinlock의 빠름 + 커널의 재우기
+
+경합 없을 땐 CAS만(빠르고 커널 0), 경합할 땐 잠들기(CPU 안 태우고, 풀리면 깨어남).
+
+---
+
+"값이 바뀔 때까지 잠들었다가 깨어나기"는 CAS로 못 한다. 
+
+스레드를 runnable에서 빼고 나중에 다시 넣는 건 scheduler의 권한 = 커널만 가능하다
+
+그래서 재우고 깨우는 부분만 커널이 필요
+그걸 제공하는 syscall이 futex
+
+---
+
+futex(&s, FUTEX_WAIT, 1)   // "*&s 가 아직 1이면 나를 재워라"
+futex(&s, FUTEX_WAKE, 1)   // "&s 에 잠든 스레드 1개를 깨워라"
+
+---
+---
+---
+
+멀티코어에서 각 코어는 cache를 갖고 
+MESI 같은 coherence protocol로 일관성을 맞춘다.
+
+atomic RMW 명령은 해당 cache line을 명령이 끝날 때까지 독점해서 
+다른 코어가 그 사이 못 건드리게 한다. 
+그래서 load-modify-store가 안 쪼개진다. 
+
+옛날엔 bus lock, 지금은 cache-line lock
+
+---
+
+RMW
+Read-Modify-Write
+
+메모리를 읽고(Read) → 그 값으로 새 값을 계산하고(Modify) → 도로 쓴다(Write)
+counter++가 전형
+
+다른 스레드와 interleave
+atomic RMW는 셋을 쪼갤 수 없는 하나로 묶은 것
+
+CAS는 그중 "조건부" 버전
+
+---
+
+SWAP = 무조건 바꿔치기
+
+CAS = "내가 본 값 그대로일 때만 바꿔치기 + 됐는지 알려줌"
+감지 능력
+
+---
+---
+---
+
+optimistic concurrency
+낙관적으로 일하고, 커밋하는 순간에만 충돌을 확인한다
+
+문서가 지금 버전 5다. 그걸 열어(읽어) 로컬에서 고친다.
+다 고치고 "저장"을 누르는 순간 시스템이 확인한다 — "이 문서 아직 버전 5?"
+
+그대로 5면 → 수정이 반영되고 버전 6이 된다. (성공)
+그새 누가 저장해서 6이 됐으면 → "편집 충돌, 누가 먼저 바꿨어요. 다시 하세요." (실패)
+
+여기서 아무도 문서를 잠그지 않았다. 
+다들 자유롭게 편집했고, 충돌은 저장(커밋) 순간에만 잡아 되돌린다.
+
+---
+
+expected = "내가 시작할 때 본 버전(스냅샷)". 내 작업의 전제.
+swap(new 쓰기) = 그 전제 위에서 만든 결과를 커밋.
+
+return true = 전제가 끝까지 유효했다 → 커밋 성공.
+return false = 그새 세상이 변했다(남이 끼어듦) → 내 결과는 낡은 전제 위에 있으니 버리고 다시
+
+---
+---
+---
+
+pessimistic
+
+내가 만지는 동안 아무도 손 못 대
+충돌을 원천 봉쇄하니 안전하지만, 
+남을 막고(blocking) 충돌이 없을 때조차 비용을 문다.
+
+---
+
+optimistic
+
+충돌은 드물다. 그러니 다들 자유롭게 일하게 두고, 
+진짜 부딪힌 그 순간에만 감지해 재시도시키자
+
+안 막고(non-blocking), 흔한 무경합 케이스는 거의 공짜, 
+손해는 실제 충돌 시의 재시도
+
+그래서 CAS는 늘 재시도 loop와 짝이다
+"커밋 시도 → 충돌(false)이면 새 현실을 다시 읽어 재계산 → 또 시도."
+
+---
+
+TOCTOU
+time-of-check-to-time-of-use
+
+평범한 코드로 "값을 확인하고 → 그에 맞춰 쓰기"를 하면, 
+확인과 쓰기 사이에 값이 변하는 틈이 생긴다
+
+CAS는 확인(compare)과 행동(swap)을 한 명령으로 융합해 그 틈을 0으로 만든다
+
+---
+---
+---
+
+각 Task는 "아직 안 끝난 prerequisite 개수" 카운터를 갖는다. 
+이 카운터가 0보다 크면 그 Task는 어떤 run queue에도 안 들어간다
+
+큐 안에 있다 ⟺ 카운터가 0 ⟺ 모든 의존이 이미 충족됨 ⟺ 지금 아무 worker가 실행해도 안전함
+steal은 "이 준비된 Task를 어느 worker가 실행하나"만 바꿀 뿐
+
+---
+
+대기열을 가로줄로 그리고, 새로 만든 Task는 항상 오른쪽 끝에 추가한다.
+따라서 오른쪽 끝 = 최신, 왼쪽 끝 = 가장 오래됨
+
+LIFO는 **오른쪽 끝(최신)**을 꺼내고, FIFO는 **왼쪽 끝(오래됨)**을 꺼낸다.
+
+대기열                     다음에 꺼낼 것
+[R]                        R
+[A B]                      B  (최신)
+[A E F]                    F  (최신)
+[A E l6 l7]  ← 최대 4개     l7 (최신, leaf → 실행)
+[A E l6]                   l6
+[A E]                      E
+[A l4 l5]                  l5 → l4
+[A]                        A  ... (반대편도 대칭, 계속 ≤ 4)
+
+---
+
+대기열                              다음에 꺼낼 것
+[R]                                 R
+[A B]                               A  (가장 오래됨)
+[B C D]                             B  (가장 오래됨)
+[C D E F]                           C  ← 깊이1을 다 펼쳐 깊이2 4개
+[D E F l0 l1]                       D
+[E F l0 l1 l2 l3]                   E
+[F l0 l1 l2 l3 l4 l5]               F
+[l0 l1 l2 l3 l4 l5 l6 l7] ← 최대 8  
+[... leaf 8개 실행 ...]
+
+---
+
+N이 100만이면 ~20(log N) 대 ~100만(N)의 차이가 된다.
+
+---
+---
+---
+
+LowLevelTasks::FScheduler
+프로세스당 하나의 singleton(static FScheduler Singleton)
+
+TArray<std::atomic<FThread*>> WorkerThreads
+worker별 로컬 큐(WorkerLocalQueues — work-stealing deque)
+worker별 wake event(WorkerEvents)
+foreground/background 두 개의 park 큐(WaitingQueue[2])
+
+---
+
+LowLevelTasks::FTask
+
+스케줄러가 다루는 "실행 단위"
+
+(ETaskState: Ready → Scheduled → Running → Completed, 여기에 Canceled/Expedited 변형)
+
+실행할 함수는 TTaskDelegate(runnable + continuation)로 들고 있다
+
+---
+
+global namespace + prefix
+FTaskGraphInterface, TGraphTask, FGraphEventRef, ENamedThreads
+
+LowLevelTasks::FScheduler, LowLevelTasks::FTask
+
+UE::Tasks::Launch, UE::Tasks::FPipe
+UE::Tasks::Private::FTaskBase
+
+---
+
+Chaos::
+Audio::
+Trace::
+LowLevelTasks::
+
+---
+
+UE::Tasks
+UE::Math
+UE::Geometry
+UE::String
+UE::Net
+
+---
+
+Reflected UObject / gameplay 세계 → 전역 + prefix로 고정
+
+tooling 가정
+UCLASS/USTRUCT/UENUM을 "전역 + U/A/F prefix"로 전제
+
+---
+
+Non-UObject 저수준 라이브러리 세계 → UE::로 이주
+
+---
+
+FVector
+UE::Math::TVector<double>
+
+---
+
+"A를 기다렸다가 B를 한다"가 아니라 "B를 A의 continuation으로 붙여둔다"
+
+subsequent
+
+---
+
+Retraction
+
+내 의존성을 내가 훔쳐 처리
+
+Wait()했는데 그 task가 아직 시작도 안 했다면
+기다리는 thread가 그 task를 큐에서 끌어와 자기가 그 자리서 실행
+
+---
+
+UE::Tasks::Private::FTaskHandle
+├─ UE::Tasks::TTask<ResultType>
+├─ UE::Tasks::TTask<void>
+└─ UE::Tasks::FTaskEvent
+
+---
+
+UE::Tasks::Private::FTaskHandle
+└─ Pimpl : UE::Tasks::Private::FTaskBase*
+
+---
+
+UE::Tasks::Private::FTaskBase
+├─ Pipe: UE::Tasks::FPipe*
+├─ StateChangeEvent: UE::FEventCount
+├─ Prerequisites: UE::Tasks::Private::FTaskBase::FPrerequisites<TInlineAllocator<1>>
+├─ LowLevelTask: LowLevelTasks::FTask
+└─ Subsequents: UE::Tasks::Private::FTaskBase::FSubsequents<TInlineAllocator<1>>
+
+---
+
+UE::Tasks::Private::FTaskBase::FPrerequisites<AllocatorType>
+├─ Prerequisites: TArray<UE::Tasks::Private::FTaskBase*,AllocatorType>
+└─ Mutex: UE::FMutex
+
+---
+
+UE::Tasks::Private::FTaskBase::FSubsequents<AllocatorType>
+├─ Subsequents: TArray<UE::Tasks::Private::FTaskBase*,AllocatorType>
+└─ Mutex: UE::FMutex
+
+---
+---
+---
+
+UE::Tasks::Private::TTaskWithResult<ResultType>
+└─ ResultStorage: TTypeCompatibleBytes<ResultType>
+
+UE::Tasks::Private::TExecutableTaskBase<TaskBodyType,ResultType,Enable>
+└─ TaskBodyStorage: TTypeCompatibleBytes<TaskBodyType>
+
+---
+
+UE::Tasks::FPipe
+├─ LastTask: UE::Tasks::Private::FTaskBase*
+└─ EmptyEventRef: UE::FEventCount*
+
+---
+---
+---
+
+TGraphTask<TTask>
+└─ TaskStorage: TTypeCompatibleBytes<TTask>
+
+---
+
+FTaskGraphCompatibilityImplementation
+├─ ShutdownCallbacks: TArray<TFunction<void()>>
+├─ NamedThreads: TArray<FWorkerThread>
+└─ ReentrancyCheck: FThreadSafeCounter
+
+---
+---
+---
+
+FWorkerThread
+├─ TaskGraphWorker: FTaskThreadBase*
+└─ RunnableThread: FRunnableThread*
+
+FTaskThreadBase
+├─ IsStalled: FThreadSafeCounter
+├─ NewTasks: TArray<FBaseGraphTask*>
+└─ OwnerWorker: FWorkerThread*
+
+---
+---
+---
+
+LowLevelTasks::Tasks_Impl::FTaskBase
+├─ Runnable: LowLevelTasks::Tasks_Impl::FTaskBase::FTaskDelegate
+└─ PackedData: LowLevelTasks::Tasks_Impl::FTaskBase::FPackedDataAtomic
+
+---
+
+LowLevelTasks::FSchedulerTls::FTlsValues
+├─ ActiveScheduler: LowLevelTasks::FSchedulerTls*
+└─ LocalQueue: LowLevelTasks::Private::TLocalQueueRegistry<>::TLocalQueue*
+
+---
+---
+---
+
+LowLevelTasks::FScheduler
+├─ WaitingQueue: LowLevelTasks::Private::FWaitingQueue[2]
+├─ QueueRegistry: LowLevelTasks::Private::TLocalQueueRegistry<>
+├─ WorkerCreationCS: UE::FPlatformRecursiveMutex
+├─ WorkerThreadsCS: UE::FPlatformRecursiveMutex
+├─ WorkerThreads: TArray<FThread*>
+├─ WorkerLocalQueues: TAlignedArray<LowLevelTasks::Private::TLocalQueueRegistry<>::TLocalQueue>
+├─ WorkerEvents: TAlignedArray<LowLevelTasks::Private::FWaitEvent>
+├─ GameThreadLocalQueue: LowLevelTasks::Private::TLocalQueueRegistry<>::TLocalQueue*
+└─ OversubscriptionLimitReachedEvent: LowLevelTasks::FOversubscriptionLimitReached
+
+---
+
+LowLevelTasks::Private::TLocalQueueRegistry<NumLocalItems,MaxLocalQueues>
+├─ OverflowQueues: FAAArrayQueue<LowLevelTasks::FTask>[LowLevelTasks::ETaskPriority::Count]
+└─ LocalQueues: LowLevelTasks::Private::TLocalQueueRegistry<NumLocalItems,MaxLocalQueues>::TLocalQueue*[MaxLocalQueues]
+
+LowLevelTasks::Private::TLocalQueueRegistry<NumLocalItems,MaxLocalQueues>::TLocalQueue
+├─ LocalQueues: LocalQueue_Impl::TWorkStealingQueue2<LowLevelTasks::FTask,NumLocalItems>[LowLevelTasks::ETaskPriority::Count]
+├─ DequeueHazards: FAAArrayQueue<LowLevelTasks::FTask>::DequeueHazard[LowLevelTasks::ETaskPriority::Count]
+└─ Registry: TLocalQueueRegistry<NumLocalItems,MaxLocalQueues>*
+
+---
+
+FThread
+└─ Impl: FThreadImpl*
+
+FThreadImpl
+├─ Self: FThreadImpl*
+├─ ThreadFunction: TUniqueFunction<void()>
+├─ SingleThreadTickFunction: TUniqueFunction<void()>
+└─ RunnableThread: FRunnableThread*
+
+---
