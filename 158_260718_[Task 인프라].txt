@@ -542,3 +542,209 @@ FThreadImpl
 └─ RunnableThread: FRunnableThread*
 
 ---
+
+#include
+텍스트 복사-붙여넣기
+컴파일러는 .cpp 하나를 컴파일할 때 include된 헤더들을 전부 이어붙인 한 덩어리 텍스트(translation unit)를 본다
+
+어떤 타입의 멤버를 만지거나 크기를 알아야 하는 곳에서는 완전한 정의가 보여야 하고,
+포인터만 들고 있을 곳에서는 이름만(forward declaration) 보이면 된다
+
+---
+
+class FThreadImpl final : public FRunnable
+
+정의 전체가 구현 .cpp 파일 안에
+
+---
+
+FThread                        값 handle (공개 API)
+  └─ FThreadImpl (final)       수명·조율 로직 — 플랫폼 무관, 구현 1개
+       └─ TUniquePtr<FRunnableThread>   ← 여기가 다형성 seam
+                ├─ FRunnableThreadWin        (Windows: CreateThread 계열)
+                ├─ FRunnableThreadPThread    (pthread 계열: Mac/Linux/Android/iOS)
+                └─ FFakeThread               (-nothreading: 진짜 스레드 없이 Tick)
+
+---
+
+UE HAL의 정적 다형성
+컴파일 타임 해소
+
+Windows 빌드에는 Windows 구현만 컴파일되고, 
+FPlatformProcess라는 이름 자체가 
+플랫폼마다 다른 클래스로 갈아끼워지는 typedef
+
+FRunnableThread::Create()가 부르는 
+FPlatformProcess::CreateRunnableThread()는 
+Windows 빌드에선 FRunnableThreadWin을, 
+Unix 빌드에선 pthread 구현을 반환한다
+
+플랫폼 흡수의 1차 메커니즘은 virtual이 아니라 
+"플랫폼별 파일 선택 + typedef
+
+---
+
+Pimpl idiom
+
+public 객체는 "손잡이(handle)" — 얇고, 값처럼 들고 다니고 복사·이동하는 것
+숨은 객체는 "몸통(body)"
+
+compilation firewall
+body 내부를 바꿔도 그 변경이 #include 그래프를 타고 재컴파일로 번지지 않고 .cpp 안에 갇힌다
+Pimpl은 그 의존을 forward declaration로 끊는다
+
+---
+
+Pimpl의 비용
+
+inlining 무력화
+
+구현이 .cpp(opaque) 뒤라 컴파일러가 header 경계 너머로 accessor를 inline 못 한다. 
+사소한 getter가 진짜 함수 호출이 된다
+
+getter가 cpp에 정의돼 있으면 그 TU 안에서만 body가 보이고
+호출자는 header의 선언만 봐서 
+TU 경계를 넘는 실제 함수 호출을 emit할 수밖에 없다.
+
+---
+
+LTO(link-time optimization)
+
+linker가 TU 너머로 inline할 수 있어 getter body는 inline된다
+
+---
+
+UE::Tasks::Private::FTaskBase
+FTaskBase는 template(Launch<T>, TExecutableTask<T>)이 컴파일 시점에 봐야 해서
+header에 완전 정의로 노출될 수밖에 없다
+
+---
+
+Self
+
+FThread 생성 → OS thread 가 ThreadFunction() 실행 시작
+사용자가 Detach() 호출 → FThread::Impl.Reset() 로 handle 참조 즉시 해제
+만약 Impl 이 유일한 참조였다면 → FThreadImpl 이 지금 삭제됨
+
+FThread::Impl = "주인이 신경 쓰는 동안(handle을 쥔 동안)".
+Self = "thread가 실제로 도는 동안".
+
+주인이 먼저 놓을 수도(detach), 
+thread가 먼저 끝날 수도(그럼 Self가 먼저 풀리고 handle이 Join까지 붙잡음)
+
+refcount(TSharedPtr)가 "마지막 owner가 떠날 때 삭제"를 자동 처리
+
+---
+
+typedef struct _IO_FILE FILE;                 // 이름만. 본체 없음
+FILE*  fopen (const char*, const char*);      // 생성자
+size_t fread (void*, size_t, size_t, FILE*);  // 멤버 함수 (첫 인자 = handle)
+int    fclose(FILE*);                         // 소멸자
+
+opaque(불투명) 타입으로 노출
+실제 정의는 다른 곳(libc 내부)에 있어 못 본다
+
+FILE*만 들고 다니며 함수에 넘길 뿐, 멤버를 직접 만지지도 sizeof 하지도 못한다
+
+---
+
+UE::Tasks
+
+models computation as a dynamically built DAG
+
+---
+
+"completed" means the body has executed and all nested tasks have completed, 
+which is stronger than "the function returned"
+
+Edges are prerequisite → subsequent relations
+completion of a node unlocks its subsequents
+
+---
+
+thin Pimpl handle (TRefCountPtr)
+over a heap-allocated shared state, Private::FTaskBase, 
+which embeds a LowLevelTasks::FTask, the unit the scheduler actually runs
+
+Handles (FTask, TTask<T>, FTaskEvent) are cheap to copy and only add typed accessors
+
+---
+
+Launch(DebugName, Body, [Prerequisites], Priority, ExtendedPriority, Flags) → TTask<TInvokeResult_T<Body>>
+the single entry point. 
+
+FTask is the untyped handle; 
+TTask<T> adds GetResult() (blocks until completion, returns T&). 
+
+FTaskEvent is a body-less graph node you Trigger() manually — the recommended replacement for FEvent
+FPipe serializes its tasks (a lightweight substitute for a named thread)
+
+Combinators: Wait(Tasks), WaitAny(Tasks), Any(Tasks), plus AddNested, MakeCompletedTask, FCancellationToken, FTaskConcurrencyLimiter.
+
+---
+
+// fire-and-forget
+Launch(UE_SOURCE_LOCATION, [] { DoWork(); });
+
+---
+
+// result retrieval
+TTask<int> Sum = Launch(UE_SOURCE_LOCATION, [] { return 2 + 3; });
+int Value = Sum.GetResult();                     
+
+---
+
+// dependencies: C runs after A and B complete
+FTask        A = Launch(UE_SOURCE_LOCATION, [] { Prepare(); });
+TTask<FData> B = Launch(UE_SOURCE_LOCATION, [] { return LoadData(); });
+FTask        C = Launch(UE_SOURCE_LOCATION,
+                        [B]() mutable { Consume(B.GetResult()); },   // completed by now
+                        Prerequisites(A, B));
+
+---
+
+// manual gate in the graph
+FTaskEvent Ready{ UE_SOURCE_LOCATION };
+FTask D = Launch(UE_SOURCE_LOCATION, [] { AfterReady(); }, Prerequisites(Ready));
+Ready.Trigger();
+
+---
+
+// nested task: parent not completed until child is, but no worker blocks
+Launch(UE_SOURCE_LOCATION, []
+{
+    AddNested(Launch(UE_SOURCE_LOCATION, [] { SubStep(); }));
+});
+
+---
+
+// pipe: tasks never run concurrently → lock-free access to shared state
+FPipe Pipe{ TEXT("StreamerPipe") };
+Pipe.Launch(UE_SOURCE_LOCATION, [this] { Cache.Add(Item); });
+Pipe.Launch(UE_SOURCE_LOCATION, [this] { Cache.Flush(); });  // strictly after Add
+
+---
+
+// background priority, cooperative cancellation
+FCancellationToken Token;
+Launch(UE_SOURCE_LOCATION,
+       [&Token] { while (!Token.IsCanceled()) Step(); },
+       ETaskPriority::BackgroundNormal);
+Token.Cancel();
+
+---
+
+// bounded parallelism: ≤ 4 concurrent, Slot ∈ [0..4) indexes per-lane buffers
+FTaskConcurrencyLimiter Limiter(4);
+for (FChunk& Chunk : Chunks)
+    Limiter.Push(UE_SOURCE_LOCATION, [&Chunk](uint32 Slot) { Process(Chunk, Scratch[Slot]); });
+Limiter.Wait();
+
+---
+
+// combinators
+Wait(TArray<FTask>{ A, C, D });        // all completed
+int32 First = WaitAny(SomeTasks);      // index of first completed
+FTask AnyDone = Any(SomeTasks);        // node completing when any completes
+
+---
