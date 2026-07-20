@@ -1,0 +1,585 @@
+Engine이 core 수에 맞춰 worker thread(queue에서 일감을 꺼내 실행하는 상주 thread)들을 미리 만들어 두고, 
+사용자는 task만 던집니다.
+
+// LaunchEngineLoop.cpp
+FTaskGraphInterface::Startup(FPlatformMisc::NumberOfWorkerThreadsToSpawn())
+
+---
+
+기다림(blocking)을 dependency로 바꾼다.
+dependency는 실행 전 대기를 worker 점유 없이 표현
+
+thread가 잠들어 core를 놀리는 상황을 최대한 제거하는 것이 목표
+
+---
+
+Task 하나를 여러 주체가 동시에 ref
+
+사용자의 handle, 이 task를 prerequisite로 가진 다른 task들, pipe
+
+누구도 "이제 지워도 된다"를 단독으로 판단할 수 없으므로 reference counting
+FTaskBase는 counter를 객체 자신이 내장하는 intrusive 방식
+
+---
+
+FTaskBase가 node이고, edge를 양방향으로 저장
+
+Prerequisites
+내가 시작하기 전에 끝나야 하는 task들
+
+Subsequents
+내가 끝나면 깨워야 하는 task들
+
+---
+
+NumLocks
+
+다음 단계로 가기 전에 풀려야 할 자물쇠 수
+atomic: 여러 thread가 동시에 읽고 써도 중간의 어중간한 상태가 절대 보이지 않도록 보장되는 변수/연산
+
+---
+
+FTaskEvent
+
+body 없는 node
+"외부 사건"을 graph의 node로 표현
+
+c.f. OS event(FEvent)
+
+---
+
+EExtendedTaskPriority::Inline
+
+scheduler로 보내지 않고, 마지막 자물쇠를 푼 그 thread가 그 자리에서 즉시 실행
+
+---
+
+retraction(회수)
+
+task 안에서 다른 task를 기다리는 worker가, 기다리는 대상을 자기 손으로 실행
+대상이 prerequisite 때문에 잠겨 있으면 그 prerequisite들로 재귀합니다
+
+Retraction이 불가능하면(이미 다른 thread가 실행 중) 그때는 block하고, 
+완료 시 Close가 쏘는 event로 깨어납니다.
+
+---
+
+기다리는 자가 상류(prerequisite 방향)로 거슬러 올라가며, 
+아직 시작 안 된 일을 줄에서 거둬들여(retract) 제 손으로 실행
+
+`TrySetExecutionFlag()` CAS로 실행 권한을 획득
+
+---
+
+WorkerMain (내 event, 내 local queue)
+  WorkerLoop
+    while task = ( GameThread 의 local queue 에서 훔치기 
+                  ?? 내 local queue 에서 꺼내기          
+                  ?? global queue / 남의 queue 에서 steal )
+
+    loop:                          
+        next = 실행(task)          
+        if next == null: break
+        task = next                
+
+    if not 일했다:
+        1) 잠들 준비를 공표 (PrepareWait)
+        2) 그 사이 새 일이 왔는지 다시 확인
+        3) 정말 없으면 잠깐 spin 후 OS 수면 (CommitWait)
+            … 누군가 task 를 넣으며 깨울 때까지
+
+---
+
+while(true) { 찾고; 실행하고; 없으면 잔다 } 
+
+Dequeue()
+DequeueSteal()
+
+while (    TryExecuteTaskFrom<&FLocalQueueType::StealLocal>  (GameThreadLocalQueue.Get())
+        || TryExecuteTaskFrom<&FLocalQueueType::Dequeue>     (WorkerLocalQueue)
+        || TryExecuteTaskFrom<&FLocalQueueType::DequeueSteal>(WorkerLocalQueue)
+      )
+
+---
+
+GT가 쌓아둔 급한 일, 내 손 근처의 일부터 가장 먼 것(남의 queue)
+GT local → own local/전역 overflow → 다른 local steal
+
+---
+
+standby worker
+
+normal worker 수를 넘는 index는 standby로 표시
+별도 `StandbyLoop()` // <-> WorkerLoop
+
+oversubscription counter는 worker가 blocking scope에 들어갈 때 증가
+
+평소엔 자다가 다른 worker가 block될 때(oversubscription)만 투입되는 예비 인력
+
+
+---
+
+Heap (여기저기 흩어진, 서로를 포인터로 아는 작은 객체들)
+
+  ┌─ Task A 객체 ──────────┐    ┌─ Task B 객체 ──────────┐
+  │ RefCount   (atomic)    │    │ RefCount               │
+  │ NumLocks   (atomic)    │    │ NumLocks               │
+  │ Prereqs :  []          │◀───│ Prereqs :  [&A]        │   ← 배열 안의 포인터
+  │ Subs    :  [&B]        │───▶│ Subs    :  []          │     가 곧 "edge"
+  │ body / 결과 저장 공간  │    │ …                      │
+  └────────────────────────┘    └────────────────────────┘
+
+---
+
+thread 마다 하나씩 (TLS)
+  "지금 내가 실행 중인 task" 포인터, 
+  "내 local queue" 포인터
+
+---
+
+
+graph
+
+흩어진 task 객체들이 각자 품고 있는 두 개의 포인터 배열(Prereqs, Subs)이 이루는 
+관계의 총합
+
+관계는 `FTaskBase`들의 runtime pointer 목록에 분산
+실행/retraction 중 소비
+
+---
+
+쪽지 (Task) — 할 일 하나가 적혀 있습니다
+
+일꾼 (worker thread) — 쪽지를 집어서 실행하는 사람
+core 수만큼 미리 뽑아 둡니다
+
+쪽지 주머니와 쪽지 바구니 (queue)
+일꾼마다 자기 주머니(local queue)가 하나씩
+가운데에 공용 바구니(global queue)가 하나
+
+handle
+쪽지를 맡긴 사람이 받는 표
+나중에 "끝났나요?" 묻거나 결과를 받아갈 때 씁니다
+
+---
+
+FTaskBase::Subsequents 
+
+내가 끝나면 자물쇠를 풀어줘야 할 쪽지들
+
+---
+
+새 쪽지가 와서 "저도 명단에 적어주세요" 할 때
+
+FSubsequents::bIsClosed
+도장이 아직 없으면 → 적어준다,
+도장이 이미 있으면 → "끝났어, 그냥 가"
+
+---
+
+마지막 자물쇠를 풀어준 사람이, 그 쪽지를 자기 주머니에 넣는다.
+일을 끝낸 사람이, 뒷면 명단의 자물쇠들을 풀어준다.
+
+---
+
+worker loop의 최상위 첫 확인은 GT local queue다
+그 다음 `Dequeue()`가 own local → global
+마지막 `DequeueSteal()`이 타 worker local을 순회
+
+---
+
+retraction
+
+기다릴 쪽지를 아직 아무도 안 집었으면, 내가 뺏어서 직접 한다
+`NumLocks`의 execution permission CAS를 먼저 차지
+
+---
+
+FTaskEvent
+
+다운로드가 끝난 누군가가 종을 치면(Trigger), 
+종은 즉시 도장이 찍히고 뒷면 명단의 자물쇠들이 풀립니다
+
+---
+
+방금 그 쪽지의 마지막 자물쇠를 푼 사람
+일을 막 끝낸 일꾼
+쪽지를 새로 맡긴 game thread
+
+---
+
+전용 thread 방식:
+  오븐 thread:  [빵] ─── 3초 아무 일 없음 ─── [피자]
+                        이 thread 는 이 3초 동안 다른 일을 못 함
+
+pipe 방식:
+  일꾼2: [빵] → 끝. 완전 자유. → 딴 일 하러 감
+         … 3초 후 [피자] 등록 …
+  일꾼5: [피자] 집어감    ← 전혀 다른 사람
+
+Execution order is FIFO for tasks that don't have prerequisites.
+
+---
+
+pipe를 500개 만들어도 됩니다. 
+전용 thread 500개는 불가능
+
+`LastTask`, counters, event 등 가벼운 상태만 가진다
+
+---
+
+끼어들 때. 오븐 쪽지가 급하지 않으면 다른 급한 일이 먼저 갑니다
+다른 자물쇠가 섞일 때. 오븐 쪽지에 "재료 도착"이라는 자물쇠도 걸려 있으면, 재료를 도착시킨 그 사람이 이어받습니다
+
+named/background mismatch, standby, wake 정책에 따라 global/named queue로 갈 수 있다
+
+---
+
+pipe 안에서 "이 thread 전용 변수(thread local)"를 쓰면 안 됩니다. 
+다음 쪽지가 다른 thread에서 돌 수 있으니까
+
+---
+
+자물쇠 다 풀렸다 → 이 쪽지 어디로 보내지?
+   ├─ 표시 없음        → 푼 사람 주머니 (또는 바구니) → 아무 일꾼이나
+   └─ "render 전용" 표시 → render thread 전용 우편함  → 그 사람만
+
+
+anonymous task는 `FScheduler`
+named task는 TaskGraph `QueueTask()`로 분기
+
+`Inline`과 `TaskEvent`는 별도 shortcut
+
+---
+
+named thread (render thread)
+  자기 고유 업무 loop 를 돈다
+  내 전용 우편함만 확인해서 처리
+  훔치지 않고, 남이 내 우편함을 훔쳐가지도 못함.
+
+---
+
+주머니는 주인만 넣을 수 있게 만들어져 있습니다
+local queue의 enqueue/dequeue는 그 queue가 설치된 current thread만 수행
+
+다른 thread는 `Steal()`만
+
+---
+
+· 주머니가 없는 사람이 넣을 때   (외부 thread — file 읽는 thread 등)
+· 주머니가 꽉 찼을 때            (주머니 크기는 유한, 1024장)
+· 성격이 안 맞을 때              (foreground 일꾼이 background 쪽지를 만들면
+                                  → 바구니로. 그래야 background 일꾼이 찾음)
+· 주머니 주인이 사라질 때        (남은 쪽지를 바구니에 쏟고 감)
+
+---
+
+FScheduler 
+  WorkerLocalQueues   
+  WorkerEvents        
+  WorkerThreads       
+  QueueRegistry       
+  GameThreadLocalQueue
+
+함수를 실행하는 건 그것을 부른 사람의 thread
+호출 thread가 실행
+
+scheduler라는 행위자가 어딘가에서 돌고 있는 것이 아님
+
+FScheduler는 별도의 thread에서 도는 행위자가 아니라, 
+N개의 worker thread 위에서 동시에 도는 하나의 프로그램
+
+FScheduler
+자기가 소유한 모든 thread에 퍼져서 실
+
+---
+
+FScheduler::CreateWorker
+  FThread 를 만들며 body 로 넘기는 것: [this]{ FScheduler::WorkerMain(...); }
+
+---
+
+옛날 TaskGraph = 그래프 관리 + 익명 일꾼 pool + named thread 우편함
+                        │            │              │
+                        ▼            ▼              ▼
+지금:              UE::Tasks    LowLevelTasks    TaskGraph 에 남음
+                  (FTaskBase)   (FScheduler)     
+
+---
+
+쪽지 표시
+
+얼마나 급한가 / 어느 무리인가
+High, Normal | BackgroundHigh, BackgroundNormal, BackgroundLow
+foreground 일꾼 / background 일꾼
+
+---
+
+OS scheduler가 보는 속성
+
+"이 일은 덜 급하니 game/render thread에 core를 양보해라"를 
+OS에게 말하는 방법은 thread 우선순위를 낮추는 것
+
+---
+
+어디서 실행되는가
+
+None              ← 익명. 아무 일꾼이나.
+Inline            ← 아예 안 보냄. 자물쇠 푼 사람이 그 자리에서 즉시.
+TaskEvent         ← 실행할 게 없음 (종)
+GameThread…       ┐
+RenderThread…     ├─ 지명. 이 사람만.
+RHIThread…        ┘
+
+---
+
+Lock (문 잠그기)
+   A: 문 잠그고 들어감 ─── 안에서 작업 ─── 나오며 문 엶
+   B:        문 앞에서 기다림 (심하면 잠듦)
+   → A 가 멈추면 B 도 멈춤
+
+CAS (낚아채기)
+   A, B 동시에 손 뻗음 → 한 명만 잡음
+   진 사람: "아, 뺏겼네" 즉시 알고 딴 데로 감
+   → 아무도 기다리지 않음. 아무도 남을 막지 못함.
+
+---
+
+주머니는 칸이 늘어선 선반이고, 
+각 칸에는 쪽지 포인터 하나가 놓여 있습니다
+
+"이 칸에 아직 그 쪽지가 있으면, '가져감' 표시로 바꿔라."
+여럿이 동시에 말하면 한 명만 성공
+
+---
+
+칸마다 넉넉히 띄움       각 칸을 cache 단위 2배 크기로 정렬.
+                         옆 칸을 만지는 사람과 서로 방해하지 않게.
+
+`PLATFORM_CACHE_LINE_SIZE * 2` alignment
+인접 hot atomic 간 false sharing 완화
+
+---
+
+일꾼 창고 (FScheduler)
+
+안에 든 것: 주머니들 + 공용 바구니 + 일꾼 명부 + 깨우는 종
+받는 쪽지: 익명 쪽지
+
+---
+
+우편함 관리소 (TaskGraph)
+FTaskGraphCompatibilityImplementation
+
+안에 든 것: Game / Render / RHI 각각의 우편함
+받는 쪽지: 지명 쪽지
+
+---
+
+Game thread    ┐
+Render thread  ├─ 이름 있음. 자기 우편함을 처리
+RHI thread     ┘  
+
+---
+
+Foreground 일꾼 × N ┐
+Background 일꾼 × M ┘─ 익명. "쪽지 찾아 실행". 주머니 있음. 훔침.
+
+---
+
+그 외      thread     ─ 파일 읽는 thread 등. 쪽지를 맡기거나 기다릴 순 있지만
+                        일꾼은 아님. 주머니도 없음.
+
+---
+
+Launch(이름, 할 일, 앞 일들):
+  1. 쪽지 한 장 만들기        (자물쇠 개수 = 1 로 시작)
+  2. 할 일 내용을 쪽지에 복사
+  3. 앞 일들 각각에게: "네 명단에 나 좀 적어줘"
+       적힌 만큼 내 자물쇠 +1
+  4. 자물쇠 −1               ← 처음의 그 1 을 푸는 것
+
+만약 0으로 시작하면, 3번에서 앞 일을 하나씩 등록하는 도중에
+아직 두 번째 앞 일을 못 적었는데
+첫 번째 앞 일이 끝나버리면 쪽지가 튀어나가 실행돼 버립니다
+
+---
+
+GT local queue의 특별한 점은 GT 자신이 직접 pump하지 않으므로 launch 시 항상 wakeup하고, 
+worker들이 source 선택에서 가장 먼저 steal한다는 것
+
+일꾼들이 loop에서 제일 먼저 확인하는 곳이 GT의 주머니
+
+---
+
+"5번이 놀고 있네 → 5번한테 주자"고 결정하는 사이에 
+5번은 이미 다른 일을 잡았을 수 있습니다
+
+task는 current local/global에 enqueue되고
+waiting queue에는 단지 worker wakeup을 요청
+
+---
+
+내가 명부를 훑는 그 순간에도 다른 일곱 core는 계속 쪽지를 집고 끝내고 있습니다
+첫 줄을 읽고 마지막 줄에 닿았을 때, 첫 줄은 이미 다른 사실이 되어 있어요
+
+---
+
+각 core는 메모리의 사본을 자기 옆에 들고 일합니다(cache)
+그래서 같은 변수라도 core마다 다른 값을 보고 있을 수 있어요
+
+여러 core가 동시에 도는 세계에는 "지금 전체 상태"라는 것이 원리적으로 존재하지 않습니다
+동시 변화를 멈추지 않고 원자적인 전체 snapshot을 값싸게 얻을 수 없다
+
+모두에게 같은 값을 보이게 하려면 서로 사본을 뺏고 넘기는 비싼 절차가 필요
+멈춰 세우는 것 자체가 없애려던 것
+
+운동장에서 뛰노는 100명의 위치 목록을 적으면, 
+다 적었을 때 첫 줄은 이미 틀려 있습니다.
+
+---
+
+낡을 정보는 아예 만들지 않는다
+대신 "읽고 판단하고 행동"을 "손 뻗기" 한 동작으로 합칩니다.
+
+현황판 방식:  읽기 ─ 판단 ─ 행동     세 순간. 사이사이에 세상이 바뀜
+실제 방식:    손 뻗기                한 순간. 성공/실패가 곧 정보
+                                     낡을 틈이 물리적으로 없음
+
+---
+
+execution permission과 slot ownership은 
+CAS의 linearization point로 결정
+
+---
+
+객체는 스스로 움직이지 않습니다
+뭔가 일어났다면, 어떤 thread가 코드를 실행한 것
+
+지금 실행 중인 thread 가
+   "보내기" 라는 함수를
+   "이 쪽지" 를 가리키며
+   실행한다
+
+---
+
+함수를 실행하는 손(thread)
+
+읽는 법:
+   쪽지.보내기()          ← 코드 모양
+   "지나가던 thread 야, 이 쪽지를 창고에 갖다 놔"   ← 실제 뜻
+
+주어(누가 실행) : thread ─ 코드에 안 적혀 있음. 그냥 그때 거기 있던 사람
+
+member call syntax에는 실행 thread가 명시되지 않는다
+`LaunchInternal()`은 호출 thread의 TLS를 읽어 바로 그 thread의 local queue 사용 여부를 결정
+
+---
+
+통이 우선순위마다 하나씩 따로
+
+ETaskPriority:   0=High   1=Normal │ 2=BgHigh   3=BgNormal   4=BgLow
+
+주머니      : LocalQueues    [0] [1] [2] [3] [4]
+공용 바구니 : OverflowQueues [0] [1] [2] [3] [4]
+
+분류 시점 : Enqueue 할 때, priority 를 배열 index 로 사용     → 위치가 곧 분류
+
+---
+
+밀어주기 + 매칭
+  for each worker in workers:              ← 전체 worker 를 순회하는 누군가
+      if worker.CanIDoThisTask(task):      ← 판정 함수
+          worker.DoThisTask(task)          ← 배정
+
+각 worker 가 각자 자기 loop 안에서
+    for i in 0 .. 내상한:                ← 순회 대상이 worker 가 아니라 통
+        통[i] 에서 뭔가 나오면 실행      ← 판정 없음. 나오면 내 것.
+
+---
+
+편지를 받는 사람이 "이거 내 거 맞나?"를 판정하는 게 아니라, 
+넣는 사람이 이미 맞는 칸에 넣었고, 
+받는 사람은 자기 칸만 봅니다.
+
+---
+
+① 몸       : FThread 객체            — FScheduler 가 소유
+② 하는 일  : FScheduler::WorkerLoop  — FScheduler 가 소유하는 코드
+③ 소지품   : 그 thread 의 TLS + stack
+
+---
+
+Worker의 실체
+
+"이 일꾼이 누구인가"를 결정하는 정보(어느 주머니, 어느 무리)는 
+그 thread 자신의 TLS와 stack에
+
+---
+
+Low level
+
+이 층이 모르는 것의 목록이 있다는 신호
+
+LowLevelTasks에 없는 개념
+
+prerequisite / subsequent
+reference counting
+pipe                         
+nested task
+retraction
+
+---
+
+LowLevelTasks에 있는 것
+
+worker thread, local queue, overflow queue, work stealing,
+sleep/wake, OS thread priority, core affinity, oversubscription
+
+"언제 실행해도 되는가" = 위층
+"누가 언제 실행하는가" = 아래층
+
+---
+
+FTaskBase
+├─ 자물쇠 개수        아직 몇 개를 기다려야 하나
+├─ 뒷면 명단          내가 끝나면 풀어줄 쪽지들 + 도장 여부
+├─ 앞 일 목록         나를 막고 있는 쪽지들 (거슬러 올라갈 때 씀)
+├─ 붙잡은 사람 수     0 이 되면 지워짐
+├─ 소속 pipe          한 줄 서기에 속해 있다면 어느 줄
+├─ 지금 실행 중인 손  어느 thread 가 지금 이걸 돌리고 있나 // ThreadId; OS 가 모든 thread 에 매겨주는 정수
+├─ 깨우는 장치        기다리는 사람에게 알릴 때 씀
+├─ 할 일 내용         실제 lambda
+├─ 결과 놓을 자리     결과를 반환하는 쪽지라면
+└─ 손잡이      
+
+
+LowLevelTasks::FTask
+├─ 부를 함수 하나     내용: "큰 쪽지에게 돌아가서 실행하라고 해"
+├─ 상태 word 하나     상태 + 이름 + 급한정도 + 옵션을 한 칸에 욱여넣음
+└─ 여분 포인터 하나
+
+UE::Tasks::FTask
+사용자가 드는 영수증 (handle)
+
+namespace UE::Tasks
+{
+    using FTask = Private::FTaskHandle;
+}
+
+---
+
+Private::FTaskHandle  ← 공통 부모: 포인터 하나만 들고 있음, 별명: UE::Tasks::FTask
+   │                     
+   ├─ TTask<int>      + GetResult() → int&
+   ├─ TTask<void>     + GetResult() → 그냥 기다리기만
+   └─ FTaskEvent      + Trigger(), AddPrerequisites()
+
+---
+
+TTaskWithResult<ResultType>     
+    └─ TTypeCompatibleBytes<ResultType> ResultStorage
+
+T와 정확히 같은 크기·정렬을 가진 빈 byte 덩어리
+그리고 실행이 끝나는 순간
+그 빈 자리에 결과를 직접 지어 올림 (placement new)
