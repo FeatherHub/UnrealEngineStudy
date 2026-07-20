@@ -583,3 +583,230 @@ TTaskWithResult<ResultType>
 T와 정확히 같은 크기·정렬을 가진 빈 byte 덩어리
 그리고 실행이 끝나는 순간
 그 빈 자리에 결과를 직접 지어 올림 (placement new)
+
+---
+
+LowLevelTasks
+
+FTask, ETaskPriority, ETaskState, 
+FScheduler, FSchedulerTls, 
+TLocalQueue, TLocalQueueRegistry, TWorkStealingQueue2
+FWaitingQueue, FWaitEvent,
+TTaskDelegate
+
+---
+
+UE::Tasks
+
+FTask, 
+TTask<R>, 
+TTask<void>,
+FTaskEvent
+FPipe               
+FCancellationToken  
+
+---
+
+Launch()
+Wait()
+WaitAny()           여럿 중 하나라도 끝나면
+Any()               "여럿 중 하나"를 쪽지로 만들어 반환
+AddNested()         실행 중인 쪽지에 자식 붙이기
+Prerequisites()     앞 일 목록을 만드는 도우미
+MakeCompletedTask() 이미 끝난 상태의 쪽지 만들기
+FTaskPriorityCVar   콘솔 변수로 priority 를 바꿀 수 있게
+
+---
+
+UE::Tasks::FTask  
+"끝났어?" "결과 줘" "기다릴게"     ─ 조회와 대기
+모든 메서드가 "ptr 따라가서 시키기"
+
+물어볼 게 있으면 반드시 남에게 물어야 함 
+
+---
+
+FTaskBase
+
+atomic  refCount           # 붙잡은 사람 수
+atomic  numLocks           # 남은 자물쇠
+array   prerequisites      # 나를 막는 것들 (거슬러 갈 때 씀)
+array   subsequents        # 내가 풀어줄 것들
+bool    closed             # 도장
+Pipe*   pipe
+atomic  executingThreadId  # 지금 돌리는 thread 번호
+Lambda  body               
+Storage result             # 결과 자리
+LowLevelTask card          # 아래층 물건이 여기 박혀 있다
+
+---
+---
+---
+
+코어가 8개인데 thread가 1000개면 OS가 계속 갈아끼우느라 오히려 느려집니다
+thread는 8개만 만들어놓고 계속 재사용한다
+이 8명을 worker라고 부릅니다
+
+---
+
+순진한 답: 화면 그리기를 맡은 일꾼이, 물리가 끝날 때까지 기다린다
+
+기다리는 일꾼은 코어를 낭비합니다
+
+일꾼이 기다리게 하지 말고, 일 자체에 "아직 준비 안 됨" 표시
+준비 안 된 일은 목록에 아예 안 넣습니다
+
+---
+
+[화면 그리기]  ← 아직 목록에 없음. 어딘가에서 대기 중.
+                  "물리 1개를 기다리는 중" 이라고 적혀 있음
+
+물리가 끝나면 → 그때 목록에 들어감 → 아무 일꾼이나 집어감
+
+---
+
+numLocks
+자물쇠 개수
+
+"나는 3개를 기다리는 중"이라고 적어둘 자리가 필요
+하나 끝날 때마다 1씩 줄이고, 0이 되면 목록에 넣습니다.
+
+---
+
+subsequents
+
+물리 계산이 끝났을 때, "화면 그리기의 숫자를 줄여줘야 한다"는 걸 누군가는 알아야 합니다
+각 일이 "내가 끝나면 알려줄 일들"의 목록을 들고 있습니다
+
+---
+
+물리가 끝났을 때
+물리를 끝낸 그 일꾼이
+물리의 명단을 보고 → 화면그리기.숫자 -= 1
+→ 0 이 됐네 → 목록에 넣음
+
+---
+
+UE::Tasks::FTask
+
+handle
+
+표는 복사해도 됨. 표를 버려도 일은 끝까지 진행됨
+
+[표] ────▶ 실제 일 (heap 어딘가)
+           8 byte  크고 복잡함
+
+---
+
+retraction
+
+기다릴 일이 아직 아무도 안 집었으면, 내가 뺏어서 직접 한다
+
+---
+
+FTaskEvent
+
+"파일 로딩 같은 바깥 사건을 기다리려면?"
+
+내용이 텅 빈 가짜 일을 하나 만든다
+그걸 기다리게 걸어두고, 로딩이 끝난 쪽에서 "이제 끝났다고 쳐"라고 선언하게 합니다
+
+---
+
+FPipe
+
+그 자원을 쓰는 일들끼리 자동으로 앞뒤로 묶는다
+
+---
+
+UE::Tasks       ← 자물쇠, 명단, 결과, pipe, 종
+    │  "준비됐어" 하고 넘김
+    ▼
+LowLevelTasks   ← 일꾼, 목록, 잠자기·깨우기
+
+---
+---
+---
+
+어쩔 수 없이 잠드는 경우(파일 읽기 등)를 위한 장치
+예비 일꾼
+
+---
+
+TGraphTask  →  FBaseGraphTask  →  UE::Tasks::Private::FTaskBase
+
+---
+
+명령 하나당 task 하나가 너무 비싸기 때문
+한 프레임에 render command가 수천 개씩
+
+---
+
+UE::Tasks::Private::FTaskBase
+   ├─ UE::Tasks::Private::TTaskWithResult<R>
+   │     └─ UE::Tasks::Private::TExecutableTaskBase<L>
+   │           └─ UE::Tasks::Private::TExecutableTask<L>
+   ├─ UE::Tasks::Private::FTaskEventBase
+   └─ FBaseGraphTask
+
+---
+
+FTaskBase              "관계"만
+TTaskWithResult<R>     "+ 결과를 담을 수 있음"
+TExecutableTaskBase<L> "+ 실행할 내용이 있음"
+TExecutableTask<L>     "+ 싸게 할당됨"
+
+결과가 없는 일(void)은 결과 자리를 한 byte도 안 갖고, 
+종은 lambda 저장 공간을 아예 안 갖습니다
+
+---
+
+lost wakeup
+
+일꾼: "일 없네, 자야지"
+       ↓ (바로 이 사이에)
+누군가: 일을 넣고 "깨워!" 하고 종을 침
+       ↓
+일꾼: (종소리를 못 듣고) 잠듦 → 일이 있는데 아무도 안 함
+
+---
+
+그래서 잠드는 걸 두 단계로 나눕니다
+
+PrepareWait   "나 잘 준비 중이야" 를 장부에 등록
+              ↓
+              (한 번 더 목록 확인 — 이 사이에 들어온 일은 여기서 잡힘)
+              ↓
+CommitWait    잠깐 spin 하다가 진짜로 잠듦
+
+CancelWait    "어? 일 생겼네" — 준비를 취소
+              반환값이 true 면 "내가 종소리를 하나 삼켰을 수 있으니
+              대신 다른 일꾼을 깨워라"
+
+---
+
+LowLevelTasks::TTaskDelegate
+
+정해진 크기의 공간을 미리 갖고 있다가 그 안에 lambda를 직접 지어 넣습니다
+
+---
+
+LowLevelTasks::FReserveScheduler
+
+FWaitingQueue의 oversubscription으로 흡수
+
+---
+
+UE::FInheritedContextBase
+
+쪽지를 만들 때 : CaptureInheritedContext()   현재 문맥을 복사
+쪽지를 실행할 때: RestoreInheritedContext()   그 문맥을 되살림 (범위 안에서만)
+
+LLM 태그        메모리를 어느 시스템 몫으로 기록할지
+                (LLM = Low Level Memory tracker, UE 의 메모리 추적 시스템)
+
+메모리 태그     프로파일러용 메모리 분류
+메타데이터 스택  "어느 호출 경로에서 왔는가"의 흔적
+
+이런 게 없으면 프로파일러에서 모든 비용이 "일꾼 5번"으로 뭉뚱그려집니다.
+어느 시스템이 범인인지 알 수가 없어요
