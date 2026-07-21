@@ -1,0 +1,787 @@
+thread는 core 수에 맞춰 소수만 만들어 두고 재사용하며, 
+사용자는 thread가 아니라 "일(task)"을 던진다. 
+이 상주 thread들을 worker라고 부른다.
+
+---
+
+엔진 기동 경로(FEngineLoop 초기화)
+
+FTaskGraphInterface::Startup(FPlatformMisc::NumberOfWorkerThreadsToSpawn());
+
+이 수를 받아 LowLevelTasks::FScheduler::StartWorkers가 worker를 두 무리로 나눈다.
+foreground worker는 1~2명, 나머지는 전부 background worker
+
+여기에 5.6은 oversubscription 비율만큼의 예비 인력(standby worker)을 더 만들어 둔다.
+
+---
+
+화면 그리기 task가 물리 계산을 기다려야 한다고 하자. 
+순진한 답은 "그리기를 맡은 worker가 물리가 끝날 때까지 기다린다"이다. 
+그러나 기다리는 worker는 core 하나를 차지한 채 아무 일도 하지 않는다. 
+병렬도가 (core 수 − 1)로 떨어지고, blocking이 core에 빈 구멍을 낸다.
+
+---
+
+기다림(blocking)을 dependency로 바꾼다.
+준비 안 된 일은 실행 목록에 아예 넣지 않는다.
+
+worker를 기다리게 하는 대신, 일 자체에 "아직 준비 안 됨" 표시를 달아 둔다.
+준비 안 된 task는 어떤 queue에도 없다. 
+물리가 끝나는 순간 그리기 task가 queue에 들어가고, worker가 집어간다. 
+
+---
+
+queue 안에 있다 ⟺ 잠금 수가 0 ⟺ 모든 의존이 충족됨
+                ⟺ 지금 아무 worker가 실행해도 안전함
+
+---
+
+steal, 우선순위 등은 "이 준비된 task를 누가 실행하느냐"만 바꿀 뿐, 
+실행해도 되는가는 queue에 들어오는 순간 이미 결정돼 있다.
+
+---
+
+옛날의 TaskGraph는 세 가지 일을 한 몸에 담고 있었다. 
+지금은 그 세 역할이 분리되어 있고, 옛 이름은 호환층으로 남아 있다.
+
+옛 TaskGraph = 그래프 관리 + 익명 worker pool + named thread 우편함
+                    │              │                  │
+                    ▼              ▼                  ▼
+지금:           UE::Tasks      LowLevelTasks      TaskGraph에 잔류
+               (FTaskBase)     (FScheduler)    (Game/Render/RHI 우편함
+                                                 TGraphTask 호환 API)
+
+---
+
+"언제 실행해도 되는가"를 아는 것  = 위층 (UE::Tasks)
+"누가 언제 실행하는가"를 아는 것  = 아래층 (LowLevelTasks)
+
+---
+
+LowLevelTasks에는 prerequisite, subsequent, reference counting, pipe, nested task, retraction이 전부 없다. 
+
+그 층에 있는 것은 worker thread, local queue, overflow queue, work stealing, sleep/wake, OS thread priority, oversubscription
+실행에 관한 것들뿐
+
+관계에 대한 지식은 전부 위층 UE::Tasks
+
+---
+
+heap에 흩어진 작은 객체들 (UE::Tasks::Private::FTaskBase)
+각 객체가 품은 두 개의 포인터 배열이 edge 
+
+graph란 이 분산된 포인터 목록의 총합, 
+실행과 retraction 과정에서 소비되어 사라진다.
+
+---
+
+┌─ Task A ───────────────┐      ┌─ Task B ───────────────┐
+│ RefCount   (atomic)    │      │ RefCount               │
+│ NumLocks   (atomic)    │      │ NumLocks               │
+│ Prereqs :  []          │◀─────│ Prereqs :  [&A]        │ 
+│ Subs    :  [&B]        │─────▶│ Subs    :  []          │    
+└────────────────────────┘      └────────────────────────┘
+
+배열 안의 포인터가 edge
+
+---
+
+Prerequisites는 "내가 시작하기 전에 끝나야 하는 것들"
+(상류로 거슬러 갈 때, retraction에)
+
+Subsequents는 "내가 끝나면 깨워야 할 것들"
+(완료 전파)
+
+---
+
+UE::Tasks::Private::FTaskBase
+
+├─ RefCount              0이 되면 삭제 (intrusive)
+├─ NumLocks              남은 자물쇠 수 
+├─ Prerequisites         나를 막는 것들의 목록 (+ mutex, inline 1칸)
+├─ Subsequents           내가 풀어줄 것들의 목록 + 도장(bIsClosed)
+├─ Pipe*                 한 줄 서기에 속해 있다면 어느 줄인지
+├─ ExecutingThreadId     지금 어느 thread가 나를 돌리고 있는지 (OS thread id)
+├─ StateChangeEvent      기다리는 사람을 깨울 장치 (FEventCount)
+├─ ExtendedPriority      Inline / TaskEvent / named thread 지명 표시
+└─ LowLevelTasks::FTask  아래층의 실행 단위가 이 객체 안에 박혀 있다
+
+---
+
+body와 결과 저장 공간은 UE::Tasks::Private::FTaskBase에 없다. 
+
+FTaskBase                  관계만 안다
+└─ TTaskWithResult<R>       + 결과를 담을 자리 (TTypeCompatibleBytes<R>)
+    └─ TExecutableTaskBase  + 실행할 내용 (TTypeCompatibleBytes<Body>)
+      └─ TExecutableTask    + 값싼 할당 (small task allocator)
+└─ FTaskEventBase          body 없는 종
+└─ FBaseGraphTask          옛 TaskGraph 호환 (TGraphTask의 부모)
+
+---
+
+TTypeCompatibleBytes<R>은 R과 크기·정렬이 같은 빈 byte 덩어리다. 
+task가 만들어질 때 결과는 아직 없으므로 자리만 잡아 두고, 
+실행이 끝나는 순간 그 자리에 placement new로 결과를 지어 올린다. 
+
+결과가 없는(void) task는 이 자리를 한 byte도 갖지 않도록 특수화
+
+body는 실행 직후 즉시 파괴된다(캡처된 자원의 수명을 위해).
+
+---
+
+완성된 task 객체가 256 byte 이하면 lock-free fixed-size allocator (thread별 cache 포함)에서 꺼내 쓰고, 
+넘으면 일반 malloc으로 간다.
+
+FTaskEventBase는 크기가 고정이므로 전용 fixed-size allocator를 따로 쓴다.
+task는 수만 개씩 만들어지고 버려지므로, 할당이 싸야 시스템이 성립한다.
+
+---
+
+NumLocks는 "다음 단계로 가기 전에 풀려야 할 자물쇠 수"를 담는 atomic 정수
+
+atomic
+여러 thread가 동시에 읽고 써도 중간 상태가 보이지 않음이 보장되는 변수
+
+---
+
+최상위 bit(ExecutionFlag)가 꺼져 있는 동안 NumLocks는 "실행을 막는 자물쇠"
+아직 안 끝난 prerequisite 수
+
+실행이 시작되는 순간 이 bit가 켜지고,
+그때부터 NumLocks는 "완료를 막는 자물쇠" 
+즉 아직 안 끝난 nested task 수가 된다.
+
+---
+
+실행 권한 획득
+이 bit를 켜는 CAS
+
+TrySetExecutionFlag():  NumLocks를 0 → ExecutionFlag+1 로 CAS
+성공한 단 하나의 thread만 body를 실행할 수 있다
+
+값이 0일 때만 성공하므로 
+"모든 자물쇠가 풀렸을 때, 단 한 명만"이 한 번의 원자적 동작으로 보장된다. 
+
+---
+
+task를 만들어 던지는 절차
+
+Launch(이름, body, 앞 일들)
+  1. task 객체 생성. NumLocks = 1 로 시작
+  2. body를 객체 안 저장 공간에 이동 구성
+  3. 앞 일들 각각에게 "네 Subsequents 명단에 나를 적어줘"
+     적힐 때마다 내 NumLocks += 1
+  4. NumLocks −= 1        
+
+1로 시작하는 이유는 등록 절차 자체를 보호하기 위해
+0으로 시작하면 3번에서 첫 번째 앞 일을 적자마자 그 앞 일이 끝나 버렸을 때, 
+아직 두 번째 앞 일을 적지도 않았는데 자물쇠가 0이 되어 task가 튀어나가 실행돼 버린다. 
+
+---
+
+prerequisite
+상대의 명단에 적기를 시도
+상대가 이미 끝나 등록이 거부될 수도 있음
+
+---
+
+Subsequents 명단에는 도장(bIsClosed)이 있다. 
+
+새 task가 "저도 명단에 적어주세요"라고 왔을 때 
+도장이 아직 없으면 적어 주고, 이미 찍혔으면 "끝났어, 그냥 가"라며 거절한다
+이 확인과 등록은 짧은 mutex 임계구역으로 원자화되어 있다.
+
+---
+
+task를 끝낸 worker가 Subsequents 명단을 닫고(도장 찍기), 
+명단에 있던 각 task의 자물쇠를 하나씩 푼다. 
+
+어떤 task의 마지막 자물쇠를 푼 사람이 그 task를 queue에 넣는다. 
+
+스케줄러라는 제3자가 개입하지 않고, 완료라는 사건이 연쇄의 동력이 된다.
+
+---
+
+IsCompleted는 "Subsequents가 닫혔는가"
+이는 body 함수가 반환됐다보다 강한 조건이다. 
+body가 반환됐어도 nested task가 남아 있으면 아직 완료가 아니다.
+
+---
+
+UE::Tasks::FTask
+포인터 하나짜리의 얇은 객체
+TRefCountPtr<FTaskBase> Pimpl
+
+[FTask]  ────▶  실제 일 (heap 어딘가의 FTaskBase)
+8 byte          크고 복잡함
+
+Private::FTaskHandle       Alias of UE::Tasks::FTask
+  ├─ TTask<R>              + GetResult() — 완료를 기다린 뒤 R& 반환
+  ├─ TTask<void>           + GetResult() — 그냥 기다리기만
+  └─ FTaskEvent            + Trigger()
+
+---
+
+task 하나를 동시에 붙잡는 주체
+사용자의 handle(들), 
+이 task를 prerequisite로 가진 다른 task들, 
+소속 pipe,
+scheduler 내부 참조
+
+누구도 "이제 지워도 된다"를 단독으로 판단할 수 없으므로 
+reference counting이 필요
+
+counter는 객체 자신이 내장한다(intrusive). 
+
+---
+
+worker 
+FThread 객체(FScheduler 소유)
+
+FScheduler::WorkerLoop(FScheduler가 소유한 코드)
+
+소지품은 그 thread의 TLS와 stack
+(어느 주머니를 갖고 있고 어느 무리 소속인가)는 TLS에 있다
+
+활성 scheduler 포인터, local queue 포인터, foreground/background 여부, standby 여부, 
+"지금 실행 중인 task" 포인터
+
+---
+
+FScheduler::CreateWorker가 FThread를 만들며 body로 넘기는 것은 [this]{ WorkerMain(...); }
+
+WorkerMain은 TLS를 세팅한 뒤
+일반 worker면 WorkerLoop로, standby worker면 StandbyLoop로 들어간다.
+
+---
+
+FScheduler
+    WorkerLocalQueues     worker마다 하나씩 주는 개인 주머니 (local queue)
+    QueueRegistry         우선순위별 공용 바구니 (overflow/global queue) + 주머니 명부
+    GameThreadLocalQueue  game thread 전용 주머니
+    WorkerEvents          worker마다 하나씩의 깨우는 장치
+    WaitingQueue × 2      foreground용 / background용 "잠든 사람 명부"
+
+---
+
+주머니의 규칙: 주인만 넣고 뺄 수 있다. 다른 thread는 Steal()만 할 수 있다.
+
+---
+
+공용 바구니(overflow queue)로 가는 경우
+
+주머니가 없는 thread가 넣을 때 (파일 읽는 thread 등 외부 thread)
+주머니가 꽉 찼을 때, 
+성격이 안 맞을 때(foreground worker가 background task를 만들면 바구니로), 
+주머니 주인이 사라질 때(남은 쪽지를 바구니에 쏟고 간다)
+
+---
+
+쪽지에는 "얼마나 급한가 / 어느 무리인가"가 적힌다.
+
+ETaskPriority:  High, Normal │ BackgroundHigh, BackgroundNormal, BackgroundLow
+                (foreground 영역)      (background 영역)
+
+주머니도 바구니도 이 다섯 우선순위마다 통이 따로 있다. 
+분류는 넣는 순간 priority를 배열 index로 쓰는 것으로 끝난다
+위치가 곧 분류
+
+꺼내는 쪽은 0번 통부터 차례로 볼 뿐 판정 로직이 없다. 
+foreground worker는 앞의 두 통만 보고, 
+background worker는 다섯 통을 다 본다
+(그래서 background worker는 foreground 일을 도울 수 있지만 역은 안 된다)
+
+---
+
+편지를 받는 사람이 "이거 내 거 맞나"를 판정하는 게 아니라, 
+넣는 사람이 이미 맞는 칸에 넣었고 받는 사람은 자기 칸만 본다.
+
+---
+
+worker: "일 없네, 자야지"
+          ↓  (바로 이 틈에)
+누군가:  일을 넣고 "깨워!" 종을 침
+          ↓
+worker: (종소리를 못 듣고) 잠듦  →  일이 있는데 아무도 안 한다
+
+확인("일 없다")과 행동("잔다") 사이의 틈
+
+---
+
+그래서 잠들기를 두 단계로 쪼갠다
+
+PrepareWait   "나 잘 준비 중" 을 잠든 사람 명부(WaitingQueue)에 등록
+      ↓
+(queue를 한 번 더 확인 — 등록과 확인 사이에 들어온 일은 여기서 잡힌다)
+      ↓
+CommitWait    잠깐 spin 하다가 진짜로 OS 수면
+CancelWait    "어? 일 생겼네" — 준비 취소. 
+
+등록을 먼저 해 두면, 그 뒤에 일을 넣는 쪽은 명부에서 나를 발견하고 깨울 수 있다. 
+즉 "확인 → 잠"의 틈이 "등록 → 확인 → 잠"으로 바뀌면서, 
+틈에 들어온 일은 두 번째 확인에 걸리고, 
+두 번째 확인 이후에 들어온 일은 명부를 보고 나를 깨운다. 
+
+---
+
+바로 잠들지 않고 잠깐 spin하는 이유는 sleep → wakeup 왕복에 µs 단위 비용
+
+잠들기 전 spin 횟수는 53, 
+worker마다 다른 소수(719, 991, 1361, ...)를 대기 주기로 주어 
+여럿이 같은 박자로 깨어나 부딪히는 일을 줄인다.
+
+---
+
+"5번이 놀고 있네, 5번한테 주자"는 설계는 왜 없는가. 
+
+내가 명부를 훑고 결정하는 사이에 5번은 이미 다른 일을 잡았을 수 있다. 
+여러 core가 동시에 도는 세계에는 "지금 전체 상태"라는 것이 없다. 
+
+그래서 이 시스템은 낡을 정보를 아예 만들지 않는다. 
+task는 그냥 queue에 넣고, WaitingQueue에는 "누구든 하나 깨워 달라"는 요청만 한다. 
+깨어난 worker가 스스로 일을 찾는다. 
+
+---
+
+원칙은 "기다림을 dependency로"
+코드가 Task.Wait()나 GetResult()를 부르는 순간
+곧장 잠들지 않고 방어선을 차례로 친다. 
+
+Wait(task)
+  1) retraction 시도  — 기다릴 일을 내 손으로 직접 한다
+  2) 짧은 spin        — 40회 한도로 yield하며 완료를 엿본다
+  3) PrepareWait      — 완료 통지 명부에 등록하고, 한 번 더 확인
+  4) OS 수면          — task의 Close가 쏘는 신호(StateChangeEvent)로 깨어남
+
+---
+
+TryRetractAndExecute
+  ① 대상이 아직 prerequisite에 잠겨 있으면, 그 prerequisite들로 재귀한다
+  ② 대상의 실행 권한을 CAS로 낚아챈다 (TrySetExecutionFlag)
+      queue 어딘가에 이미 들어가 있어도 상관없다. 
+      실행 권한은 queue가 아니라 이 CAS가 결정
+      나중에 worker가 그 쪽지를 꺼내도 권한 획득에 실패
+  ③ 이겼으면 그 자리에서 실행한다. 실행이 낳은 nested task들도 재귀로 거둬들인다
+  ④ 졌으면(이미 다른 thread가 실행 중) 포기하고 다음 방어선으로 넘어간다
+
+---
+
+"A를 기다린다"가 "A를 내가 해치운다"로 바뀌므로, 
+기다림이 병렬도를 깎는 대신 오히려 일손을 보탠다.
+
+---
+
+retraction이 실패하고(남이 실행 중) spin에도 안 끝나면 결국 OS 수면
+이때 core에 빈 구멍이 생기는 문제로 되돌아온다. 
+
+
+실행인력을 "잠든 사람이 생기는 동안만" 초과 편성한다. 
+이것이 oversubscription
+
+---
+
+엔진의 blocking 지점들(플랫폼 event 대기, sleep 등)에는 
+FOversubscriptionScope라는 표시가 심어져 있다. 
+
+worker가 그런 구간에 들어가면 카운터가 올라가고,
+WaitingQueue는 예비 인력을 투입한다
+
+---
+
+OS에게 양보를 표현하는 언어 = thread 우선순위
+
+background 무리는 OS thread 우선순위를 낮춰 
+game/render thread에 core를 양보한다. 
+
+---
+
+Nested task — 완료를 미루되, 아무도 막지 않는다
+
+task 안에서 하위 작업을 만들고 "부모는 자식이 다 끝나야 완료"로 만들고 싶을 때, 
+부모 body 안에서 자식을 Wait하면 worker가 막힌다. 
+대신 AddNested를 쓴다.
+
+자식이 부모의 완료 자물쇠(ExecutionFlag가 켜진 뒤의 NumLocks)를 하나 걸고,
+부모의 Subsequents 도장은 자식이 다 끝날 때까지 찍히지 않는다. 
+
+부모 body는 그냥 반환하고 worker는 다음 일로 간다. 
+
+---
+
+Inline — 아예 보내지 않기
+
+아주 작은 일은 queue를 오가는 비용조차 아깝다. 
+EExtendedTaskPriority::Inline로 만든 task는 scheduler로 보내지 않는다. 
+
+마지막 자물쇠를 푼 바로 그 thread가 그 자리에서 즉시 실행한다. 
+(이때도 실행 권한 CAS는 거친다 — retraction이 끼어들었을 수 있으므로.)
+
+---
+
+FTaskEvent — 바깥 사건을 graph의 node로
+
+파일 로딩, GPU 신호, 네트워크 도착처럼 task가 아닌 "외부 사건"을 기다리려면
+body 없는 task를 하나 만든다. 
+다른 task들이 이것을 prerequisite로 걸어 두고, 
+사건이 일어난 쪽에서 종을 친다.
+
+FTaskEvent Ready{ UE_SOURCE_LOCATION };
+FTask After = Launch(UE_SOURCE_LOCATION, []{ AfterReady(); }, Prerequisites(Ready));
+
+Ready.Trigger();   // 도장이 찍히고, 명단의 자물쇠들이 풀린다
+
+---
+
+FTaskEvent는 OS event(FEvent)의 권장 대체물
+FEvent를 기다리면 thread가 잠들지만, 
+FTaskEvent를 prerequisite로 걸면 아무 worker도 잠들지 않는다
+
+기다림이 또 한 번 dependency로 바뀐 것이다.
+
+---
+
+FPipe
+
+공유 자원(cache, 장치, 상태 기계)을 만지는 task들은 동시에 돌면 안 된다.
+고전적 답은 전용 thread지만, 전용 thread는 일감 사이의 공백에도 core 예약을 붙들고 있다.
+
+전용 thread 방식:
+  오븐 thread:  [빵] ─── 3초 아무 일 없음 ─── [피자]
+                이 thread는 그 3초 동안 다른 일을 못 함
+
+pipe 방식:
+  worker 2: [빵] → 끝. 완전 자유. → 딴 일 하러 감
+            … 3초 후 [피자] 등록 …
+  worker 5: [피자] 집어감          ← 전혀 다른 사람
+
+---
+
+FPipe는 "그 자원을 쓰는 task들끼리 자동으로 앞뒤로 묶는" 장치
+
+pipe가 기억하는 것은 마지막 task 포인터(LastTask)
+새 task가 pipe에 들어오면 이전 task의 Subsequents에 자신을 등록하고 자신이 새 LastTask가 된다 
+이전 task는 새 task의 Prerequisites에도 기록되므로 pipe에 걸린 task 역시 retraction이 된다.
+
+---
+
+Named thread — 지명된 우편함
+
+지명은 EExtendedTaskPriority로 표현된다 (GameThreadHiPri, RenderThreadNormalPri 등)
+
+자물쇠가 다 풀렸다 → 이 task를 어디로 보낼까?
+    ├─ 표시 없음(None)      → 푼 사람의 주머니 or 바구니 → 아무 worker나
+    ├─ Inline               → 보내지 않음. 그 자리에서 즉시 (6.4)
+    ├─ TaskEvent            → 실행할 것 없음. 곧장 Close
+    └─ named thread 지명    → TaskGraph의 해당 우편함 → 그 thread만
+
+---
+
+Schedule은 지명 task를 FTaskGraphInterface::QueueTask로 넘기고, 
+호환 구현(named thread별 우편함과 그 처리 loop)이 이어받는다. 
+
+named thread는 자기 우편함만 확인하며, 훔치지 않고 훔쳐가지도 못한다. retraction도 적용되지 않는다. 
+
+옛 API의 TGraphTask는 FBaseGraphTask를 거쳐 FTaskBase를 상속하므로, 
+신구 시스템의 task가 서로의 prerequisite가 될 수 있다
+두 세계는 같은 node 타입을 공유한다.
+
+---
+
+같은 메모리를 여러 thread가 맨손으로 만지면 깨진다. 
+counter++ 한 줄도 CPU에겐 읽고-고치고-쓰는(RMW) 세 단계이고, 그 사이에 남이 끼어든다. 
+고전적 해법인 lock(mutex)은 임계구역에 한 번에 한 thread만 들이는 것인데, 
+충돌이 없을 때조차 비용을 물고, lock을 쥔 자가 멈추면 기다리는 모두가 멈춘다.
+
+Lock (문 잠그기)                      CAS (낚아채기)
+A: 잠그고 들어감 ─ 작업 ─ 나옴        A, B 동시에 손 뻗음 → 한 명만 잡음
+B: 문 앞에서 기다림 (심하면 잠듦)     진 사람: 즉시 알고 딴 데로 감
+→ A가 멈추면 B도 멈춤                 → 아무도 기다리지 않음
+
+---
+
+CAS(compare-and-swap)는 CPU 명령 하나로 
+"값이 내가 본 그대로면 바꾸고, 아니면 알려 달라"를 수행한다. 
+
+낙관적 동시성(optimistic concurrency)의 도구
+
+문서 편집으로 비유하면: 아무도 문서를 잠그지 않고 각자 자유롭게 고친 뒤, 
+저장하는 순간에만 "아직 버전 5 맞아?"를 확인한다. 맞으면 커밋, 
+그새 남이 저장해서 6이 됐으면 실패 — 새 현실을 다시 읽고 재시도.
+
+expected는 "내가 시작할 때 본 스냅샷"이고, 성공은 "내 전제가 끝까지 유효했다"
+그래서 CAS는 늘 재시도 loop와 짝을 이룬다.
+
+---
+
+평범한 코드로 "확인하고 → 그에 맞춰 행동"을 하면 확인과 행동 사이에 세상이 바뀌는 틈이 생긴다
+(TOCTOU, time-of-check-to-time-of-use)
+
+CAS는 확인과 행동을 한 명령으로 융합해 그 틈을 0으로 만든다. 
+
+---
+
+각 core의 cache는 coherence protocol(MESI 계열)로 일관성을 맞추고, 
+atomic RMW 명령은 해당 cache line을 명령이 끝날 때까지 독점해 
+load-modify-store가 쪼개지지 않게 한다
+(옛날엔 bus 전체를 잠갔고, 지금은 cache line 하나만 잠근다). 
+
+부작용
+
+서로 다른 thread가 자주 만지는 두 atomic 변수가 같은 cache line에 있으면, 
+논리적으로 무관해도 물리적으로 서로를 밀어낸다 (false sharing). 
+
+"칸마다 cache line × 2 정렬"이 이것의 방지책이다.
+
+---
+
+futex(fast userspace mutex)
+
+"값이 바뀔 때까지 잠들었다 깨어나기"는 CAS로 안 된다
+
+thread를 재우고 깨우는 것은 scheduler의 권한, 즉 커널만 할 수 있다. 
+
+경합이 없는 흔한 경우엔 유저 메모리의 int 하나에 대한 CAS로 끝내고
+(커널 개입 0, ns 단위), 
+
+진짜 경합할때만 syscall로 잠들고 깨운다. 
+
+비유하면: 빈 방이면 걸쇠만 딸깍, 누가 안에 있으면 그제야 관리인(커널)에게 
+"끝나면 깨워 달라"고 명단에 올리고 잔다. 
+
+---
+
+커널은 thread마다 제어 블록 (TCB) 하나를 갖는다(Linux의 task_struct, Windows의 ETHREAD/KTHREAD)
+그 안에 thread ID, 안 돌고 있을 때 저장해 둔 register 상태(재개용), 
+scheduling 정보(우선순위, running/ready/blocked, 어느 queue에 있나), kernel stack 포인터,
+소속 process 주소공간 포인터가 들어 있다. 
+
+유저 쪽은 그 커널 객체를 가리키는 handle/ID를 들 뿐이다(pthread_t, Windows HANDLE)
+
+---
+
+생성 비용 내역
+
+커널 객체와 kernel stack(8~16 KB) 할당, TID 배정, scheduler 등록. 
+user stack은 기본 예약이 크지만(Linux 8 MB, Windows 1 MB) 
+가상 주소만 예약되고 물리 page는 처음 건드릴 때 page fault로 lazy하게 채워진다. 
+
+여기에 TLS 초기화(모든 thread_local 변수 몫), 라이브러리 부기, 
+그리고 새 thread의 cold start(code·data·TLB가 차가움)가 붙는다. 
+
+이 비용을 매번 내지 않으려고 worker를 만들어 두고 재사용
+
+---
+
+FThread                         값 handle (공개 API, 얇음)
+  └─ FThreadImpl (final)        수명·조율 로직. 정의 전체가 구현 파일 안
+        └─ FRunnableThread      플랫폼 다형성의 이음새
+            ├─ Windows 구현 (CreateThread 계열)
+            ├─ pthread 구현 (Mac/Linux/Android/iOS)
+            └─ FFakeThread  (-nothreading: thread 없이 Tick으로 흉내)
+
+---
+
+Pimpl idiom
+
+공개 객체는 포인터 하나를 든 손잡이고 
+몸통은 구현 파일 뒤에 숨는다. 
+
+HAL의 정적 다형성
+
+FPlatformProcess 같은 이름 자체가 플랫폼마다 다른 클래스로 갈아끼워지는 typedef
+Windows 빌드에는 Windows 구현만 컴파일된다
+
+플랫폼 흡수의 1차 수단은 virtual이 아니라 "플랫폼별 파일 선택 + typedef"이고, 
+virtual dispatch는 FRunnableThread라는 좁은 이음새에만 남는다.
+
+---
+
+CaptureInheritedContext
+RestoreInheritedContext
+
+메모리 추적(LLM) 태그, 프로파일러 메타데이터
+이것이 없으면 프로파일러에서 모든 비용이 "Worker 5"로 뭉뚱그려져 
+어느 시스템이 범인인지 알 수 없게 된다.
+
+---
+
+협조적 취소
+  FCancellationToken Token;
+  Launch(UE_SOURCE_LOCATION,
+          [&Token]{ while (!Token.IsCanceled()) Step(); },
+          ETaskPriority::BackgroundNormal);
+  Token.Cancel();
+
+---
+
+
+조합
+  Wait(TArray<FTask>{ A, C, D });     // 전부 완료까지 
+  int32 First = WaitAny(SomeTasks);   // 하나라도 완료되면 그 index
+  FTask AnyDone = Any(SomeTasks);     // "여럿 중 하나"를 node로 만들어 반환
+
+---
+---
+---
+---
+---
+---
+
+lambda는 컴파일러가 만든 이름 없는 class
+
+캡처한 변수들이 member 변수가 되고, 함수 몸통이 operator()
+
+auto L = [A, &B](){ return A + B; };
+
+// 컴파일러가 만드는 것 (개념적으로)
+class __Lambda_xyz
+{
+    int  A;      // 값 캡처 → 복사본 member
+    int& B;      // 참조 캡처 → 참조 member
+public:
+    int operator()() const { return A + B; }
+};
+
+즉 "lambda를 저장한다"는 말은 이 익명 class의 instance를 어딘가에 둔다는 뜻
+
+지역 변수로 두면 stack에, new로 만들면 heap에 놓인다.
+
+---
+
+lambda의 타입을 가르는 것 
+  캡처 목록이 다르면 다른 class
+
+---
+  
+type erasure
+std::function이 그 대표
+
+내부는 callable 객체를 담을 공간 
+(작으면 내장 buffer에 직접 짓고 — SBO, small buffer optimization
+크면 heap에 두고 포인터만 든다)
+
+그것을 부르는 법을 아는 함수 포인터(invoker)
+
+"복사/이동/파괴하는 법"을 아는 함수 포인터(manager)
+
+타입은 지워졌지만 다루는 법은 함수 포인터로 남는다.
+
+---
+
+    class UE::Tasks::Private::FTaskBase    // 관계·상태만
+    └─ class TTaskWithResult<ResultType>   // 결과 저장
+       └─ class TExecutableTaskBase<TaskBodyType, ResultType>
+          └─ class TExecutableTask<TaskBodyType>
+
+    └─ class FTaskEventBase                : public FTaskBase  // body도 결과도 없음
+    └─ class FBaseGraphTask                : public FTaskBase  // 옛 TaskGraph 호환
+
+"실행할 내용도 없는데 결과 자리가 먼저 오는" 이유는 
+이 계층을 위에서 만드는 쪽이 아니라, 밖에서 참조하는 쪽에서 봐야 보인다. 
+
+사용자 handle인 class UE::Tasks::TTask<ResultType> : UE::Tasks::Private::FTaskHandle은
+GetResult()에서
+
+  // UE::Tasks::TTask<ResultType>::GetResult
+  FTaskHandle::Wait(); 
+  return static_cast<Private::TTaskWithResult<ResultType>*>(Pimpl.GetReference())->GetResult();         
+
+---
+
+handle이 아는 타입 정보는 ResultType뿐
+body의 타입(lambda의 익명 class)은 Launch를 호출한 그 지점에서만 알 수 있고 밖으로 새어 나갈 수 없다. 
+그래서 "handle이 cast해 들어갈 수 있는 마지막 계단"이 TTaskWithResult<ResultType>이어야 하고, 
+body 저장은 그보다 아래(밖에서 볼 일 없는 층)에 있어야 한다.
+사다리의 순서는 "누가 어느 타입까지 아는가"의 순서
+
+---
+
+TExecutableTaskBase는 TaskBodyStorage를 더하고 가상 함수 ExecuteTask()를 override해 
+"body를 꺼내 부르고, 결과 자리에 placement new"를 구현
+
+결과가 void인 body를 위한 별도 특수화는 TTaskWithResult를 아예 건너뛰고
+UE::Tasks::Private::FTaskBase를 직접 상속
+
+---
+
+TExecutableTask
+  operator new/delete를 재정의해서, 
+  객체 크기가 UE::Tasks::Private::SmallTaskSize(256 byte) 이하면 
+  전역의 lock-free 고정 크기 allocator
+  (TLockFreeFixedSizeAllocator_TLSCache — thread별 캐시를 가진, 잠금 없는 재활용 풀)에서 꺼내 쓰고, 
+  넘으면 일반 malloc으로 간다. 
+
+task는 프레임마다 수천·수만 개씩 태어나고 죽으므로 할당이 저렴해야 하고, 
+대부분의 body는 캡처 몇 개라 256 byte 안에 들어온다.
+
+---
+
+UE::Tasks::Private::FTaskBase의 핵심 상태
+  std::atomic<uint32> NumLocks
+
+최상위 bit = 모드 스위치
+
+    NumLocks (uint32)
+    ┌───┬─────────────────────────────────┐
+    │ E │        count (하위 31 bit)      │     
+    └───┴─────────────────────────────────┘
+    E = ExecutionFlag = 0x80000000
+
+    E = 0 : count = "실행"을 막는 잠금 수
+            (launch 몫 1  +  미완료 prerequisite 수  +  pipe 몫 1)
+    E = 1 : count = "완료"를 막는 잠금 수
+            (실행 자신 몫 1  +  미완료 nested task 수)
+
+ExecutionFlag는 별도의 flag 변수가 아니라 NumLocks의 최상위 bit
+그 덕에 "모든 실행 잠금이 풀렸고, 아직 아무도 실행을 시작하지 않은"
+상태가 NumLocks == 0이라는 단 하나의 값이 되고, 
+실행 권한 획득이 CAS 한 번이 된다.
+
+UE::Tasks::Private::FTaskBase::TrySetExecutionFlag
+  uint32 Expected = 0;
+  return NumLocks.compare_exchange_strong(Expected, ExecutionFlag + 1, ...);
+
+"실행 권한을 낚아챈다"
+NumLocks가 0인 순간을 노려 0 → (ExecutionFlag | 1)로 바꾸는 CAS를 시도한다. 
+성공한 단 하나의 thread만 body를 부를 자격을 얻고, 
+같은 CAS가 word를 두 번째 국면(완료 잠금 세기)으로 전환
++1은 "실행 그 자체"가 완료를 막는 첫 잠금이 된다. 
+
+---
+
+UE::Tasks::Private::FTaskBase::FSubsequents
+  TArray<FTaskBase*, TInlineAllocator<1>> Subsequents;  // 깨울 대상 목록
+  std::atomic<bool>                       bIsClosed;    // 닫힘 표시
+  UE::FMutex                              Mutex;        // 짧은 임계구역용
+
+등록(PushIfNotClosed)은 bIsClosed를 확인하고 목록에 추가하는 짧은 mutex 구간이고, 
+닫기(Close)는 같은 mutex 아래에서 bIsClosed = true로 만들고 목록을 통째로 반출한다. 
+
+bool UE::Tasks::Private::FTaskBase::IsCompleted() const { return Subsequents.IsClosed(); }
+
+Close는 동사(subsequents 목록을 닫고 반출된 각 task의 잠금을 풀어 주는 행위, FTaskBase::Close)이고,
+completed는 그 행위가 끝난 뒤의 상태 이름이며, 
+
+---
+
+"body 반환 ≠ 완료"
+
+body가 반환돼도 nested task가 남아 있으면 
+Close가 호출되지 않으므로 bIsClosed는 false다.
+
+---
+
+LowLevelTasks::FTask 
+
+64 byte 카드의 상태 word(FPackedData)는 
+상태 6 bit + debug 이름 포인터 53 bit + 우선순위 3 bit + 옵션 2 bit를 
+
+uintptr_t 하나에 담고, 
+상태는 Ready → Scheduled → Running → Completed(+ Canceled/Expedited 변형)로 흐른다. 
+
+아래층의 Completed는 "이 카드의 실행 절차가 끝나 재사용 가능"이라는 뜻으로, 
+위층의 completed (bIsClosed)와는 다른 개념이다. 
+
+위층은 관계의 완료를, 아래층은 실행 절차의 완료를 센다.
+
+---
