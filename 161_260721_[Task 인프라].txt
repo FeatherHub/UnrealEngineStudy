@@ -785,3 +785,284 @@ uintptr_t 하나에 담고,
 위층은 관계의 완료를, 아래층은 실행 절차의 완료를 센다.
 
 ---
+
+TryLaunch, TryUnlock, TrySetExecutionFlag, TryCancel,
+TryExpedite, TryRetractAndExecute, TryPushIntoPipe
+
+낙관적 동시성(optimistic concurrency)의 문법
+
+각 Try는 "원자적 시도 → 성공/실패를 bool로 보고" 
+실패는 "그 사이 세상이 변했다(남이 먼저 했다)"는 정보 
+
+---
+
+Launch를 호출한 그 thread에서 실행된다는 점
+
+UE::Tasks::Launch(DebugName, Body, [Prerequisites], Priority, ExtPriority)
+  │
+  ├ 1. UE::Tasks::Private::TExecutableTask<Body>::Create
+  │      operator new → 256 byte 이하면 SmallTaskAllocator
+  │
+  ├ 2. UE::Tasks::Private::FTaskBase::AddPrerequisites
+  │      각 prerequisite마다: 내 NumLocks += 1
+         상대의 FSubsequents::PushIfNotClosed 시도 → 거절되면 NumLocks −= 1
+  │
+  ├ 3. UE::Tasks::Private::FTaskBase::TryLaunch
+  │      └ UE::Tasks::Private::FTaskBase::TryUnlock   // NumLocks −= 1
+  │          아직 잠금이 남았으면 → 여기서 끝
+  │          마지막 잠금을 풀었으면 계속
+  │
+  ├ 4. UE::Tasks::Private::FTaskBase::Schedule        // 분기점
+  │      ExtendedPriority == Inline     → 그 자리에서 실행 (queue 안 감)
+  │      ExtendedPriority == TaskEvent  → 그 자리에서 Close
+  │      named thread 지명              → FTaskGraphInterface::QueueTask
+  │      그 외 (익명 task)              ↓
+  │
+  ├ 5. LowLevelTasks::FScheduler::TryLaunch           // 아래층 진입
+  │      └ LowLevelTasks::FScheduler::LaunchInternal
+  │          TLS를 읽어 queue를 고른다
+  │          LocalQueue->Enqueue  또는  QueueRegistry.Enqueue
+  │
+  └ 6. LowLevelTasks::FScheduler::WakeUpWorker
+          └ LowLevelTasks::Private::FWaitingQueue::Notify
+
+---
+
+LowLevelTasks::FScheduler::Get()이라는 process 전역 singleton의 
+LaunchInternal을 호출
+
+그 안에서 어떤 queue(호출 thread의 local queue이거나 전역 overflow queue)에
+LowLevelTasks::FTask 포인터를 넣는 것
+
+FScheduler는 queue들과 worker명부를 소유한 자료 덩어리
+"그 자료구조에 넣는다 + 필요하면 깨운다"
+
+---
+
+GT(game thread)에서 Launch하면 GT가 FScheduler를 직접 만져 enqueue하고 Notify까지 호출
+
+---
+
+잠금이 남아 멈춘 task는 어디에 보관되는가
+아무 queue에도 없고, heap의 자기 자리에 그대로
+
+시스템이 그것을 다시 찾을 수 있는 이유는 graph의 edge가 그 객체를
+가리키고 있기 때문
+
+즉 "대기 중인 task의 보관소"라는 별도 자료구조는 없다
+
+---
+
+LowLevelTasks::FScheduler: FSchedulerTls
+    LowLevelTasks::Private::TLocalQueueRegistry<>          QueueRegistry;
+    TAlignedArray<TLocalQueueRegistry<>::TLocalQueue>      WorkerLocalQueues;
+    TUniquePtr<TLocalQueueRegistry<>::TLocalQueue>         GameThreadLocalQueue;
+    TAlignedArray<LowLevelTasks::Private::FWaitEvent>      WorkerEvents;
+    LowLevelTasks::Private::FWaitingQueue                  WaitingQueue[2];
+
+---
+
+class LowLevelTasks::FSchedulerTls::FTlsValues // per-thread 구조체
+  FSchedulerTls*                             ActiveScheduler;
+  TLocalQueueRegistry<>::TLocalQueue*        LocalQueue;      
+  EWorkerType                                WorkerType;      // Fg/Bg/None
+  bool                                       bIsStandbyWorker;
+
+---
+
+worker가 태어날 때 LowLevelTasks::FScheduler::WorkerMain이 
+자기 TLS의 LocalQueue에 WorkerLocalQueues 배열 중 자기 몫 원소의 주소를 써 넣는다. 
+
+GT의 경우 FScheduler::StartWorkers가 GameThreadLocalQueue를 만들고 GT의 TLS에 그 주소를 써 넣는다. 
+
+즉 실물은 전부 FScheduler가 소유한 배열에 있고, 
+TLS는 "내 것이 어느 것인지"를 가리키는 색인
+
+---
+
+worker가 아닌 일반 thread(파일 IO thread 등)의 TLS에서 LocalQueue는 nullptr
+그런 thread의 launch는 전역 queue로 간다.
+
+---
+
+class LowLevelTasks::Private::TLocalQueueRegistry<>
+  FAAArrayQueue<LowLevelTasks::FTask>  OverflowQueues[ETaskPriority::Count];
+  std::atomic<TLocalQueue*>            LocalQueues[MaxLocalQueues]; 
+  std::atomic<uint32>                  NumLocalQueues;
+
+모든 TLocalQueue는 생성자에서 TLocalQueueRegistry::AddLocalQueue로 자신을 등록하고, 
+도둑질(DequeueSteal → StealItem)은 이 명부를 순회하며 남의 local queue를 뒤진다. 
+
+전역 overflow queue(우선순위별 FAAArrayQueue — fetch-and-add 기반의 
+lock-free MPMC(multi-producer multi-consumer: 여럿이 넣고 여럿이 꺼내는) queue)는 
+이 등록부가 들고 있는 부속물
+
+---
+
+LaunchInternal의 기본 선호는 local
+(EQueuePreference::DefaultPreference = LocalQueuePreference)
+
+    background task를 foreground worker가 만들었다        → 전역 queue
+    standby worker가 만들었다                             → 전역 queue + 깨움
+    호출 thread에 local queue가 없다(외부 thread)         → 전역 queue
+    GT에서 launch했다                                     → GameThreadLocalQueue + 깨움
+    그 외 (worker가 자기 부류의 task를 만들었다)          → 자기 local queue
+
+---
+
+GT는 자기 queue를 소비하지 않는다
+(GT는 게임 프레임을 돌지, worker loop를 돌지 않는다). 
+넣기만 하고 빼 가는 것은 남(worker들)뿐이므로, 
+GT의 launch는 반드시 깨움을 동반해야 하고(안 그러면 아무도 모른다), 
+worker loop의 첫 번째 확인 대상이 바로 이 queue
+
+---
+
+LowLevelTasks::LocalQueue_Impl::TWorkStealingQueue2<LowLevelTasks::FTask, 1024>
+  uint32                  Head;             
+  std::atomic<uint32>     Tail;
+  FAlignedElement         ItemSlots[1024];  // 각 칸 = std::atomic<uintptr_t>
+                                            // 칸마다 cache line × 2 정렬
+
+세 가지 연산이 있고, 접근 권한이 다르다.
+
+Put   (주인 전용)  Head 쪽에 넣는다. Head+1 칸이 비었는지 보고 포인터를 store
+                   Head를 증가. CAS 없음
+Get   (주인 전용)  Head 쪽에서 뺀다. 
+                   CAS 한 번 (마지막 남은 항목을 도둑과 다툴 수 있으므로).
+Steal (아무나)     Tail 쪽에서 뺀다. 가장 오래된 것부터. 
+
+---
+
+칸 하나는 std::atomic<uintptr_t>이고, 값의 해석이 세 가지
+    0 (ESlotState::Free)   빈 칸
+    1 (ESlotState::Taken)  도둑이 "집는 중" 표시
+    그 외                  LowLevelTasks::FTask* 포인터 값
+
+---
+
+ItemSlots[Idx].compare_exchange_weak(Slot /*본 포인터*/, Taken)
+
+"이 칸에 아직 그 포인터가 있으면 1로 바꿔라"
+
+성공한 도둑만 Tail을 증가시키고 칸을 Free로 되돌린다. 
+
+---
+
+"가져감 표시"는 별도 flag가 아니라, 칸이라는 하나의 atomic word가 갖는 특수 값(sentinel)
+
+상태를 새 변수로 만들지 않고 기존 word의 값 공간에 접어 넣는 것
+NumLocks의 ExecutionFlag와 같은 수법
+
+---
+
+LowLevelTasks::FScheduler::WorkerLoop
+
+    while ( TryExecuteTaskFrom<&TLocalQueue::StealLocal >(GameThreadLocalQueue)
+         || TryExecuteTaskFrom<&TLocalQueue::Dequeue    >(WorkerLocalQueue)
+         || TryExecuteTaskFrom<&TLocalQueue::DequeueSteal>(WorkerLocalQueue) )
+
+---
+
+LowLevelTasks::Private::TLocalQueueRegistry<>::TLocalQueue
+이름의 Local은 "TLS의 내 것"이 아니라 "LocalQueue"를 가리킨다
+
+TLocalQueue::StealLocal     이 local queue 객체에서 Steal 연산으로 빼기
+                            (내가 주인이 아닌 특정 queue를 지목해 훔칠 때)
+
+TLocalQueue::Dequeue        이 local queue에서 주인 자격으로 Get, 없으면
+                            Registry의 OverflowQueues에서 dequeue
+
+TLocalQueue::DequeueSteal   Registry의 명부를 임의 시작점부터 순회하며
+                            등록된 다른 local queue들에서 Steal
+
+---
+---
+---
+
+FScheduler::WorkerEvents는 worker당 하나씩의 FWaitEvent를 담은 배열(64 byte 정렬)
+
+struct LowLevelTasks::Private::FWaitEvent
+{
+    std::atomic<uint64>     Next;       // 잠든 자들의 stack에서 다음 노드
+    uint64                  Epoch;      // standby 상태 검증용 스냅샷
+    std::atomic<EWaitState> State;      // NotSignaled / Waiting / Signaled
+    FEventRef               Event;      // OS 이벤트 (ManualReset)
+    bool                    bIsStandby;
+};
+
+"worker.wakeup()"에 해당하는 것
+Node->Event->Trigger()
+
+아무나 이것을 부르면 안 된다
+첫째, lost wakeup — 깨울 대상 선정과 그 대상의 "잠들기 확정" 사이에 원자적 합의가 없으면 신호가 유실된다. 
+둘째, 비용 — OS event의 Trigger는 커널 호출이라 비싸다(µs 단위). 
+
+그래서 이 시스템은 Trigger를 최후의 한 발로 아끼고, 
+그 앞에 atomic word들로 이루어진 프로토콜을 세운다. 
+그 프로토콜이 FWaitingQueue
+
+---
+
+명부의 실물 — uint64 하나에 담긴 네 개의 장부
+
+class LowLevelTasks::Private::FWaitingQueue의 중심은 std::atomic<uint64> State
+
+    ┌──────── 22 bit ────────┬─ 14 bit ─┬─ 14 bit ──┬─ 14 bit ─┐
+    │  epoch (ABA counter)   │  signal  │  prewait  │  stack   │
+    └────────────────────────┴──────────┴───────────┴──────────┘
+
+    stack    :  잠들기를 확정한 자들의 연결 stack. 값은 WorkerEvents 배열의 index 
+                FWaitEvent::Next가 다음 노드를 가리킨다.
+                (14 bit 전부 1 = 빈 stack)
+    prewait  :  "잘 준비 중"(PrepareWait은 했고 CommitWait은 아직) 인원 수
+    signal   :  아직 배달되지 않은 깨움 신호의 수
+    epoch    :  이 word가 몇 번 바뀌었는지 세는 세대(generation) 번호
+
+---
+
+epoch이 필요한 이유 - ABA 문제 
+
+값을 읽고(A) CAS를 준비하는 사이에 값이 B로 갔다가 다시 A로 돌아오면, CAS는 "안 바뀌었다"고 착각한다. 
+
+stack의 head index는 pop됐다가 같은 worker가 다시 push되면 같은 값이 되므로, 
+세대 번호를 함께 CAS해 "같은 A라도 다른 시대의 A"를 구별한다.
+
+---
+
+worker loop(LowLevelTasks::FScheduler::WorkerLoop)가 일을 못 찾으면
+
+    ① FWaitingQueue::PrepareWait   State.fetch_add(WaiterInc)
+       — prewait 칸을 1 올린다. 리스트 삽입이 아니라 counter 증가다. 
+         "곧 잘 수도 있는 사람이 1명 있다"는 공표.
+
+    ② (worker loop로 돌아가) 모든 queue를 한 번 더 확인
+       — 이 재확인이 PrepareWait 이후이므로, 이후에 들어온 일은 여기서
+         잡히거나(→ CancelWait), 넣은 쪽의 Notify가 prewait 장부를 보고
+         signal을 남긴다. 어느 쪽이든 유실이 없다.
+
+    ③ FWaitingQueue::CommitWait
+       - State에 signal이 남아 있으면: signal 하나와 내 prewait을 함께
+         소비하는 CAS. 성공하면 잠들지 않고 즉시 복귀
+         (누군가 나를 위해 쳐 둔 종이 이미 있었던 것)
+
+       - signal이 없으면: 내 prewait을 stack push로 바꾸는 CAS/
+         내 FWaitEvent의 배열 index를 State의 stack 칸에 쓰고, 이전 head를
+         내 Next에 건다. 이제 나는 "잠들기 확정자 명부"에 있다.
+
+       - CAS가 경합으로 실패하면 그냥 false를 반환한다. 재시도 하지 않고 
+         queue 재확인부터 다시 한다(경합 상황 = 세상이 움직이는 중 = 일이 생겼을 가능성이 높음)
+
+    ④ FWaitingQueue::Park (CommitWait 성공 시 이어짐)
+       - 아주 짧은 spin: 53회 한도로 내 FWaitEvent::State가 Signaled로 바뀌는지 본다. 
+         이 spin의 존재 이유는 "깨우는 쪽이 커널 호출 없이 atomic 한 번으로 나를 깨울 마지막 기회"를 주는 것
+       - 그래도 조용하면: Event->Reset() 후, 내 State를 NotSignaled → Waiting으로 CAS. 
+         성공하면 EnterWait → FEvent::Wait() — 여기가 진짜 OS 수면
+         CAS가 실패했다면 그 사이 누가 Signaled로 바꾼 것이므로 잠들지 않고 복귀한다.
+
+---
+
+worker마다 spin 주기가 다른 소수(719, 991, 1361...)로 주어져 
+여럿이 같은 박자로 State를 두드리는 공진을 피한다
+
+그리고 EnterWait이 잠드는 김에 자기 thread의 malloc TLS cache를 반납
