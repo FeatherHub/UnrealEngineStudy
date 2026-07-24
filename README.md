@@ -1,7 +1,6 @@
 # 저장소 소개
 
-이 저장소는 AI를 활용해 Unreal Engine 내부를 공부한 내용을 노트로 남긴 저장소입니다.  
-AI를 어떻게 활용했는지는 [AI 활용방법](#ai-활용방법)에서 소개합니다.  
+이 저장소는 AI를 활용해 Unreal Engine 내부를 탐험한 내용을 노트로 남긴 저장소입니다.  
 
 ## 지금까지 다룬 것들
 
@@ -11,6 +10,7 @@ AI를 어떻게 활용했는지는 [AI 활용방법](#ai-활용방법)에서 소
 - FPrimitiveSceneProxy, FScene, FGPUScene
 - FSceneRenderer, FMeshPassProcessor, FMeshDrawCommand
 - FLocalVertexFactory, FStaticMeshRenderData
+- 관련 노트: [150 [렌더링 인프라]](<note/150_260629_[렌더링 인프라].txt>), [149 [렌더링 인프라]](<note/149_260628_[렌더링 인프라].txt>), [148 [렌더링 인프라]](<note/148_260627_[렌더링 인프라].txt>), [147 [렌더링 인프라]](<note/147_260625_[렌더링 인프라].txt>), [146 [렌더링 인프라]](<note/146_260624_[렌더링 인프라].txt>)
 
 #### 물리 인프라
 
@@ -18,52 +18,62 @@ AI를 어떻게 활용했는지는 [AI 활용방법](#ai-활용방법)에서 소
 - FPBDRigidsSolver, FPBDRigidsSOAs
 - Physics Thread, FChaosMarshallingManager (push/pull)
 - FSingleParticlePhysicsProxy, FImplicitObject
+- 관련 노트: [163 [물리 인프라]](<note/163_260712_[물리 인프라].txt>), [162 [물리 인프라]](<note/162_260711_[물리 인프라].txt>), [161 [물리 인프라]](<note/161_260710_[물리 인프라].txt>), [160 [물리 인프라]](<note/160_260709_[물리 인프라].txt>)
 
 #### 네트워크 인프라
 
 - UNetDriver, UNetConnection, UChannel
 - FObjectReplicator, ServerReplicateActors
 - Iris: FNetRefHandleManager, FReplicationProtocol, FReplicationFragment
+- 관련 노트: [167 [네트워크 인프라][Iris]](<note/167_260717_[네트워크 인프라][Iris].txt>), [166 [네트워크 인프라][Iris]](<note/166_260716_[네트워크 인프라][Iris].txt>), [165 [네트워크 인프라][Iris]](<note/165_260715_[네트워크 인프라][Iris].txt>), [164 [네트워크 인프라]](<note/164_260714_[네트워크 인프라].txt>)
 
 #### 에셋 로딩 인프라
 
 - FLinkerLoad
 - FAsyncLoadingThread2
+- 관련 노트: [159 [AssetLoading][FAsyncLoadingThread2]](<note/159_260708_[AssetLoading][FAsyncLoadingThread2].txt>), [158 [AssetLoading][FLinkerLoad]](<note/158_260707_[AssetLoading][FLinkerLoad].txt>)
 
 #### Task 인프라
 
 - Task Graph, UE::Tasks
 - Prerequisites, Subsequents
 - Work Stealing, Retraction
+- 관련 노트: [172 [Task 인프라]](<note/172_260722_[Task 인프라].txt>), [171 [Task 인프라]](<note/171_260721_[Task 인프라].txt>), [170 [Task 인프라]](<note/170_260720_[Task 인프라].txt>), [168 [Task 인프라]](<note/168_260718_[Task 인프라].txt>)
 
 #### Slate 인프라
 
 - FWindowsApplication, FSlateApplication
 - SViewport, FSceneViewport, UGameViewportClient
+- 관련 노트: [145 [Slate 인프라]](<note/145_260624_[Slate 인프라].txt>), [138 [Slate][UMG]](<note/138_260613_[Slate]UMG].txt>), [136 [Slate][Viewport]](<note/136_260611_[Slate][Viewport].txt>)
 
 #### Reflection 인프라
 
 - UClass, UStruct, FProperty
 - UFunction
+- 관련 노트: [142 [Reflection 인프라]](<note/142_260616_[Reflection 인프라].txt>), [141 [Reflection 인프라]](<note/141_260615_[Reflection 인프라].txt>), [123 [Reflection 인프라][GC]](<note/123_260508_[Reflection 인프라][GC].txt>), [122 [Reflection 인프라]](<note/122_260507_[Reflection 인프라].txt>)
 
 #### 블루프린트 인프라
 
 - Blueprint VM
 - UBlueprintGeneratedClass
+- 관련 노트: [132 [Blueprint]](<note/132_260523_[Blueprint].txt>), [076 [Blueprint][MaterialEditor]](<note/076_260403_[Blueprint][MaterialEditor].txt>), [073 [BP, Function Reflection]](<note/073_260401_[BP, Function Reflection].txt>), [052 [Blueprint 인프라]](<note/052_260318_[Blueprint 인프라].txt>)
 
 #### 엔진 실행 구조
 
 - FEngineLoop, 엔진 부팅
 - Engine Tick, World Tick, Tick Group
+- 관련 노트: [139 [엔진 인프라]](<note/139_260613_[엔진 인프라].txt>), [135 [엔진부팅]](<note/135_260607_[엔진부팅].txt>), [104 [엔진 Tick][엔진구조]](<note/104_260418_[엔진 Tick][엔진구조].txt>), [069 [Engine Tick][World Tick]](<note/069_260330_[Engine Tick][World Tick].txt>)
 
 #### Audio 인프라
 
 - Audio Thread
 - FAudioDevice, FActiveSound, FWaveInstance
+- 관련 노트: [091 [Audio]](<note/091_260413_[Audio].txt>), [047 [Audio]](<note/047_260309_[Audio].txt>)
+
 
 ## AI 활용방법
 
-한 마디로 말씀드리자면, Warm-up 후 전체 구조를 드러내는 표기법을 프롬프팅한 후, 후속 질문을 반복하는 방식으로 AI를 활용했습니다.
+처음 몇 턴은 질문 몇 턴으로 Warm-up 후, 전체 구조를 드러내는 표기법을 프롬프팅한 후, 후속 질문을 반복하는 방식으로 AI를 학습에 활용했습니다.
 
 #### 하네스와 Warm-up
 
