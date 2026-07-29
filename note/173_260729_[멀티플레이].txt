@@ -1,0 +1,1231 @@
+The server, as the host of the game, holds the one, true, authoritative game state
+
+---
+
+NetMode
+프로세스(게임 인스턴스) 단위
+이 프로그램은 네트워크에서 무슨 역할
+
+
+ENetMode 
+
+NM_Standalone       // 네트워크 없는 게임. "서버 기능을 전부 가지므로 여전히 서버로 취급"
+NM_DedicatedServer  // 로컬 플레이어 없는 서버
+NM_ListenServer     // 호스트 본인도 플레이하는 서버
+NM_Client           // 원격 서버에 붙은 클라이언트
+
+NetDriver 상태에서 유도되는 값
+
+---
+
+UNetDriver::IsServer
+return ServerConnection == NULL;  // 서버로 향하는 연결(ServerConnection)은 클라이언트만 가진다
+
+서버로 접속한 연결이 없으면 나는 서버
+
+---
+
+UNetDriver::GetNetMode
+return (IsServer() ? (GIsClient ? NM_ListenServer : NM_DedicatedServer) : NM_Client)
+
+없으면 DedicatedServer
+NetDriver 자체가 없으면 AActor::InternalGetNetMode → UWorld::GetNetMode를 거쳐 NM_Standalone
+서버 중에 로컬 플레이어(GIsClient)가 있으면 ListenServer
+
+---
+
+Role(Authority)
+액터 복사본 단위
+이 머신에 있는 이 액터가 진본인가, 사본인가
+
+ENetRole 
+
+ROLE_None             // 네트워크상 역할 없음 (복제 대상 아님)
+ROLE_SimulatedProxy   // 서버가 보내주는 상태를 받아 흉내만 내는 사본
+ROLE_AutonomousProxy  // 입력을 스스로 만들어 서버로 보내는 사본 (소유 클라이언트의 Pawn 등)
+ROLE_Authority        // 진본. 결정권 보유
+
+---
+
+AActor::HasAuthority
+return (GetLocalRole() == ROLE_Authority);
+
+---
+
+액터마다 Role(내 머신에서의 권한)과 RemoteRole(상대 머신에서의 권한)이 쌍으로 있습니다
+
+모든 액터는 스폰한 머신에서 ROLE_Authority로 시작합니다
+AActor::PostSpawnInitialize가 이를 ensure로 확인한 뒤
+AActor::ExchangeNetRoles — 네트워크에서 받아 스폰된(bRemoteOwned) 경우에만 교환
+if (bRemoteOwned)
+{
+    Exchange(Role, RemoteRole);
+}
+
+---
+
+서버에서 복제를 켜면 상대쪽 신분이 정해집니다
+
+AActor::SetReplicates
+const ENetRole ExpectedRemoteRole = bInReplicates ? ROLE_SimulatedProxy : ROLE_None;
+
+클라이언트가 이 액터를 네트워크로 받으면 위의 교환이 일어나 
+Role = SimulatedProxy, RemoteRole = Authority가 됩니다
+
+---
+
+클라이언트가 로컬로 스폰한 액터(복제 안 하는 이펙트 등)도 그 클라이언트에서는 HasAuthority()가 true
+
+---
+
+Owner
+
+used primarily for replication (bNetUseOwnerRelevancy & bOnlyRelevantToOwner) 
+and visibility
+
+// AActor::GetNetConnection — Owner 체인을 재귀로 타고 올라간다
+return Owner ? Owner->GetNetConnection() : nullptr;
+
+// APawn::GetNetConnection — Controller에게 위임
+if (GetController()) { return GetController()->GetNetConnection(); }
+
+// APlayerController::GetNetConnection — 체인의 종점. 실제 연결 반환
+return (Player != NULL) ? NetConnection : NULL;
+
+---
+
+owning connection
+
+Owner 체인을 끝까지 올라가면 나오는 PlayerController가 쥔 NetConnection
+
+---
+
+RPC의 목적지
+
+UNetDriver::ProcessRemoteFunction
+
+Actor->GetNetConnection()으로 보낼 곳을 찾고, 없으면 경고와 함께 버립니다
+No owning connection for actor %s. Function %s will not be processed
+
+---
+
+Role: "how much control the local machine has over the actor",
+RemoteRole: "how much control the remote machine has"
+
+GetLocalRole() { return Role; }
+
+---
+
+서버의 (Role=Authority, RemoteRole=SimulatedProxy)
+클라의 (Role=SimulatedProxy, RemoteRole=Authority)
+
+---
+
+NetUpdateFrequency
+
+스냅샷 사이의 프레임은 클라이언트가 스스로 만들어냅니다.
+
+---
+
+정밀도 근사 — 데이터 자체가 손실 압축됩니다
+
+FRepMovement
+EVectorQuantization
+Each vector component will be rounded to the nearest whole number
+
+기본적으로 위치가 정수 단위로 반올림되어 전송됩니다. 
+서버의 X = 123.4567은 클라에 123으로 도착합니다
+
+---
+
+부분성 근사
+
+Skeletal Mesh, Material, Animation Blueprint, Particle, Sound, Physics Object
+는 복제되지 않고 각 머신이 로컬로 돌립니다
+
+---
+
+UCharacterMovementComponent::SimulatedTick
+
+스냅샷 사이를 시뮬레이션·스무딩으로 채우고, 
+예측이 틀렸으면 ClientUpdatePositionAfterServerUpdate가 서버 상태로 되감은 뒤 저장해둔 이동을 재적용합니다
+
+---
+
+SimulatedProxy
+
+순수 다운스트림 소비자
+
+AutonomousProxy
+
+업스트림 생산자(입력을 만들어 서버로 올리고, 정정을 받는 쪽)
+
+---
+
+GetLocalRole() == ROLE_AutonomousProxy && IsNetMode(NM_Client)
+
+"원격 클라이언트에서 돌아가는 내 폰"만 집으려는 조건
+
+---
+
+RPC 이름
+도착지 선언
+
+"Server RPC" = 서버에서 실행되는 함수. 
+
+호출은 어디서나 일어날 수 있지만, 
+AActor::GetFunctionCallspace가 
+(선언 플래그, LocalRole, NetMode, Owner) → {Local, Remote, Absorbed} 매핑으로 실행 위치를 결정
+
+---
+
+통신 그래프 자체가 스타 토폴로지
+중심 = 서버, 클라 간 간선 없음
+
+Server RPC
+유일한 상행 간선
+소유 클라 → 서버
+
+의미론은 명령이 아니라 요청입니다
+
+신뢰 경계를 넘는 유일한 통로라서 검증 장치가 여기에만 붙습니다
+상행 간선 위의 데이터는 전부 잠재적 거짓말로 취급
+
+---
+
+Client RPC
+하행 유니캐스트
+
+// UNetDriver::ProcessRemoteFunction — Client RPC의 수신자는 Owner 체인이 결정
+Actor->GetNetConnection()
+// 없으면: "No owning connection for actor. Function will not be processed."
+
+---
+
+Multicast
+하행 브로드캐스트
+서버가 ClientConnections를 순회하며 커넥션별 relevancy 검사 후 전송
+Multicast functions go to every client
+
+클라이언트가 호출하면 GetFunctionCallspace가 Local로 격하
+방송권은 Authority에만 있습니다
+
+---
+
+RPC는 이벤트(순간적, 이력 없음, 늦게 접속한 클라는 못 받음)
+프로퍼티는 상태(언젠가 수렴, late joiner에게도 도달)
+
+---
+
+ELifetimeCondition 
+
+COND_OwnerOnly  // "only send to the actor's owner"
+
+APlayerController의 TargetViewRotation
+남의 카메라 회전은 알 필요가 없죠
+
+COND_SkipOwner  // "send to every connection EXCEPT the owner"
+에코 제거
+그 값의 원산지가 owner 자신인 경우
+
+---
+
+relevancy(액터 단위 거친 필터)
+
+condition(프로퍼티 단위 미세 필터)
+조건부 복제란 프로퍼티 단위의 커넥션별 필터
+
+---
+
+FScopedRoleDowngrade
+
+서버에 플레이어 A, B, C가 접속해 있고, A의 Pawn
+서버 메모리에서 이 Pawn은 Role = Authority, RemoteRole = AutonomousProxy
+
+A에게 보낼 답: AutonomousProxy (네 폰이니 입력 권한이 있다)
+B에게 보낼 답: SimulatedProxy (남의 폰이니 흉내만 내라)
+C에게 보낼 답: SimulatedProxy
+
+변수에는 주인용 답을 저장해두고, 주인이 아닌 수신자에게 보내는 순간에만 잠깐 값을 바꿔치기했다가 되돌립니다
+
+A에게 직렬화: 주인이다 → 그대로 보냄 (AutonomousProxy)
+B에게 직렬화: 주인 아님 → SimulatedProxy로 바꿈 → 보냄 → 원상복구
+C에게 직렬화: 주인 아님 → SimulatedProxy로 바꿈 → 보냄 → 원상복구
+
+---
+
+직렬화란 이 함수를 한 점(커넥션 C)에서 평가하는 순간이고
+평가 직전에 메모리를 그 점의 값으로 맞췄다가 직후에 복원합니다
+
+서버가 잠깐 "C가 보는 세계"가 되었다가 돌아오는 것.
+
+---
+
+FRepLayout — "This swaps Role/RemoteRole as we write it"
+GetSwappedCmd 
+
+Role/RemoteRole은 절대 좌표가 아니라 지표어(indexical)
+"나/너", "여기/저기"처럼 말하는 자리에 따라 지시 대상이 바뀌는 말
+
+"나는 Authority다"라는 문장을 상대가 받으면 "너(보낸 쪽)가 Authority다"로 읽어야 참이 유지됩니다
+전선을 건너는 순간 1인칭과 2인칭이 반전되므로, 값을 그대로 복사하면 오류이고 스왑이 곧 올바른 번역입니다
+
+---
+
+대합(involution)
+swap ∘ swap = id
+
+---
+
+스폰 시의 Exchange
+복제 시의 swap-write
+
+---
+
+클라이언트 C가 보는 최종 값
+C.Role = swap( downgrade_C( 서버.RemoteRole ) )
+
+---
+
+FunctionCallspace 
+이 호출이 실체화될 장소들
+
+Absorbed = 0x0,  // "this function call should be absorbed" — 아무 데서도 실행 안 됨
+Remote   = 0x1,  // 네트워크 너머에서 실행
+Local    = 0x2   // 여기서 실행
+
+---
+
+Absorbed는 공집합
+
+클라에서 BlueprintAuthorityOnly 함수 호출 → Absorbed, 
+Dedicated 서버에서 Cosmetic 함수 호출 → Absorbed
+
+---
+
+UObject::CallFunction
+
+const int32 FunctionCallspace = bNetFunction ? GetFunctionCallspace(Function, &Stack) : FunctionCallspace::Local;
+
+if (FunctionCallspace & FunctionCallspace::Remote) { /* RPC 파라미터 직렬화 → 전송 */ }
+if (FunctionCallspace & FunctionCallspace::Local)  { /* 여기서 실행 */ }
+
+---
+
+호출(call)과 실행(execution)이 분리
+호출은 의도 표명이고, 실행은 그 의도가 실체화
+
+하나의 호출이 0개(Absorbed), 1개(Local 또는 Remote), 2개(Local|Remote)로 사상
+
+일반 함수 호출은 이 구조의 특수 사례
+
+---
+
+네트워크 플래그 없는 함수는 항상 {Local} 한 점으로 수렴
+
+---
+
+Client RPC
+세계의 진실에서 한 사람의 프레젠테이션으로 가는 전용 통로
+
+"마나가 부족합니다"라는 메시지, 화면 흔들림, 이동 예측 정정은 특정 플레이어의 표현 계층에만 해당
+
+의미 있는 호출자는 서버뿐
+클라이언트에서 부르면 GetFunctionCallspace가 "Client calling Client function → don't replicate"로 그냥 로컬 실행으로 접습니다
+
+---
+
+누구에게 도착하는가
+주소는 함수 시그니처가 아니라 액터의 Owner 체인이 정합니다
+
+Client RPC는 "누군가에게 속한" 액터에서만 배달 가능합니다. 
+주인 없는 문짝 액터에 Client RPC를 걸면 "No owning connection" 경고와 함께 증발
+
+개인 통지의 자연스러운 서식지가 APlayerController
+PlayerController는 커넥션 그 자체의 화신
+
+---
+
+// ACharacter — 예측 정정의 하행 절반
+
+UFUNCTION(unreliable, client)
+void ClientAckGoodMove(float TimeStamp);         // "네 예측 맞았어"
+
+UFUNCTION(unreliable, client)
+void ClientAdjustPosition(float TimeStamp, ...); // "틀렸어, 이 위치로 되감아라"
+
+상행의 ServerMove(Server RPC)
+
+---
+
+UPROPERTY(Replicated) + GetLifetimeReplicatedProps의 DOREPLIFETIME 목록
+
+"공유 세계에 속하는 상태의 스키마"를 정적으로 선언
+
+코드 어디에도 send()가 없습니다
+언제, 누구에게, 얼마나 자주 보낼지는 엔진(변경 감지 + 조건 + relevancy + 빈도)이 정합니다
+명령형이 아니라 선언형
+
+---
+
+// FObjectReplicator::ReceivedBunch
+// Server shouldn't receive properties.
+if (bIsServer)
+{
+    UE_LOG(LogNet, Error, TEXT("Server received RepLayout properties: %s"), ...);
+    return false;
+}
+
+프로퍼티 차선은 구조적으로 일방통행(Authority → 사본)
+상태는 아래로만 흐르고, 의도(RPC)는 위로만 흐른다
+
+---
+
+서버는 커넥션마다 "이 클라가 이미 아는 값"의 모델(shadow state, changelist)을 유지하고
+진실과 그 모델의 차이만 보냅니다
+
+---
+
+RepNotify
+ReplicatedUsing = OnRep_
+
+사본 쪽에서 상태의 도착·변화를 감지해 로컬 사건으로 되돌려주는 장치
+서버는 사건을 상태로 눌러 보내고
+클라는 상태를 다시 사건으로
+
+---
+
+OnRep은 수신 쪽에서만 자동 호출됩니다. 
+서버는 자기 값을 스스로 바꿨을 뿐 수신하지 않으므로, 
+서버에서도 반응이 필요하면 직접 불러야 합니다
+
+---
+---
+---
+
+if (!Action->CanStart(Result)) { return; }   // ⓐ 로컬 검사
+if (!GetOwner()->HasAuthority())
+{
+    StartAction_Server(ActionTag);           // ⓑ 서버로 요청 (Server RPC)
+}
+Action->StartAction();                       // ⓒ 응답을 기다리지 않고 즉시 실행
+
+// URogueActionSystemComponent::StartAction_Server_Implementation
+StartAction(ActionTag);                      // ⓓ 서버에서 같은 함수로 재진입
+
+---
+
+RTT(왕복 지연) 100ms라 치고 타임라인을 깔면
+
+t = 0ms, 발동 클라: ⓐ 통과 → ⓑ 송신과 동시에 ⓒ 실행. 
+URogueActionBase::StartAction_Implementation이 돌아서 쿨다운·태그·코스트 적용 후 
+bIsRunning = true(로컬). 
+화면 반응 지연 0
+이것이 예측(prediction)입니다. 서버의 판정 없이 "아마 승인될 것"이라는 가정 하에 미리 실행한 것
+
+---
+
+t = 50ms, 서버: ⓓ로 같은 StartAction에 재진입 → CanStart을 서버 관점에서 다시 검사합니다. 
+이 재검사가 신뢰 경계입니다
+통과하면 서버에서도 StartAction_Implementation → bIsRunning = true(진본).
+
+---
+
+t = 50ms~, 하행 복제
+bIsRunning=true가 모든 클라로 사영됩니다. 
+관전 클라: OnRep_IsRunning → StartAction()
+이들에겐 이것이 첫 실행
+
+---
+
+t = 100ms, 발동 클라
+같은 값 true가 도착하는데, 로컬은 이미 true입니다. 
+여기서 엔진의 기본 RepNotify 조건이 메아리를 삼킵니다
+
+RepLayout 수신부
+"Skipping RepNotify for property because local value has not changed." 
+예측이 맞았으면 확인은 무음
+
+---
+---
+---
+
+발동 클라(예측자)는 ⓑ+ⓒ 경로로,
+서버(판정자)는 ⓓ→HasAuthority 경로로, 
+관전 클라(재현자)는 OnRep 경로로
+
+---
+
+서버의 CanStart이 실패하면(쿨다운 경합 등) 
+서버는 bIsRunning을 켜지 않고, 
+값이 안 변했으니 하행 델타도 없습니다
+
+발동 클라는 로컬로 켠 채 조용히 어긋난 상태로 남습니다
+되감기(rollback) 없는 낙관적 예측의 대가
+
+---
+
+사건은 상태의 변화(차분)이고, 
+상태는 사건의 누적
+
+상태 이력을 미분해 사건 열을 얻고 
+그걸 다시 적분하면 원래 이력
+
+초기 상태 + 모든 사건 ⇄ 상태 이력의 양방향 재구성
+
+---
+---
+---
+
+서버가 Client RPC를 호출하면 Callspace는 Remote
+서버 자신은 구현부를 실행하지 않습니다
+
+_Implementation은 소유 클라에서만 돕니다
+따라서 그 안의 쓰기는 클라이언트의 로컬 쓰기
+
+---
+
+상태 차선
+
+---
+
+서버의 Health 시계열: 100, 100, 73, 41, 41
+
+이걸 기술하는 두 방법
+값들의 열(상태), 또는 0이 아닌 차이들만 추려 시각을 찍은 열
+
+미분은 값의 열에서 차이의 열로 가는 변환이고
+적분은 초기값에 차이들을 누적해 되돌아오는 변환
+
+---
+
+상태는 경로를 잊습니다
+TakeDamage 두 방(−27, −32)이 상태에 적분되는 순간 남는 것은 41뿐
+
+100→5→100
+관측 빈도보다 빠른 진동은 접혀서 사라진다
+
+---
+
+OnRep이 보는 것은 원사건이 아니라 
+병합된 순변화이므로, OnRep 코드는 중간 생략을 견디게
+도착한 현재값만으로 옳게 동작하게 써야 합니다
+
+횟수와 순간 자체가 의미인 것(피격 플래시, 히트 사운드, 크리티컬 숫자)은 
+상태 차선의 미분에 걸면 뭉개지므로 사건 차선에 실어야 합니다
+
+---
+
+연속한 두 스냅샷의 차이에 이름을 붙여 1급 객체로
+1급 객체로 되면 전송하고, 저장하고, 재생할 수 있는 무언가가 됩니다
+
+---
+
+변화를 근본으로 삼는 체계
+
+영원히 같은 값인 신호에는 뉴스가 없습니다
+시계열의 정보량은 전부 차이들 속에 삽니다
+
+---
+
+여기서 근본으로 취급되는 건 장부인가 잔고인가
+이 정보는 받는 쪽이 과거를 몰라도 되는가
+
+---
+---
+---
+
+서버가 CanStart에서 거부하면 실패 브랜치의 PushMessage는 PC->GetLocalPlayer()가 없으면 조용히 return합니다
+원격 클라의 서버측 PlayerController에는 LocalPlayer가 없으므로, 거부는 플레이어에게 완전히 보이지 않습니다
+
+예측 실행(StartAction_Implementation)이 로컬로 바꾸는 것은
+bIsRunning, GrantTags, 코스트(ApplyAttributeChange), 쿨다운
+
+빠진 것은 거부의 통지
+거부는 일회성·개인 대상 사건이므로 Client RPC
+
+---
+
+// URogueActionSystemComponent::StartAction_Server_Implementation
+
+StartAction(ActionTag);
+
+URogueActionBase* Action = FindAction(ActionTag);
+if (Action && !Action->IsRunning())          // 판정 결과가 예측과 다르면
+{
+    RejectStartAction_Client(ActionTag);      // UFUNCTION(Client, Reliable)
+}
+
+---
+
+// URogueActionSystemComponent::RejectStartAction_Client_Implementation — 소유 클라에서 실행
+
+URogueActionBase* Action = FindAction(ActionTag);
+if (Action && Action->IsRunning())            // 내 예측으로만 켜져 있는 경우
+{
+    Action->StopAction();                     // 되감기 = 예측의 역연산
+    // 보너스: 여기는 LocalPlayer가 있는 곳이므로 실패 토스트도 여기서 띄우면 비로소 보인다
+}
+
+---
+---
+---
+
+클라가 고쳤을 때
+
+세 가지 미래
+
+채택(서버가 같은 값에 도달 → echo가 무음으로 지나감 → 예측 성공)
+기각(다른 값의 델타 도착 → 덮어쓰기 + OnRep 발화 → 정정)
+방치(서버가 그 프로퍼티를 다시 안 건드림 → 어긋남이 무기한 지속)
+
+---
+
+같은 변수라도 Authority에서의 쓰기는 선언이 되어 파이프에 실리고
+사본에서의 쓰기는 파이프가 모르는 낙서로 남습니다
+
+낙서가 세계의 사실이 되는 유일한 경로는 
+상행 사건(Server RPC)으로 의도를 올려 보내 Authority가 대신 쓰게 하는 것
+
+---
+---
+---
+---
+---
+---
+
+서버 ══[상태: 사실의 델타]═════▶ 클라     하행
+서버 ──[사건: 통지·방송·정정]──▶ 클라     하행
+서버 ◀──[사건: 의도·요청]─────── 클라     상행 — 유일한 상행, 검문소 있음
+서버 ◀══[상태]══════✕═══════ 클라         상행 - 폐쇄 ("Server shouldn't receive properties")
+
+---
+
+하행 상태 차선
+
+진입 자격은 Authority의 쓰기
+화물은 스키마(DOREPLIFETIME)에 선언된 프로퍼티의 양자화된 델타
+검문은 커넥션별 사영 — relevancy, COND_
+
+최신값(last-value) 의미론
+중간값의 배달 의무가 없고, 
+유실되면 FObjectReplicator::ReceivedNak이 
+해당 변경 묶음에 Resend 표시를 해서 
+누적된 현재 차이를 다시 보냅니다
+
+수신 종점에서는 적분(값 반영) 후 OnRep 미분(로컬 사건 재구성)
+
+---
+
+하행 사건 차선
+
+유니캐스트(Client RPC, 주소는 Owner 체인)
+브로드캐스트(Multicast, 주소는 relevancy, 방송권은 서버만)
+
+---
+
+상행 사건 차선
+
+진입 자격은 소유 커넥션
+(비소유 클라의 시도는 "No owning connection"으로 증발)
+
+---
+
+예측
+
+상행에 요청을 올리는 동시에 로컬에서 결과를 선집행
+승인이면 echo가 무음으로 지나가고(RepNotify skip), 거부면 정정 사건이 와야
+
+---
+
+GameFramework 클래스들은 이 지도 위의 시설로 읽힙니다
+
+GameMode는 도로에 아예 연결 안 된 본부 건물
+("only instanced on the server" — 복제 없음)
+
+GameState는 하행 상태 차선의 공영방송
+(bReplicates = true; bAlwaysRelevant = true;)
+
+PlayerState도 같은 공영방송인데 저속 차선
+생성자에서 SetNetUpdateFrequency(1)
+초당 1회: 이름·핑 같은 느린 사실 전용
+
+PlayerController는 커넥션의 터미널
+상행 진입구(Server RPC의 서식지)이자 하행 유니캐스트의 수신처
+소유 클라와 서버에만 존재
+
+Pawn
+소유 클라에겐 AutonomousProxy
+그 외 클라들에겐 SimulatedProxy
+
+CMC
+상행 ServerMove(사건), 
+하행 ClientAdjust(사건), 
+관전자용 이동 상태(상태), 
+로컬 예측
+
+---
+---
+---
+
+클라 A가 로컬 스폰한 액터의 Authority는 클라 A
+그 쓰기가 하행 차선을 타는가?
+
+// UNetDriver::TickFlush — 상태를 퍼 나르는 펌프
+if (IsServer() && ClientConnections.Num() > 0 && !bSkipServerReplicateActors)
+{
+    // Update all clients.
+    ServerReplicateActors(DeltaSeconds);
+}
+
+---
+
+실용 함의: 클라 로컬 스폰의 정당한 용도가 정확히 "공유가 필요 없는 존재"
+
+---
+---
+---
+
+화물에 실린 참조(액터 포인터)는 GUID로 직렬화되고
+발급은 서버 전용
+
+아직 도착하지 않은 이름을 참조하는 화물은 폐기되지 않고 보류됩니다
+(unmapped guid — 참조가 해소되면 재적용)
+
+---
+
+DemoNetDriver의 '클라이언트'는 파일
+전용 검문 조건(COND_ReplayOnly)
+
+---
+
+// UNetDriver::ClientSetActorTornOff — 클라에서 실행됨
+Actor->SetRole(ROLE_Authority);   // 펜 이양
+Actor->SetReplicates(false);      // 차선 철거
+Actor->TornOff();
+
+이후 각 클라의 사본은 독립 진화합니다
+(래그돌, 수명 끝난 투사체)
+
+---
+
+ServerMove
+
+화물의 의미를 열어보면 "내 위치는 X다"라는 상태 주장
+
+서버는 클라의 입력을 자기 쪽에서 재실행한 뒤 주장된 위치와 비교하고
+허용 오차를 벗어나면 정정을 하행으로 보내고, 오차 안이면 승인합니다
+
+bServerAcceptClientAuthoritativePosition
+ServerMoveHandleClientError
+
+---
+
+주장은 기본 승인, 예외만 정정
+그 대가로 스피드핵·텔레포트핵의 표면이 생깁니다
+
+---
+---
+---
+
+AActor::GetNetPriority
+
+Time은 '마지막 복제 후 경과 시간'
+
+if (ViewTarget && (this == ViewTarget ...))  Time *= 4.f;   // 보고 있는 대상
+...뒤쪽 + 원거리                             Time *= 0.2f;
+...정면 응시                                 Time *= 2.f;
+
+return NetPriority * Time;
+
+정적 가중치(NetPriority) × 굶주린 시간(Time) × 시야 기하 배율
+
+ServerReplicateActors는 이 점수로 정렬해 예산이 다할 때까지 복제
+기아(starvation)가 불가능한 노화(aging) 스케줄러
+
+---
+
+차선 용량 = 커넥션별 비트 예산
+UNetConnection의 회계
+
+// UNetConnection::IsNetReady
+
+if (NetworkCongestionControl.IsSet())
+    return NetworkCongestionControl.GetValue().IsReadyToSend(...);
+
+return QueuedBits + SendBuffer.GetNumBits() <= 0;
+
+---
+
+검문 조건 = 커넥션별 활성 스키마 부분집합
+
+스키마에 정적으로 붙는 ELifetimeCondition(선언)
+직렬화 순간 (액터, 커넥션) 문맥에서 계산되는 FReplicationFlags(bNetOwner, bNetSimulated...)
+둘을 잇는 BuildConditionMapFromRepFlags(bool 표 평가)
+
+결과는 FSendingRepState의 InactiveParents 비트필드
+"이 커넥션에서는 이 프로퍼티들이 꺼져 있음"이라는 기록
+
+---
+
+이름
+
+클라가 디스크에서 경로로 스스로 로드할 수 있는 것
+(에셋, 레벨 배치물 — CanClientLoadObject 경로)
+
+서버가 발급·수출해야만 알 수 있는 런타임 스폰물
+
+커넥션의 PackageMap과 FNetGUIDCache가 
+GUID↔객체 양방향 사전이자 
+"지금까지 서로 합의한 이름들"의 협상 상태
+
+---
+---
+---
+
+GameMode
+
+SetReplicates를 켜지 않아 RemoteRole = ROLE_None
+복제 고려 대상 명단(UNetDriver::AddNetworkActor → NetworkObjectList)에 등록되지 않으며
+서버 프로세스에서만 스폰
+
+---
+
+상태는 선언형 진입, 사건은 명령형 진입
+RPC는 호출 즉시 큐잉
+
+상태 차선의 진입
+
+NetworkObjectList에 등록되어 있고(스폰 시) 
+→ NetUpdateFrequency 스케줄이 도래했고 
+→ dormant가 아니고 
+→ relevancy를 통과했고 
+→ 비교 패스가 shadow 대비 변화를 발견하는 순간
+
+---
+---
+---
+
+관측자별 현상(appearance) 제조
+
+진본은 하나지만 전달은 커넥션마다 다릅니다
+
+COND_, relevancy
+필요한 정밀도로만(양자화)
+감당할 양만(우선순위×대역폭)
+받는 자리의 좌표계로(swap, downgrade)
+
+---
+
+게임 속 "하나의 존재"(예: A의 Pawn)는 실제로는 여러 월드에 흩어진 사본들의 가족입니다
+서버 월드에 하나, 클라 A 월드에 하나, 클라 B 월드에 하나
+
+NetGUID가 이들을 한 가족으로 묶는 등록부고
+ROLE_Authority는 가족 안에서 가장(진본)이 누구인지 표시합니다
+
+---
+
+사본이 둘 이상인 모든 가족의 가장은 서버에 있다
+이것이 "서버가 모든 진리를 쥔다"의 실제 내용
+
+클라가 로컬 스폰한 액터는 사본이 하나뿐인 가족이고, 
+클라는 그 1인 가족의 가장
+
+---
+
+즉 Authority는 절대적 직함("세계의 진리 보유자")이 아니라
+관계적 직함("이 가족의 가장")
+
+---
+
+클라의 authority 액터는 결정권은 있으나 유통망이 없어서
+그 결정이 누구의 세계에도 주장되지 않습니다
+아무에게도 도달하지 않는 사실은 공유 세계의 진리 목록에 아예 등재되지 않는 것
+
+---
+---
+---
+
+서버 월드에서
+
+서버에는 
+A의 Pawn → A의 PlayerController → A의 NetConnection 체인
+B의 Pawn → B의 PlayerController → B의 NetConnection 체인
+
+// AController 생성자
+bOnlyRelevantToOwner = true;   // 소유 커넥션에게만 복제된다
+
+클라 A의 월드에는 B의 PlayerController가 존재하지 않습니다
+A 월드에서 B의 Pawn을 보면 Owner 체인이 중간에서 끊겨 있습니다
+
+클라가 남의 주소로 아무것도 못 보내는 이유 
+주소록 부재
+(자기 월드에는 도로가 서버행 하나뿐
+ProcessRemoteFunction도 결국 ServerConnection으로 강제)
+
+---
+
+Authority
+
+한 가족 안에서, 월드들을 가로질러 성립하는 위계
+여러 사본 중 누가 결정하는가
+
+Ownership
+
+한 월드 안에서, 액터에서 액터로 가는 포인터 그래프
+이 액터는 어느 사람(커넥션)의 것인가
+
+---
+---
+---
+
+월드들 W_server, W_A, W_B
+하나의 세계의 복사들이 아니라 별개의 오브젝트 그래프들
+
+---
+
+여러 월드에 흩어진, "같은 존재"를 나타내는 오브젝트들의 묶음(등록부 = NetGUID)
+가장 — 가족당 정확히 하나(ROLE_Authority)
+소속 그래프 — 각 월드 내부의 Owner 화살표들
+
+---
+
+차선 — (가장, 사본) 쌍마다 존재하는 파이프
+ActorChannel
+
+---
+
+① 2인 이상 가족의 가장은 서버에 있다
+② 상태는 가장→사본으로만 흐른다
+③ 의도는 소유된 사본→가장으로만 흐른다
+④ 사본은 가장의 과거를 산다(지연 + 샘플링 + 양자화 = 근사)
+⑤ 가장의 쓰기는 가족 전체에 수렴한다
+
+---
+
+클라 로컬 스폰 = 1인 가족 창설
+TearOff = 가족 해산(각자 가장이 됨)
+GameMode = 1인 가족(서버에)
+Late joiner = 새 월드가 모든 가족에 사본을 등록
+
+Relevancy = "이 월드에 이 가족의 사본을 둘 것인가".
+COND_ = "이 사본에게 어떤 속성까지 알릴 것인가"
+
+---
+
+단일 프로세스 프로그래밍
+객체의 정체성은 메모리 주소
+객체는 하나고, 어딘가에 있습니다
+
+멀티플레이어
+
+A의 Pawn이라는 존재에 대응하는 C++ 객체는 하나가 아니라 세 개
+서버 월드에 하나, A 월드에 하나, B 월드에 하나
+각 객체는 자기만의 Role 필드를 갖습니다
+즉 "A의 Pawn의 Role"이라는 단일한 값은 존재하지 않습니다
+
+서버 사본의 Role은 Authority, 
+A 사본의 Role은 AutonomousProxy
+B 사본의 Role은 SimulatedProxy
+
+정체성은 주소가 아니라 대응 관계(NetGUID로 묶인 가족)
+
+---
+
+Role은 존재의 속성이 아니라 사본의 필드
+한 존재에는 사본 수만큼의 Role 값이 있다
+
+---
+
+탄생 규칙
+
+1
+공유 존재(복제 액터)는 서버에서만 태어날 수 있다
+클라에는 존재를 주장하는 상행 문장이 없으니까
+
+2
+스폰한 머신이 가장이 된다
+클라 머신에서 Role=Authority인 사본은 애초에 공유 존재가 아닌 것
+
+---
+
+전파의 주체는 Role이 아니라 펌프
+
+"Authority가 쓰면 전파된다"는 문장이 오해를 만듭니다
+전파의 원동력은 서버 프로세스에만 존재하는 펌프
+(UNetDriver::TickFlush → ServerReplicateActors)
+
+펌프가 등록된 액터들을 순회하며 변화를 관찰하고
+커넥션별 채널에 델타를 실어 보냅니다
+
+Role=Authority는 "펌프가 이 사본을 비교 기준으로 삼는다"는 표시일 뿐
+쓰기 자체에 전파력이 있는 게 아닙니다
+
+---
+
+클라의 authority 사본이 아무리 써도 전파가 없는 이유
+그 프로세스에 펌프가 없어서(IsServer() 게이트)
+
+---
+
+비복제
+
+가족 층위
+아예 가족이 없는 액터(클라 로컬 스폰 이펙트, GameMode 같은 1인 가족)
+
+속성 층위
+가족이 있는 액터 안에서도 스키마에 선언된 프로퍼티만 복제되고
+SkeletalMesh 포즈·Particle·Sound·물리 시뮬레이션은 각 사본이 로컬로 돌립니다
+
+---
+
+가족 창설 ↔ 서버 스폰 + 채널 open + initial bunch (클라 쪽 SerializeNewActor → ExchangeNetRoles)
+파이프 ↔ UActorChannel — (액터, 커넥션) 쌍마다 하나
+펌프 ↔ ServerReplicateActors
+
+---
+
+서버에서 SpawnActor
+스폰 머신 규칙
+
+bReplicates라면 RemoteRole=SimulatedProxy로 설정
+NetworkObjectList(펌프의 순회 목록)에 등록
+
+---
+
+서버 사본의 Replicated 프로퍼티에 쓰기가 일어나면
+Authority가 전파한다
+
+->
+
+서버의 펌프가, 가장 사본의 변화를, 채널마다 사영해 나른다
+
+---
+
+서버 사본: Role = Authority, RemoteRole = SimulatedProxy
+쏜 사람 A의 사본: Role = SimulatedProxy
+다른 모든 클라의 사본: Role = SimulatedProxy
+
+A의 화면에서 자기 투사체는 RTT만큼 늦게 나타납니다
+서버 스폰 → 하행 사영을 기다려야 하니까
+
+상용 게임들이 로컬 가짜 투사체(fake projectile)를 따로 띄우는 이유가 이 지연입니다.
+
+---
+
+빙의된 Pawn은 저장값 자체가 RemoteRole = AutonomousProxy(승격의 결과)
+FScopedRoleDowngrade가 비소유 커넥션에 보낼 때만 SimulatedProxy로 낮춥니다
+
+소유자용 답이 기본값이고 나머지에게 낮춰서 나가는 겁니다
+
+---
+
+서버가 스폰한 액터라도 SetOwner로 체인에 연결하면 소유 커넥션이 생깁니다
+
+무기 액터에 SetOwner를 하는 이유: Client RPC를 배달 가능하게 만들려고
+
+---
+
+"진본+사본들" 관점
+"사본들+직책" 관점
+
+모두 사본, 진본은 직책
+
+같은 AActor, 같은 필드 구성이고, 차이는 Role이라는 바이트 하나의 값
+
+TearOff
+SetRole(ROLE_Authority) 한 줄로 사본이 가장이 됩니다
+
+---
+
+// FActorSpawnParameters — private, friend는 UPackageMapClient뿐
+Is the actor remotely owned. This should only be set true by the package map
+when it is creating an actor on a client that was replicated from the server
+
+uint8 bRemoteOwned:1;
+
+클라이언트의 네트워크 수신 스폰 경로뿐
+
+이 객체는 네트워크 데이터로부터 태어났다 = 이 가족의 가장은 원격에 있다
+
+---
+
+모든 객체는 CDO 기본값 (Role=Authority, RemoteRole=SimulatedProxy)으로 태어납니다
+"일단 가장 후보"
+
+그 직후 출생 기록을 확인해서, 
+네트워크 출생이면(bRemoteOwned) 
+ExchangeNetRoles가 두 값을 교환해 (SimulatedProxy, Authority)
+"나는 사본이고 가장은 저쪽"으로 정정합니다
+
+---
+
+Autonomous
+바이트 값 하나
+
+누가 언제 붙이는가
+
+// APawn::PossessedBy — 조건 셋
+if (APlayerController* PlayerController = Cast<APlayerController>(GetController()))  // ① 사람의 컨트롤러 (AI 제외)
+    if (GetNetMode() != NM_Standalone)                                               // ② 네트워크 게임
+        if (!PlayerController->IsLocalController())                                  // ③ 원격 커넥션 (ListenServer 호스트 제외)
+            SetAutonomousProxy(true);
+
+---
+
+ListenServer는 서버 프로세스 안에 로컬 플레이어가 있는 구성
+호스트의 키보드는 서버 프로세스에 꽂혀 있습니다
+호스트가 W를 누르면 그 입력 이벤트는 서버 프로세스 안에서 발생해서
+서버에 사는 호스트의 PlayerController가 처리하고, 호스트 Pawn의 서버 사본 — 즉 가장 — 을 직접 움직입니다
+
+---
+
+이 사본이 상태의 원천인가? Yes → Authority. No → 사본(proxy).
+(사본이라면) 이 사본이 입력의 원천인가? Yes → AutonomousProxy. No → SimulatedProxy.
+
+---
+---
+---
+
+입력의 운송은 그냥 Server RPC
+
+서버는 같은 가족의 사본들에게 서로 다른 하행을 보내야 합니다.
+
+관전자 사본(Simulated)에게는 이동 상태 피드를 계속 보내야 합니다
+그런데 예측자 사본에게 같은 피드를 보내면 재앙이 됩니다
+서버가 보내는 상태는 RTT만큼 과거인데, 예측자는 이미 미래를 살고 있습니다
+
+---
+
+이 분기가 코드에 박혀 있습니다
+
+// AActor::GetLifetimeReplicatedProps — 이동 피드는 Simulated에게만
+FDoRepLifetimeParams ReplicatedMovementParams{COND_SimulatedOrPhysics, REPNOTIFY_Always, bUsePushModel};
+
+DOREPLIFETIME_WITH_PARAMS_FAST(AActor, ReplicatedMovement, ReplicatedMovementParams);
+
+Autonomous 사본은 ReplicatedMovement를 받지 않습니다
+
+---
+
+// AController::IsLocalController — NetMode와 Role만으로 계산
+
+if (NetMode == NM_Standalone)
+{
+    return true;                       // ① 네트워크 없음
+}
+if (NetMode == NM_Client && GetLocalRole() == ROLE_AutonomousProxy)
+{
+    return true;                       // ② "Networked client in control" — 내가 자율 사본
+}
+if (GetRemoteRole() != ROLE_AutonomousProxy && GetLocalRole() == ROLE_Authority)
+{
+    return true;                       // ③ "Local authority in control"
+}
+
+return false;
+
+---
+---
+---
+
+Server RPC는 아무나 아무 액터에나 부를 수 있는 게 아닙니다
+
+B의 클라이언트가 A의 Pawn에 대고 ServerMove를 부르면 어떻게 되는지 따라가 보면
+
+ProcessRemoteFunction이 주소를 찾으려고 Actor->GetNetConnection()을 호출하는데,
+B의 월드에서 A의 Pawn의 Owner 체인은 끊겨 있습니다
+(A의 PlayerController가 B의 월드에 없으므로)
+
+"No owning connection ... will not be processed" → 증발.
+
+---
+
+LocallyControlled
+
+이 액터를 모는 의지(사람이든 AI 두뇌든)가 지금 이 프로세스 안에서 돌고 있는가?
+Role(가족 내 신분)이 아니라 의지의 물리적 소재
+
+---
+
+클라에는 나갈 회선이 하나뿐
+ServerConnection
+
+---
+
+자격 검사가 없으면 B의 클라이언트가 A의 Pawn에 ServerMove를 걸어 남의 캐릭터를 조종하고,
+남의 인벤토리 컴포넌트에 ServerUseItem을 걸 수 있습니다
+
+Server RPC를 실어 보내려면 그 액터의 Owner 체인이 내 PlayerController에 닿아 있어야 합니다
+
+---
+
+컨트롤러 교체 중 클라가 서버에 완료를 알리는 대목
+
+// UNetConnection::HandleClientPlayer
+// we cannot use a replicated function here because the server has already transferred ownership
+// and will reject it — so use a control channel message
+FNetControlMessage<NMT_PCSwap>::Send(this, Index);
+
+---
+
+남의 것/주인 없는 것에 요청하고 싶을 때
+그 액터에 Server RPC를 걸지 않습니다
+
+내 것에 걸고 대상을 인자로 넘깁니다: ServerInteract(Door)
+를 내 PlayerController나 Pawn에서 호출
+
+---
+
+LocallyControlled
+
+A의 Pawn을, A의 클라에서 → true (키보드가 여기 있음)
+A의 Pawn을, 서버에서 → false
+A의 Pawn을, B의 클라에서 → false
+AI Pawn을, 서버에서 → true (AIController가 여기서 돌며 명령을 생성)
+AI Pawn을, 클라에서 → false
+호스트의 Pawn을, 리슨 서버에서 → true (키보드가 서버에 꽂혀 있음)
+Standalone → 항상 true
+
+---
+---
+---
+
+이 코드가 모니터 앞의 사람 한 명을 위한 것인가?
+
+void ARogueCharacter::OnHealthChanged(float Delta)
+{
+    if (Delta < 0.f && IsLocallyControlled())
+    {
+        PlayerController->ClientStartCameraShake(HitShakeClass);
+        ShowDamageVignette();
+    }
+}
+
+---
+
+// ACharacter::PossessedBy — 서버에서 실행
+// "If we are controlled remotely, set animation timing to be driven by client's network updates."
+if (GetRemoteRole() == ROLE_AutonomousProxy)
+{
+    Mesh->bOnlyAllowAutonomousTickPose = true;
+}
+
+---
+
+// 3분기가 필요한 경우 — 이동을 직접 다루는 컴포넌트
+
+if (GetLocalRole() == ROLE_SimulatedProxy)  Interpolate();   // 받은 값 사이를 메움
+else                                        RunMovement();   // Authority 또는 Autonomous — 직접 계산
+
+---
+
+서버의 AI 캐릭터: Role = Authority, RemoteRole = SimulatedProxy
+각 클라의 사본: Role = SimulatedProxy
+
+승격 조건이 Cast<APlayerController>(GetController())인데, 
+AIController는 PlayerController가 아니라서 조건에서 탈락
+
+---
+
+서버의 AI 캐릭터는 IsLocallyControlled()가 true
